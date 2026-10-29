@@ -1,5 +1,7 @@
 #include "Element/BSplineElement.hpp"
 
+#include "Assembly/LexicographicOrdering.hpp"
+
 #include <array>
 #include <stdexcept>
 
@@ -16,21 +18,6 @@ int product(const std::array<int, Dim> &shape)
     for (const int extent : shape)
         value *= extent;
     return value;
-}
-
-// Recover a zero-based tensor multi-index from a flat lexicographic index,
-// using direction 0 as the fastest-varying direction.
-template <int Dim>
-std::array<int, Dim> tensor_index(
-    int flat, const std::array<int, Dim> &shape)
-{
-    std::array<int, Dim> index{};
-    for (int direction = 0; direction < Dim; ++direction)
-    {
-        index[direction] = flat % shape[direction];
-        flat /= shape[direction];
-    }
-    return index;
 }
 
 // Invert a 2D or 3D geometry Jacobian and return its determinant.
@@ -123,7 +110,7 @@ void BSplineElement<Dim>::build_quad_data(
     const std::vector<BSplineBasis1D> &basis_tables,
     const std::array<int, Dim> &local_shape)
 {
-    // Cache element spans and tensor sizes. Both basis and quadrature flat
+    // Cache element spans and tensor sizes. Both basis and quadrature global
     // indices use direction 0 as the fastest-varying direction.
     const std::array<int, Dim> spans = patch.element_spans(element);
     const int num_local_basis = this->num_local_basis_;
@@ -132,12 +119,16 @@ void BSplineElement<Dim>::build_quad_data(
     quad_shape.fill(num_quad_1d);
     const int num_quad_pts = product<Dim>(quad_shape);
     this->quad_data_.resize(num_quad_pts);
+    const LexicographicOrdering<Dim> local_ordering(local_shape);
+    const LexicographicOrdering<Dim> quad_ordering(quad_shape);
 
     // Precompute local tensor indices because their ordering is identical at
     // every Gauss point of this element.
-    std::vector<std::array<int, Dim>> local_indices(num_local_basis);
-    for (int local = 0; local < num_local_basis; ++local)
-        local_indices[local] = tensor_index<Dim>(local, local_shape);
+    std::vector<std::array<int, Dim>> local_multi_indices(num_local_basis);
+    for (int local_global_index = 0;
+         local_global_index < num_local_basis; ++local_global_index)
+        local_multi_indices[local_global_index] =
+            local_ordering.multi_index(local_global_index);
 
     // Precompute the affine reference-to-parameter map of this knot-span
     // element. These values do not depend on the Gauss-point index.
@@ -156,10 +147,12 @@ void BSplineElement<Dim>::build_quad_data(
 
     // Build one complete equation-independent record at each tensor-product
     // Gauss point.
-    for (int flat_quad = 0; flat_quad < num_quad_pts; ++flat_quad)
+    for (int quad_global_index = 0;
+         quad_global_index < num_quad_pts; ++quad_global_index)
     {
-        QuadData &data = this->quad_data_[flat_quad];
-        data.quad_index = tensor_index<Dim>(flat_quad, quad_shape);
+        QuadData &data = this->quad_data_[quad_global_index];
+        data.quad_multi_index =
+            quad_ordering.multi_index(quad_global_index);
         data.basis_values.assign(num_local_basis, 0.0);
         data.para_grads.resize(num_local_basis);
         data.phy_grads.resize(num_local_basis);
@@ -169,7 +162,7 @@ void BSplineElement<Dim>::build_quad_data(
         // accumulate the tensor-product Gauss weight.
         for (int direction = 0; direction < Dim; ++direction)
         {
-            const int q = data.quad_index[direction];
+            const int q = data.quad_multi_index[direction];
             const double ref = quad.points[q];
             data.ref_coor[direction] = ref;
             data.para_coor[direction] = para_midpoint[direction] +
@@ -188,9 +181,9 @@ void BSplineElement<Dim>::build_quad_data(
                 offsets[direction] =
                     (static_cast<std::size_t>(spans[direction]) *
                          num_quad_1d +
-                     data.quad_index[direction]) *
+                     data.quad_multi_index[direction]) *
                         local_shape[direction] +
-                    local_indices[local][direction];
+                    local_multi_indices[local][direction];
 
             double value = 1.0;
             for (int direction = 0; direction < Dim; ++direction)

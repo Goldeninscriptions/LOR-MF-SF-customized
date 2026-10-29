@@ -5,130 +5,59 @@
 namespace lor
 {
 
-template <int Dim>
-ID<Dim>::ID(const Index &global_shape)
-    : global_shape_(global_shape)
+ID::ID(const int num_global_indices,
+    const std::vector<int> &constrained_global_indices)
 {
-    // Validate the tensor shape and build the manuscript's free-index strides.
-    int num_global_basis = 1;
-    num_free_dofs_ = 1;
-    for (int direction = 0; direction < Dim; ++direction)
+    // Validate the complete global-index range before allocating ID storage.
+    if (num_global_indices <= 0)
+        throw std::invalid_argument(
+            "ID requires a positive number of global indices");
+
+    // Mark the constrained global indices supplied by the BC module.
+    std::vector<bool> constrained(num_global_indices, false);
+    for (const int global_index : constrained_global_indices)
     {
-        if (global_shape_[direction] < 3)
-            throw std::invalid_argument(
-                "Each direction requires at least one interior basis index");
-        free_shape_[direction] = global_shape_[direction] - 2;
-        free_strides_[direction] = num_free_dofs_;
-        num_global_basis *= global_shape_[direction];
-        num_free_dofs_ *= free_shape_[direction];
+        if (global_index < 0 || global_index >= num_global_indices)
+            throw std::out_of_range(
+                "Constrained global_index is outside the ID range");
+        constrained[global_index] = true;
     }
 
-    // Construct ID once so every operator uses the same constraint and
-    // lexicographic equation map without recomputing it.
-    values_.resize(num_global_basis);
-    for (int global = 0; global < num_global_basis; ++global)
+    // Number unconstrained IDs in increasing global-index order and retain
+    // the inverse ID-to-global_index map.
+    values_.assign(num_global_indices, -1);
+    ID_to_global_index_.reserve(num_global_indices);
+    for (int global_index = 0;
+         global_index < num_global_indices; ++global_index)
     {
-        const Index tensor = unflatten_global(global);
-        if (is_dirichlet(tensor))
-        {
-            values_[global] = -1;
+        if (constrained[global_index])
             continue;
-        }
-
-        int equation = 0;
-        for (int direction = 0; direction < Dim; ++direction)
-            equation += (tensor[direction] - 1) * free_strides_[direction];
-        values_[global] = equation;
+        values_[global_index] = num_free_dofs_++;
+        ID_to_global_index_.push_back(global_index);
     }
 }
 
-template <int Dim>
-void ID<Dim>::validate_global_tensor_index(const Index &index) const
+int ID::get_ID(const int global_index) const
 {
-    // Check all tensor components before applying a flattening formula.
-    for (int direction = 0; direction < Dim; ++direction)
-        if (index[direction] < 0 ||
-            index[direction] >= global_shape_[direction])
-            throw std::out_of_range("Invalid global tensor index in ID");
+    // Return the stored ID value, including -1 on a Dirichlet boundary.
+    if (global_index < 0 ||
+        global_index >= static_cast<int>(values_.size()))
+        throw std::out_of_range("Invalid global_index in ID");
+    return values_[global_index];
 }
 
-template <int Dim>
-bool ID<Dim>::is_dirichlet(const Index &index) const
+bool ID::is_dirichlet(const int global_index) const
 {
-    // Any first or last directional layer belongs to the full Dirichlet
-    // boundary used by the initial paper prototype.
-    validate_global_tensor_index(index);
-    for (int direction = 0; direction < Dim; ++direction)
-        if (index[direction] == 0 ||
-            index[direction] == global_shape_[direction] - 1)
-            return true;
-    return false;
+    // Query the stored ID table without introducing any tensor-index logic.
+    return get_ID(global_index) < 0;
 }
 
-template <int Dim>
-typename ID<Dim>::Index ID<Dim>::unflatten_global(int global_basis_value) const
+int ID::global_index(const int ID_value) const
 {
-    // Invert the direction-0-fastest global basis numbering.
-    if (global_basis_value < 0 ||
-        global_basis_value >= static_cast<int>(values_.size()))
-        throw std::out_of_range("Invalid global basis index in ID");
-    Index tensor{};
-    for (int direction = 0; direction < Dim; ++direction)
-    {
-        tensor[direction] =
-            global_basis_value % global_shape_[direction];
-        global_basis_value /= global_shape_[direction];
-    }
-    return tensor;
+    // Apply the inverse ID map only for unconstrained algebraic unknowns.
+    if (ID_value < 0 || ID_value >= num_free_dofs_)
+        throw std::out_of_range("Invalid unconstrained ID value");
+    return ID_to_global_index_[ID_value];
 }
-
-template <int Dim>
-int ID<Dim>::get_ID(const int global_basis_value) const
-{
-    // Return the precomputed equation index, including -1 on the boundary.
-    if (global_basis_value < 0 ||
-        global_basis_value >= static_cast<int>(values_.size()))
-        throw std::out_of_range("Invalid global basis index in ID");
-    return values_[global_basis_value];
-}
-
-template <int Dim>
-int ID<Dim>::get_ID(const Index &global_tensor_index_value) const
-{
-    // Compose tensor flattening with the stored ID array.
-    return get_ID(global_basis(global_tensor_index_value));
-}
-
-template <int Dim>
-typename ID<Dim>::Index ID<Dim>::global_tensor_index(
-    const int equation) const
-{
-    // Apply the inverse paper ordering to recover the interior tensor index.
-    if (equation < 0 || equation >= num_free_dofs_)
-        throw std::out_of_range("Invalid algebraic equation index in ID");
-    Index tensor{};
-    for (int direction = 0; direction < Dim; ++direction)
-        tensor[direction] = 1 +
-            (equation / free_strides_[direction]) % free_shape_[direction];
-    return tensor;
-}
-
-template <int Dim>
-int ID<Dim>::global_basis(const Index &global_tensor_index_value) const
-{
-    // Flatten a full tensor index with direction 0 varying fastest.
-    validate_global_tensor_index(global_tensor_index_value);
-    int flat = global_tensor_index_value[0];
-    int stride = global_shape_[0];
-    for (int direction = 1; direction < Dim; ++direction)
-    {
-        flat += global_tensor_index_value[direction] * stride;
-        stride *= global_shape_[direction];
-    }
-    return flat;
-}
-
-template class ID<2>;
-template class ID<3>;
 
 } // namespace lor

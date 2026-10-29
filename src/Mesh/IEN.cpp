@@ -1,5 +1,6 @@
 #include "Mesh/IEN.hpp"
 
+#include "Assembly/LexicographicOrdering.hpp"
 #include "Mesh/BSplinePatch.hpp"
 #include "Mesh/LORMesh.hpp"
 
@@ -11,20 +12,6 @@ namespace lor
 {
 namespace
 {
-
-// Recover a tensor multi-index from a direction-0-fastest flat index.
-template <int Dim>
-std::array<int, Dim> unflatten(
-    int flat, const std::array<int, Dim> &shape)
-{
-    std::array<int, Dim> index{};
-    for (int direction = 0; direction < Dim; ++direction)
-    {
-        index[direction] = flat % shape[direction];
-        flat /= shape[direction];
-    }
-    return index;
-}
 
 // Build the complete element-major IEN table for a B-spline patch.
 template <int Dim>
@@ -40,19 +27,21 @@ std::vector<int> build_bspline_IEN(const BSplinePatch<Dim> &patch)
 
     std::vector<int> values(
         patch.num_elements() * static_cast<std::size_t>(num_local_basis));
+    const LexicographicOrdering<Dim> local_ordering(local_shape);
+    const LexicographicOrdering<Dim> global_ordering(patch.basis_shape());
     for (std::size_t element = 0; element < patch.num_elements(); ++element)
     {
         const auto spans = patch.element_spans(element);
         for (int local = 0; local < num_local_basis; ++local)
         {
-            const auto local_index = unflatten<Dim>(local, local_shape);
-            typename BSplinePatch<Dim>::Index global_index{};
+            const auto local_multi_index = local_ordering.multi_index(local);
+            typename BSplinePatch<Dim>::Index multi_index{};
             for (int direction = 0; direction < Dim; ++direction)
-                global_index[direction] = spans[direction] -
-                    patch.degree(direction) + local_index[direction];
+                multi_index[direction] = spans[direction] -
+                    patch.degree(direction) + local_multi_index[direction];
             values[element * static_cast<std::size_t>(num_local_basis) +
                 static_cast<std::size_t>(local)] =
-                    patch.flatten_basis_index(global_index);
+                    global_ordering.global_index(multi_index);
         }
     }
     return values;
@@ -74,33 +63,31 @@ std::vector<int> build_lor_IEN(const LORMesh<Dim> &mesh)
     corner_shape.fill(2);
     std::vector<int> values(
         mesh.num_cells() * static_cast<std::size_t>(num_local_basis));
+    const LexicographicOrdering<Dim> cell_ordering(cell_shape);
+    const LexicographicOrdering<Dim> corner_ordering(corner_shape);
+    const LexicographicOrdering<Dim> node_ordering(node_shape);
 
     for (std::size_t cell = 0; cell < mesh.num_cells(); ++cell)
     {
-        const auto cell_index =
-            unflatten<Dim>(static_cast<int>(cell), cell_shape);
+        const auto cell_multi_index =
+            cell_ordering.multi_index(static_cast<int>(cell));
         for (int local = 0; local < num_local_basis; ++local)
         {
             // Convert the conventional Quad4/Hex8 local node order to the
             // direction-0-fastest binary corner index used by the tensor grid.
             // Quad4: 0,1,3,2. Hex8: 0,1,3,2,4,5,7,6.
             const int tensor_corner = conventional_to_tensor[local];
-            const auto corner =
-                unflatten<Dim>(tensor_corner, corner_shape);
-            typename LORMesh<Dim>::Index node_index{};
+            const auto corner_multi_index =
+                corner_ordering.multi_index(tensor_corner);
+            typename LORMesh<Dim>::Index node_multi_index{};
             for (int direction = 0; direction < Dim; ++direction)
-                node_index[direction] =
-                    cell_index[direction] + corner[direction];
+                node_multi_index[direction] = cell_multi_index[direction] +
+                    corner_multi_index[direction];
 
-            int global_node = node_index[0];
-            int stride = node_shape[0];
-            for (int direction = 1; direction < Dim; ++direction)
-            {
-                global_node += node_index[direction] * stride;
-                stride *= node_shape[direction];
-            }
+            const int node_global_index =
+                node_ordering.global_index(node_multi_index);
             values[cell * static_cast<std::size_t>(num_local_basis) +
-                static_cast<std::size_t>(local)] = global_node;
+                static_cast<std::size_t>(local)] = node_global_index;
         }
     }
     return values;

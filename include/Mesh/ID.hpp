@@ -1,60 +1,42 @@
 #ifndef LOR_MESH_ID_HPP
 #define LOR_MESH_ID_HPP
 
-#include <array>
 #include <vector>
 
 namespace lor
 {
 
-// Immutable global-basis-to-equation map. For the current all-Dirichlet
-// problem, boundary entries are -1 and interior entries follow the paper's
-// direction-0-fastest lexicographic ordering.
-template <int Dim>
+// Immutable global_index-to-ID map. DirichletBC supplies constrained
+// global_index values; their ID entries are -1 and every remaining entry is
+// numbered consecutively for global matrix and vector assembly.
 class ID
 {
-    static_assert(Dim == 2 || Dim == 3, "ID supports only 2D and 3D");
-
 public:
-    using Index = std::array<int, Dim>;
+    ID(int num_global_indices,
+        const std::vector<int> &constrained_global_indices);
 
-    explicit ID(const Index &global_shape);
+    // Return ID[global_index]. A Dirichlet degree of freedom returns -1,
+    // matching the ID convention used by MixPERIGEE.
+    int get_ID(int global_index) const;
 
-    // Return ID[A], the algebraic equation index of global basis A. A
-    // Dirichlet basis returns -1, matching MixPERIGEE's ID convention.
-    int get_ID(int global_basis) const;
+    // Return whether global_index was supplied as a Dirichlet constraint.
+    bool is_dirichlet(int global_index) const;
 
-    // Return the equation index associated with a global tensor index.
-    int get_ID(const Index &global_tensor_index) const;
+    // Return the global_index associated with one unconstrained ID value.
+    int global_index(int ID_value) const;
 
-    // Return the full global and unconstrained algebraic sizes.
-    int num_global_basis() const noexcept
+    // Return the complete number of global indices and unconstrained IDs.
+    int num_global_indices() const noexcept
     {
         return static_cast<int>(values_.size());
     }
     int num_free_dofs() const noexcept { return num_free_dofs_; }
 
-    // Return true when a global tensor index lies on a Dirichlet boundary.
-    bool is_dirichlet(const Index &global_tensor_index) const;
-
-    // Apply the inverse lexicographic map from an equation index to the full
-    // tensor index and flat global basis index.
-    Index global_tensor_index(int equation) const;
-    int global_basis(const Index &global_tensor_index) const;
-
 private:
-    Index global_shape_{};
-    Index free_shape_{};
-    Index free_strides_{};
     int num_free_dofs_ = 0;
     std::vector<int> values_;
-
-    Index unflatten_global(int global_basis) const;
-    void validate_global_tensor_index(const Index &index) const;
+    std::vector<int> ID_to_global_index_;
 };
-
-extern template class ID<2>;
-extern template class ID<3>;
 
 } // namespace lor
 

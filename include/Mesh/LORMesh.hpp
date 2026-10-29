@@ -21,8 +21,9 @@ public:
     using Index = std::array<int, Dim>;
     using ParaPoints = typename LORPointSet<Dim>::Values;
 
-    // Construct the tensor grid from a validated parameter point set, then
-    // evaluate the spline geometry at all LOR nodes.
+    // Sample the high-order patch map at a validated parameter point set to
+    // obtain LOR vertices. Quad4/Hex8 later interpolate these vertices with a
+    // distinct piecewise-Q1 geometry; they do not inherit the patch map.
     LORMesh(const BSplinePatch<Dim> &spline_patch,
         const LORPointSet<Dim> &point_set);
 

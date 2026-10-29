@@ -34,11 +34,11 @@ public:
         return static_cast<int>(quad_data_.size());
     }
 
-    // Return the tensor Gauss multi-index corresponding to flat point q. The
-    // flat ordering is lexicographic with direction 0 varying fastest.
-    const std::array<int, Dim> &quad_index(const std::size_t q) const
+    // Return the tensor Gauss multi_index corresponding to quadrature
+    // global_index q. Direction 0 varies fastest.
+    const std::array<int, Dim> &quad_multi_index(const std::size_t q) const
     {
-        return quad_data_.at(q).quad_index;
+        return quad_data_.at(q).quad_multi_index;
     }
 
     // Return all local basis values at Gauss point q without copying.
@@ -129,7 +129,7 @@ protected:
     // only through the public functions above.
     struct QuadData
     {
-        std::array<int, Dim> quad_index{};
+        std::array<int, Dim> quad_multi_index{};
         Point ref_coor{};
         Point para_coor{};
         Point phy_coor{};
