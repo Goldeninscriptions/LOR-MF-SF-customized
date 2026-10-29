@@ -227,15 +227,14 @@ void BSplineBasis1D::build_gauss_table(
 
     // Record the quadrature extent. The first table dimension uses the actual
     // knot-span index, so callers need no private span-to-element map.
-    const int number_of_table_points =
-        static_cast<int>(gauss_points.size());
+    const int num_table_pts = static_cast<int>(gauss_points.size());
 
     // Allocate the two internally owned arrays in
     // [knot_span][point][local_basis] order, with local_basis as the contiguous
     // dimension. Unused spans remain zero.
     const std::size_t table_size =
         static_cast<std::size_t>(num_basis(degree_, knots_)) *
-        number_of_table_points * (degree_ + 1);
+        num_table_pts * (degree_ + 1);
     N_Gauss_.assign(table_size, 0.0);
     N_der1_Gauss_.assign(table_size, 0.0);
 
@@ -253,7 +252,7 @@ void BSplineBasis1D::build_gauss_table(
         // active span.
         const double left = knots_[span];
         const double right = knots_[span + 1];
-        for (int point = 0; point < number_of_table_points; ++point)
+        for (int point = 0; point < num_table_pts; ++point)
         {
             // Map the point from [-1,1] into the current knot interval and
             // evaluate only the two derivative rows stored by this table.
@@ -267,7 +266,7 @@ void BSplineBasis1D::build_gauss_table(
                 // Copy one local basis entry into the common flattened layout
                 // shared by N_Gauss and N_der1_Gauss.
                 const std::size_t offset =
-                    table_offset(degree_, number_of_table_points,
+                    table_offset(degree_, num_table_pts,
                         span, point, local_basis);
                 N_Gauss_[offset] = values[0][local_basis];
                 N_der1_Gauss_[offset] = values[1][local_basis];
@@ -279,13 +278,13 @@ void BSplineBasis1D::build_gauss_table(
 // Convert the internal knot-span and tensor-table indices into the common
 // flattened array offset.
 std::size_t BSplineBasis1D::table_offset(
-    const int degree, const int number_of_table_points,
+    const int degree, const int num_table_pts,
     const int span, const int point, const int local_basis) noexcept
 {
     // Flatten [knot_span][quadrature_point][local_basis], with the local
     // basis index varying fastest for contiguous operator-kernel access.
     return (static_cast<std::size_t>(span) *
-        number_of_table_points + point) * (degree + 1) + local_basis;
+        num_table_pts + point) * (degree + 1) + local_basis;
 }
 
 } // namespace lor

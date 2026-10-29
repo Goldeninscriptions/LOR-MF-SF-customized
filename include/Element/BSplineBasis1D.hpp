@@ -105,7 +105,7 @@ private:
         double parameter, int span, int maximum_derivative);
     void build_gauss_table(const std::vector<double> &gauss_points);
     static std::size_t table_offset(
-        int degree, int number_of_table_points,
+        int degree, int num_table_pts,
         int span, int point, int local_basis) noexcept;
 
     template <int Dim>
