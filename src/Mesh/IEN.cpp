@@ -68,6 +68,8 @@ std::vector<int> build_lor_IEN(const LORMesh<Dim> &mesh)
         cell_shape[direction] = node_shape[direction] - 1;
 
     constexpr int num_local_basis = 1 << Dim;
+    constexpr std::array<int, 8> conventional_to_tensor{
+        0, 1, 3, 2, 4, 5, 7, 6};
     std::array<int, Dim> corner_shape{};
     corner_shape.fill(2);
     std::vector<int> values(
@@ -79,7 +81,12 @@ std::vector<int> build_lor_IEN(const LORMesh<Dim> &mesh)
             unflatten<Dim>(static_cast<int>(cell), cell_shape);
         for (int local = 0; local < num_local_basis; ++local)
         {
-            const auto corner = unflatten<Dim>(local, corner_shape);
+            // Convert the conventional Quad4/Hex8 local node order to the
+            // direction-0-fastest binary corner index used by the tensor grid.
+            // Quad4: 0,1,3,2. Hex8: 0,1,3,2,4,5,7,6.
+            const int tensor_corner = conventional_to_tensor[local];
+            const auto corner =
+                unflatten<Dim>(tensor_corner, corner_shape);
             typename LORMesh<Dim>::Index node_index{};
             for (int direction = 0; direction < Dim; ++direction)
                 node_index[direction] =
