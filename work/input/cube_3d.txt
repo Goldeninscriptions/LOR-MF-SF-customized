@@ -1,0 +1,15 @@
+# Minimal trilinear geometry for the [0,2] x [0,1.5] x [0,1] box.
+# Initial spline space: p = 1, n = (1,1,1).
+# Refinement algorithms create the analysis degree, knots, and control points.
+dimension = 3
+
+knot_vector_1 = {0, 0, 1, 1}
+knot_vector_2 = {0, 0, 1, 1}
+knot_vector_3 = {0, 0, 1, 1}
+
+control_points = {
+  (0,0,0): (0,0,0),   (1,0,0): (2,0,0),
+  (0,1,0): (0,1.5,0), (1,1,0): (2,1.5,0),
+  (0,0,1): (0,0,1),   (1,0,1): (2,0,1),
+  (0,1,1): (0,1.5,1), (1,1,1): (2,1.5,1)
+}

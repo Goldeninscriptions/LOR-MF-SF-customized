@@ -1,0 +1,12 @@
+# Minimal bilinear geometry for the axis-aligned [0,2] x [0,1] rectangle.
+# Initial spline space: p = 1, n = (1,1).
+# Refinement algorithms create the analysis degree, knots, and control points.
+dimension = 2
+
+knot_vector_1 = {0, 0, 1, 1}
+knot_vector_2 = {0, 0, 1, 1}
+
+control_points = {
+  (0,0): (0,0), (1,0): (2,0),
+  (0,1): (0,1), (1,1): (2,1)
+}
