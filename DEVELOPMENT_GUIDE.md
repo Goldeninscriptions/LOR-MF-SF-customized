@@ -1,280 +1,229 @@
-# LOR-MF-SF 最小论文原型开发指南
+# LOR-MF-SF 最小论文原型：当前开发指南
 
-## 1. 文档用途
+## 1. 项目定位
 
-本文档是 `LOR-MF-SF-customized` 的持续更新开发指南，用于记录：
+本项目是 `Matrix-free-IGA` 论文的单机 CPU 最小原型，研究二维/三维单 patch
+高阶 B-spline 离散求解 Poisson/Laplace 方程时的 LOR 预条件效果，并为后续
+matrix-free（MF）和 sum factorization（SF）实现提供清晰基线。它不是通用 IGA
+框架，也不迁移旧仓库中的 CUDA、多 patch、MPI 分区和无关应用代码。
 
-- 论文原型的研究边界；
-- 已达成的设计决定；
-- 尚待讨论的问题；
-- 从 `Parallel-Computing` 迁移代码的原则与顺序；
-- 数值实验与论文内容之间的对应关系。
+当前模型问题为
 
-本项目采用“讨论—设计—小步迁移—验证—更新指南”的工作方式。未经讨论确认，不一次性复制旧代码库，也不提前引入暂时用不到的功能。
+\[
+-\Delta u=f\quad\text{in }\Omega,
+\qquad u=0\quad\text{on }\partial\Omega.
+\]
 
-## 2. 研究目标
+当前代码支持普通非有理、张量积、open-knot B-spline 几何；多个参数方向使用
+相同次数 \(p\)，但每个方向始终保留独立 knot vector 和独立单元数 \(n_i\)。
 
-研究高阶 B-spline 等几何分析离散求解 Laplace 方程时，以下技术的效果及其组合：
-
-1. 使用低阶精化（low-order refined, LOR）离散构造预条件子；
-2. 使用 matrix-free 方法避免显式组装和存储高阶全局刚度矩阵；
-3. 使用 sum factorization 降低高阶算子作用的计算成本；
-4. 在统一、可复现的 CPU 实现中比较上述方法的数值性能。
-
-项目服务于 `Matrix-free-IGA` 论文中的理论说明和数值实验，而不是发展成通用 IGA 软件库。
-
-## 3. 已确定的项目边界
-
-### 3.1 原型定位
-
-- 只追求能够支撑论文结论的最小原型。
-- 新项目保持独立、清晰、可复现，不保留旧代码中的历史实验分支。
-- 优先保证数学正确性、实验可解释性和方法间公平比较。
-- 优化工作以论文中需要回答的问题为导向。
-
-### 3.2 计算平台
-
-- 目标平台：单机 CPU。
-- 可以使用 OpenMP 进行共享内存并行。
-- 当前不迁移 CUDA/GPU 实现。
-- 当前不以分布式 MPI 为目标。
-- 若依赖 PETSc，其用途需要进一步收缩并明确；不因旧代码使用 PETSc 就默认迁移全部 PETSc/MPI 基础设施。
-
-### 3.3 代码来源
-
-- `Parallel-Computing` 是可参考和选择性迁移的旧代码库。
-- 迁移以算法职责为单位，而不是按原目录整体复制。
-- 对迁移代码进行接口简化、命名统一和最小化依赖。
-- CUDA、MPI 分区、GPU ghost communication、重复的 CPU/GPU 版本及无关测试不进入首版原型。
-
-## 4. 建议的首版数学范围（待确认）
-
-以下是为了形成最小可验证原型而提出的初始建议，并非最终决定。
-
-- 空间维度：二维。
-- 几何：单 patch、规则张量积参数域，优先从单位正方形开始。
-- 基函数：两个方向使用相同次数的开区间 B-spline，优先研究最大连续性。
-- 模型问题：具有齐次 Dirichlet 边界条件的 Poisson/Laplace 问题
-  \[
-  -\Delta u=f \quad \text{in }\Omega,
-  \qquad u=0 \quad \text{on }\partial\Omega.
-  \]
-- 系数：首版采用常系数；变系数和复杂几何作为后续扩展项。
-- 高阶算子：同时保留显式组装参考实现和 matrix-free 实现。
-- LOR：在与高阶 B-spline 自由度数一致的低阶网格上组装稀疏线性有限元刚度矩阵。
-
-采用上述范围可以先隔离并验证 LOR、matrix-free 和 sum factorization 本身的效果，避免几何、变系数和多 patch 耦合掩盖核心结论。
-
-## 5. 方法与实验基线（待确认）
-
-建议至少区分以下实现或求解配置：
-
-| 标识 | 高阶算子实现 | 预条件 | 主要用途 |
-|---|---|---|---|
-| `assembled` | 显式组装稀疏高阶矩阵 | 无或简单预条件 | 正确性参考与传统方法基线 |
-| `mf` | 逐单元 matrix-free | 无 | 分离“避免组装”的效果 |
-| `mf-sf` | matrix-free + sum factorization | 无 | 测量 sum factorization 的收益 |
-| `assembled-lor` | 显式高阶矩阵 | LOR | 单独研究 LOR 对迭代的作用 |
-| `mf-sf-lor` | matrix-free + sum factorization | LOR | 论文目标组合 |
-
-是否保留 `mf` 而不使用 sum factorization 的完整求解版本，需要根据论文是否要分别量化 MF 与 SF 的贡献决定。即使不作为最终求解配置，也建议保留一个局部算子参考实现用于验证 `mf-sf`。
-
-## 6. LOR 设计中的待讨论问题
-
-### 6.1 低阶节点
-
-需要确定论文比较哪些点集：
-
-- Greville abscissae；
-- 真正的 Demko abscissae；
-- 其他对照点集，例如均匀点或 Chebyshev–Lobatto 点。
-
-注意：`Parallel-Computing` 当前的 `DemkoAbscissae()` 并未实现真正的 Demko 算法，而是使用 Chebyshev–Lobatto 点近似。新项目中不能将该实现作为 Demko 点直接使用。
-
-### 6.2 LOR 系统的求解方式
-
-需要区分两个研究层面：
-
-1. LOR 算子与高阶算子的谱等价性；
-2. 实际求解中如何近似应用 LOR 逆算子。
-
-候选方式包括：
-
-- 精确稀疏直接求解，用于隔离 LOR 预条件子本身的质量；
-- 不完全分解；
-- AMG；
-- 内层迭代法。
-
-首版建议至少提供一种足够准确的 LOR 求解作为理论效果基线，避免内层 Jacobi/CG 的误差被误认为是 LOR 构造本身的问题。最终性能实验是否加入 AMG，需要结合依赖选择和论文重点讨论。
-
-### 6.3 自由度对应
-
-高阶 B-spline 空间与 LOR 空间采用相同数量、相同全局编号的系数自由度，使 LOR 预条件作用不需要额外的空间转移矩阵。实现和论文都需要清楚说明这是一种代数系数对应，并不表示两个空间的基函数相同。
-
-## 7. 建议的软件架构（讨论稿）
-
-首版建议采用较少层次，避免过度抽象：
+## 2. 当前可运行的数据流
 
 ```text
-LOR-MF-SF-customized/
-├── CMakeLists.txt
-├── README.md
-├── DEVELOPMENT_GUIDE.md
-├── include/
-│   ├── bspline.hpp
-│   ├── quadrature.hpp
-│   ├── tensor_mesh.hpp
-│   ├── assembled_operator.hpp
-│   ├── matrix_free_operator.hpp
-│   ├── sum_factorized_operator.hpp
-│   ├── lor_operator.hpp
-│   └── solver.hpp
-├── src/
-├── apps/
-│   ├── verify_operators.cpp
-│   ├── study_spectrum.cpp
-│   └── benchmark_solver.cpp
-├── tests/
-├── configs/
-└── results/
+geometry txt
+  -> GeometryInput
+  -> minimal BSplinePatch
+  -> PRefinement / HRefinement / KRefinement
+  -> refined analysis BSplinePatch
+  -> boundary multi_index -> DirichletBC -> ID
+  -> BSplineIEN -> BSplineElement -> LocalAssembly -> PETSc K, M, F
+  -> GrevillePointSet / DemkoPointSet
+  -> LORMesh -> LORIEN -> FEMQuad4/FEMHex8 -> PETSc K_LOR, M_LOR, F_LOR
+  -> cg_lu / gmres_shell
+  -> SLEPc condition numbers + L2 error + result log
 ```
 
-目录及文件名只是职责草案，迁移前仍可调整。首版不建议复制旧仓库中多个近似相同的 `matrix_free_*` 目录；不同算法应通过清晰的算子实现和运行参数进行选择。
+`examples/assembled_driver.cpp` 是目前唯一主程序。它负责连接上述对象，不把基函数、
+单元积分、网格拓扑或求解器算法重新实现在主程序中。
 
-### 7.1 建议的模块职责
+## 3. 当前已经实现的功能
 
-- `bspline`：一维 B-spline 基函数、导数、knot span 和必要的 extraction 数据。
-- `quadrature`：一维 Gauss 积分点与权重。
-- `tensor_mesh`：二维规则张量积网格、自由度编号和齐次 Dirichlet 边界。
-- `assembled_operator`：组装高阶刚度矩阵，作为正确性和性能基线。
-- `matrix_free_operator`：朴素逐单元算子作用，作为参考实现。
-- `sum_factorized_operator`：通过逐维收缩实现高阶算子作用。
-- `lor_operator`：构造低阶网格与稀疏 LOR 刚度矩阵。
-- `solver`：外层 Krylov 方法以及 LOR 预条件应用。
-- `apps`：将正确性验证、谱实验和端到端性能实验分开。
+### 3.1 几何、网格和细化
 
-## 8. 外部依赖与构建配置
+- 二维与三维单 patch 普通 B-spline 几何；
+- 显式张量索引控制点输入，文件中的控制点书写顺序不影响内部排列；
+- direction 0 最快变化的统一 lexicographic ordering；
+- 边界保存为四条边或六个面的 basis `multi_index`；
+- 几何保持的 Boehm knot insertion；
+- 数学上嵌套的三种细化对象：
+  - `PRefinement`：提高共同次数，并同步提高既有节点重复度，保持既有连续性和
+    单元划分；
+  - `HRefinement`：保持次数和已有节点重复度，仅插入兼容的新节点；
+  - `KRefinement`：先 p-refinement，后 h-refinement，新节点具有升阶空间允许的
+    最大连续性。
 
-项目采用“核心算法代码与线性代数后端分离”的方向，并以 PETSc 作为首版求解后端：
+几何输入只描述最低必要几何。`square_2d.txt` 与 `cube_3d.txt` 分别从双线性和
+三线性单元开始；曲边四边形由一个双三次多项式 B-spline patch 精确描述。
 
-- PETSc：首版 Krylov、稀疏矩阵和预条件器后端；
-- OpenMP：可选的共享内存并行依赖；
-- SLEPc：用于条件数、极端特征值和谱等价性实验，仅由谱分析程序启用，不作为普通求解与 benchmark 的强制依赖；
-- Eigen：可选，不作为核心离散代码的默认依赖；
-- MPI：不作为本项目的分布式计算功能使用。本机 PETSc 基于 MPICH 构建，因此使用相同的 `mpicc`/`mpicxx` wrapper 以保证 ABI 兼容，但论文原型限定为单进程运行；
-- VTK、HDF5、YAML、METIS 和 CUDA：首版不作为项目直接依赖。PETSc 自身内部依赖不等同于项目直接依赖。
+### 3.2 高阶 IGA 单元
 
-机器路径与通用构建逻辑分离：
+- `BSplineBasis1D` 同时提供任意参数位置的 `evaluate_N(xi)` 和 Gauss 点上的
+  `N_Gauss`/`N_der1_Gauss` 预计算表；
+- 每个参数方向只构造一张一维积分表，二维/三维数据由 `BSplineElement` 做张量积；
+- `IGAElement<Dim>` 提供只读的基函数、参数/物理梯度、坐标、Jacobian、
+  inverse Jacobian、`det_Jac` 和 `quad_weight` 接口；
+- `quad_weight` 与 `det_Jac` 分开保存，物理积分在 Assembly 中显式相乘；
+- Element 不构造任何离散问题矩阵或向量。
 
-- `conf/system_lib_loading.cmake`：当前 macOS/Apple Silicon 工作站的路径；
-- `conf/system_lib_loading.linux.example.cmake`：根据旧 Linux 环境整理的示例；
-- `conf/project_build_setup.cmake`：统一加载机器配置、选择兼容编译器并按需发现依赖；
-- `conf/FindPETSc.cmake` 与 `conf/FindSLEPc.cmake`：提供 `LOR::PETSc` 和 `LOR::SLEPc` imported targets；
-- 可通过 `-DSYSTEM_LIB_LOADING_FILE=/absolute/path/to/file` 选择仓库外的机器配置。
+### 3.3 LOR 网格和低阶单元
 
-核心离散与算子类不应直接持有 PETSc 对象。PETSc 的 `Vec`、`MatShell`、`KSP` 和 `PC` 应限制在后端适配与可执行程序层，以便独立测试局部算子并保持算法代码清晰。
+- `GrevillePointSet` 和 Remez 型 `DemkoPointSet`；
+- 每个方向根据自己的 knot vector 独立生成 point set；
+- `LORMesh` 用高阶几何映射只计算 LOR 顶点物理坐标；
+- 单元内部几何由 `FEMQuad4` 或 `FEMHex8` 的 Q1 映射定义，因此 LOR 分片几何
+  通常不等于高阶 patch 几何；
+- `FEMQ1Basis` 保存所有低阶单元共享的 `[-1,1]^Dim` 参考表；
+- 高阶空间和 LOR 空间分别拥有 `BSplineIEN` 与 `LORIEN`，但 coefficient-aligned
+  点集使二者可以使用同一个 `ID` 代数编号。
 
-## 9. OpenMP 使用原则
+### 3.4 边界、组装和求解
 
-- 首先完成正确且可重复的串行实现。
-- OpenMP 优先用于单元级并行。
-- matrix-free 输出向量的并发累加需要明确处理竞争问题，可比较：
-  - element coloring；
-  - thread-local 向量后归并；
-  - 原子累加。
-- 计时实验应分别报告串行和固定线程数结果，并记录线程绑定等运行设置。
-- 不让 OpenMP 改变串行代码的数学结果或模糊不同算法间的比较。
+- `LexicographicOrdering` 独占 `multi_index <-> global_index` 转换；
+- `DirichletBC` 只消费 Patch 给出的边界 `multi_index` 和一个 Ordering；
+- `ID` 将全边界齐次 Dirichlet 自由度标为 `-1`，其余自由度连续编号；
+- `LocalAssembly` 在一次 quadrature 遍历中同时计算刚度、相容质量和荷载；
+- `GlobalAssembly` 对高阶 IGA 和 LOR Q1 使用相同的
+  gather -> element -> local assembly -> IEN/ID scatter 结构；
+- `cg_lu`：外层 CG，LOR 矩阵用 LU 精确应用；
+- `gmres_shell`：外层 restarted GMRES，`PCSHELL` 内部使用 CG+Jacobi 近似应用
+  LOR 逆；
+- SLEPc 分别计算 `cond_2(K)` 与 `cond_2(K_LOR^{-1}K)`；
+- 制造解模块和误差模块计算高阶数值解的物理域 L2 误差。
 
-## 10. 正确性验证要求
+## 4. 当前限制
 
-每次迁移或实现一个优化版本，都先与简单参考实现比较：
+以下功能尚未实现，README 和论文实验不能把它们写成当前能力：
 
-1. 一维 B-spline 基函数满足非负性、局部支撑和单位分解；
-2. 基函数导数与有限差分或可信参考值一致；
-3. assembled、朴素 matrix-free 和 sum-factorized 算子对同一向量的结果一致；
-4. 高阶离散解具有预期的网格收敛行为；
-5. LOR 矩阵对称正定；
-6. 预条件与未预条件系统的残差、迭代数和谱结果可解释；
-7. 性能测试前先通过小规模数值一致性测试。
+- matrix-free 高阶算子；
+- sum-factorized 高阶算子；
+- Element/Assembly 中实际启用的 OpenMP 并行循环；
+- NURBS、有理权重和精确圆弧；
+- 周期、非齐次 Dirichlet、Neumann 或 Robin 边界；
+- 多 patch、分布式网格和 MPI 并行求解；
+- k-/h-/p-refinement 的自动收敛阶分析；
+- AMG 或不完全分解型 LOR 求解；
+- 统一可切换的 `float/double/long double` 数值别名。当前离散核心使用 `double`，
+  PETSc/SLEPc 接口使用其配置提供的标量与实数类型。
 
-数值容差、问题规模、编译选项和硬件信息应随实验结果一起保存。
+曲边 B-spline 输入、几何求值和三种细化已经可用，但当前制造解
+\(u=\prod_d\sin(\pi(x_d-a_d)/(b_d-a_d))\) 只适用于轴对齐矩形/长方体。
+`assembled_driver` 因此会主动拒绝曲边算例；需要为曲边边界设计零迹解析解后才能
+进入同一求解流程。
 
-## 11. 论文实验建议指标（待确认）
+## 5. 核心数学与索引约定
 
-### 11.1 数值与谱指标
+### 5.1 三类 index
 
-- 离散误差与收敛阶；
-- 未预条件和 LOR 预条件后的条件数或极端特征值；
-- 外层 Krylov 迭代次数；
-- 对网格尺寸、B-spline 次数和连续性的鲁棒性；
-- 不同 LOR 节点选择的影响。
+- `multi_index`：保留张量积结构的二维/三维指标；
+- `global_index`：由 `LexicographicOrdering` 得到的完整系数空间编号；
+- `ID`：施加 Dirichlet 约束后的代数自由度编号，受约束项为 `-1`。
 
-### 11.2 性能指标
+所有张量结构均令 direction 0 最快变化。其他模块不得自行复制正逆映射公式。
 
-- 预处理/组装时间；
-- 单次算子作用时间；
-- 总求解时间；
-- 峰值或估算内存占用；
-- MF 与 MF+SF 随次数变化的复杂度趋势；
-- LOR 构造及每次预条件应用的成本；
-- OpenMP 加速比和并行效率（若纳入论文）。
+### 5.2 IEN
 
-应同时报告迭代次数和时间，避免只展示算法速度却忽略预条件质量，或只展示谱性质却忽略应用预条件子的实际成本。
+`IEN(e,a)` 把 element/cell 的局部 basis/node `a` 映射到完整空间的
+`global_index`。IEN 不知道边界条件，Assembly 再通过 `ID(global_index)` 决定是否
+散射到 PETSc 矩阵和向量。
 
-## 12. 迁移阶段建议
+### 5.3 积分测度
 
-每一阶段都应产生可运行、可验证的状态。
+高阶单元的
 
-### 阶段 0：确定研究与依赖范围
+```text
+quad_weight(q) = tensor Gauss weight * reference-to-knot-span scale
+det_Jac(q)     = det(dx/dxi)
+```
 
-- 确认数学模型、维度、几何和连续性范围；
-- 确认 LOR 节点类型；
-- 确认线性代数与求解器依赖；
-- 确认论文必须包含的比较组。
+低阶 Q1 单元的 `quad_weight` 是 `[-1,1]^Dim` 上的张量 Gauss 权重，`det_Jac` 是
+`det(dx/dref)`。两者都由 LocalAssembly 手动相乘。
 
-### 阶段 1：最小离散核心
+## 6. 细化模式和批处理含义
 
-- 迁移并精简 B-spline、积分和规则网格功能；
-- 实现小规模高阶刚度矩阵组装；
-- 建立单元测试和制造解验证。
+几何文件头部注释记录初始 \(p\) 与 \(n_i\)，但程序从 knot vector 自动推断，
+不解析这些注释。
 
-### 阶段 2：算子实现
+- `p_refine` 只允许改变 \(p\)，输入 `-n` 必须等于几何初始单元数；
+- `h_refine` 只允许改变 \(n_i\)，输入 `-p` 必须等于几何初始次数；
+- `k_refine` 可以同时指定目标共同次数和各方向目标单元数。
 
-- 实现朴素 matrix-free 算子；
-- 实现 sum-factorized 算子；
-- 对三种算子进行逐向量一致性验证；
-- 建立算子应用时间和内存基线。
+从最低阶矩形几何构造论文中的高连续性 \(p\ge3\)、多单元空间时，应使用
+`k_refine`。固定最终 \(p\) 改变 \(n_i\) 仍可作为 h-study，尽管每个独立 case 都
+从最小几何重新执行 k-refinement。
 
-### 阶段 3：LOR
+`work/run_batch.sh` 默认运行
 
-- 生成低阶节点和网格；
-- 组装 LOR 刚度矩阵；
-- 验证自由度对应、SPD 性质和谱行为；
-- 接入外层 Krylov 求解。
+```text
+p = {3,4,5,6,7}
+n = {(4,4),(16,16),(128,128)}
+refinement = k_refine
+```
 
-### 阶段 4：性能和 OpenMP
+point set 可选 `greville|demko`，LOR 求解模式可选 `cg_lu|gmres_shell`。脚本为每个
+case 保存数值结果、控制台日志和批处理汇总；`BATCH_DRY_RUN=1` 只打印计划。
 
-- 在串行结果稳定后加入单元级 OpenMP；
-- 固化 benchmark 配置与结果格式；
-- 生成论文图表所需数据。
+## 7. 目录和依赖关系
 
-## 13. 首轮需要讨论并决定的事项
+```text
+include/IO, src/IO             输入、实验参数和结果输出
+include/Mesh, src/Mesh         Patch、细化、point set、LOR mesh、IEN、ID
+include/Element, src/Element   高阶与Q1局部基函数及几何积分数据
+include/Assembly, src/Assembly ordering、边界条件、局部/全局组装
+include/Solver, src/Solver     PETSc/SLEPc求解、条件数和误差
+examples/                      当前assembled主程序
+work/                          几何输入与运行脚本
+conf/                          机器路径和PETSc/SLEPc查找
+```
 
-建议按以下顺序讨论：
+依赖方向保持为：
 
-1. 首版是否严格限定为二维单位正方形、单 patch、常系数 Laplace 问题？
-2. B-spline 连续性是否只研究最大连续性，还是必须把不同 knot multiplicity 纳入论文？
-3. LOR 节点比较是否包括 Greville 和真正的 Demko 点？
-4. 是否需要把“朴素 MF”作为论文正式基线，还是只作为 SF 正确性参考？
-5. 线性代数与求解器选用 PETSc、Eigen，还是采用核心独立的混合接口？
-6. 为了测量 LOR 本身的质量，首版用什么方式求解低阶系统？
-7. OpenMP 结果是否属于论文必须内容，还是完成串行主线后的可选增强？
-8. 首篇论文实验需要覆盖哪些次数、网格尺寸和连续性组合？
+```text
+IO -> Mesh
+Element -> Mesh
+Assembly -> Element + Mesh
+Solver -> Assembly + Element + Mesh
+Driver -> IO + Mesh + Assembly + Solver
+```
 
-## 14. 当前状态
+Mesh 和 Element 不持有 PETSc 对象。PETSc 全局对象从 `GlobalAssembly` 开始出现。
 
-- 已建立项目范围和初始设计讨论稿。
-- 尚未迁移任何源代码。
-- 已建立首版第三方库配置：PETSc 后端、可选 OpenMP/SLEPc/Eigen，以及 macOS 与 Linux 机器配置入口。
-- 最终目录结构仍待确认。
-- 下一步是在讨论第 13 节问题后更新本指南，再开始第一批最小迁移。
+## 8. 构建目标和第三方库
+
+- `lor_core`：Mesh、Element、Geometry/Patch IO、Ordering、DirichletBC 和
+  LocalAssembly；
+- `lor_petsc`：PETSc GlobalAssembly；
+- `lor_solver`：ExperimentIO、PETSc KSP、SLEPc 条件数和误差分析；
+- `assembled_driver`：当前端到端程序。
+
+PETSc 和 SLEPc 是当前主程序的必需依赖。OpenMP 可以由 CMake 查找并链接，但当前
+核心循环尚未并行化。PETSc 在本机由 MPICH wrapper 构建，因此编译器使用
+`mpicc/mpicxx` 保证 ABI 一致；程序仍按单进程原型运行。
+
+机器相关路径位于 `conf/system_lib_loading.cmake`，Linux 模板位于
+`conf/system_lib_loading.linux.example.cmake`。可通过
+`SYSTEM_LIB_LOADING_FILE` 指向仓库外的机器配置。
+
+## 9. 开发和注释规则
+
+- `.hpp` 必须说明类、公开接口和成员数据的数学意义、排列、所有权与不变量；
+- `.cpp` 每个具有单一目的的连续代码段上方必须说明该段功能；
+- Element 只保存与方程无关的局部数据，离散矩阵计算必须留在 Assembly；
+- index 转换只能调用 `LexicographicOrdering`；
+- IEN/ID 属于 Mesh/约束层，不回填到 Element；
+- 每个方向即使次数相同，也不得假设 knot vector 相同；
+- 新优化必须先与 assembled 参考实现比较数值结果；
+- 修改接口、文件职责或当前能力后，同步更新本指南和对应目录 README。
+
+## 10. 下一阶段
+
+当前 assembled + LOR 基线已经贯通。下一阶段合理顺序是：
+
+1. 固化小规模数值回归检查，包括细化前后几何不变性、矩阵对称性、正 Jacobian、
+   制造解误差和两种 point set；
+2. 把高阶算子作用从全局组装中抽象出来，增加朴素 matrix-free 参考实现；
+3. 实现张量 sum factorization，并逐向量比较 assembled、MF、MF+SF；
+4. 在串行结果一致后加入 OpenMP，并分别记录 setup、operator apply、LOR apply 和
+   总求解时间；
+5. 为曲边几何设计与全边界齐次 Dirichlet 相容的制造解。
+
+各目录中每个头文件和源文件的当前职责见对应 `README.md`。
