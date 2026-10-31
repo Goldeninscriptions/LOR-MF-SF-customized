@@ -105,7 +105,7 @@ geometry txt
 - `GlobalAssembly` 对高阶 IGA 和 LOR Q1 使用相同的
   gather -> element -> local assembly -> IEN/ID scatter 结构，并分别提供刚度、
   质量和荷载入口；
-- 当前 Driver 通过融合入口请求高阶刚度与荷载，并单独请求作为预条件器的 LOR
+- 当前 `AssembledLaplaceExperiment` 通过融合入口请求高阶刚度与荷载，并单独请求作为预条件器的 LOR
   刚度；质量矩阵和 LOR 荷载不会被隐式构造；
 - `cg_lu`：外层 CG，LOR 矩阵用 LU 精确应用；
 - `gmres_shell`：外层 restarted GMRES，`PCSHELL` 内部使用 CG+Jacobi 近似应用

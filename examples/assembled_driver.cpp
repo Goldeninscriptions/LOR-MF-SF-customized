@@ -1,3 +1,14 @@
+/*
+ * Manufactured solution used by this driver:
+ *
+ *   u_exact(x) = product_d sin(pi (x_d-a_d)/(b_d-a_d)),
+ *   f(x) = -Delta u_exact
+ *        = [sum_d (pi/(b_d-a_d))^2] u_exact(x).
+ *
+ * ManufacturedSolution implements and validates this formula; the executable
+ * remains responsible only for runtime initialization and dimension dispatch.
+ */
+
 #include "IO/DistributedGeometryInput.hpp"
 #include "IO/ExperimentIO.hpp"
 #include "Solver/AssembledLaplaceExperiment.hpp"

@@ -2,7 +2,7 @@
 
 | 文件 | 当前实现 | 调用关系 |
 |---|---|---|
-| `LexicographicOrdering.cpp` | 构造 strides 和总尺寸，检查 shape/overflow，完成正逆索引映射 | 被 DirichletBC、IEN/refinement 辅助逻辑及 Driver 使用 |
+| `LexicographicOrdering.cpp` | 构造 strides 和总尺寸，检查 shape/overflow，完成正逆索引映射 | 被 DirichletBC、IEN/refinement 辅助逻辑及 Solver 实验编排使用 |
 | `DirichletBC.cpp` | 验证每个边界 multi-index，按边界转换 global indices，用布尔 mask 去重并排序完整约束集合 | 输出交给 Mesh 的 `ID`；不读取整个 Patch |
 | `LocalAssembly.cpp` | 实现三个单项内核和共享 Gauss 数据的 stiffness+load、mass+load、stiffness+mass+load 融合内核 | 每个入口只分配被请求的局部对象，并统计 det-Jac 极值 |
 | `GlobalAssembly.cpp` | 创建 MPIAIJ/VecMPI；遍历 rank-local IEN 区间；融合入口复用 Element 和 ID row；最终 collective assembly 汇总公共自由度并归约几何统计 | 高阶路径使用 `BSplineElement`，LOR 路径使用共享 `FEMQ1Basis` 与 Quad4/Hex8 |

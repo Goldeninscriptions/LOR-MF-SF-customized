@@ -226,8 +226,8 @@ PetscErrorCode run_assembled_laplace_experiment(
         options.svd_subspace_dimension, &original_condition,
         &preconditioned_condition));
 
-    // Collect realized metadata and all six diagnostics; only root performs
-    // filesystem output, while every rank retains identical scalar results.
+    // Collect realized metadata and all six diagnostics; every rank retains
+    // identical scalar results while only root attempts filesystem output.
     ExperimentResults results;
     results.refinement_mode = options.refinement_mode;
     results.mpi_ranks = partition.size();
@@ -240,30 +240,46 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.condition_lor_K = preconditioned_condition.condition_number;
     results.iterations_lor_K = preconditioned_solve.iterations;
     results.l2_error_lor_K = preconditioned_error;
+    std::string output_error;
     if (partition.rank() == root)
-        write_experiment_results(options.output_file, results);
+        try
+        {
+            write_experiment_results(options.output_file, results);
+        }
+        catch (const std::exception &exception)
+        {
+            output_error = exception.what();
+        }
 
-    // Print one concise collective-run summary through the communicator root.
-    PetscCall(PetscPrintf(comm,
-        "Completed MPI ranks=%d, refinement=%s, actual p=%d, actual elements=(",
-        partition.size(), options.refinement_mode.c_str(), patch.degree(0)));
-    for (int direction = 0; direction < Dim; ++direction)
-        PetscCall(PetscPrintf(comm, "%s%d", direction == 0 ? "" : ",",
-            patch.num_elements(direction)));
-    PetscCall(PetscPrintf(comm,
-        "), mode=%s, point_set=%s\n"
-        "  cond_2(K) = %.12e, iterations = %" PetscInt_FMT
-        ", L2 error = %.12e\n"
-        "  cond_2(K_LOR^{-1}K) = %.12e, iterations = %" PetscInt_FMT
-        ", L2 error = %.12e\n"
-        "  result file: %s\n",
-        lor_pc_mode_name(options.lor_pc), options.lor_points.c_str(),
-        static_cast<double>(results.condition_K), results.iterations_K,
-        static_cast<double>(results.l2_error_K),
-        static_cast<double>(results.condition_lor_K),
-        results.iterations_lor_K,
-        static_cast<double>(results.l2_error_lor_K),
-        options.output_file.c_str()));
+    // Propagate a root filesystem failure but postpone throwing until all
+    // ranks have collectively destroyed their PETSc objects.
+    broadcast_root_error(output_error, root, partition.rank(), comm);
+
+    // Print one concise run summary only after every rank knows output
+    // succeeded; PetscPrintf emits it through the communicator's rank zero.
+    if (output_error.empty())
+    {
+        PetscCall(PetscPrintf(comm,
+            "Completed MPI ranks=%d, refinement=%s, actual p=%d, actual elements=(",
+            partition.size(), options.refinement_mode.c_str(), patch.degree(0)));
+        for (int direction = 0; direction < Dim; ++direction)
+            PetscCall(PetscPrintf(comm, "%s%d", direction == 0 ? "" : ",",
+                patch.num_elements(direction)));
+        PetscCall(PetscPrintf(comm,
+            "), mode=%s, point_set=%s\n"
+            "  cond_2(K) = %.12e, iterations = %" PetscInt_FMT
+            ", L2 error = %.12e\n"
+            "  cond_2(K_LOR^{-1}K) = %.12e, iterations = %" PetscInt_FMT
+            ", L2 error = %.12e\n"
+            "  result file: %s\n",
+            lor_pc_mode_name(options.lor_pc), options.lor_points.c_str(),
+            static_cast<double>(results.condition_K), results.iterations_K,
+            static_cast<double>(results.l2_error_K),
+            static_cast<double>(results.condition_lor_K),
+            results.iterations_lor_K,
+            static_cast<double>(results.l2_error_lor_K),
+            options.output_file.c_str()));
+    }
 
     // Release all PETSc-owned result objects after output and post-processing.
     PetscCall(destroy_linear_solve_result(&preconditioned_solve));
@@ -271,6 +287,11 @@ PetscErrorCode run_assembled_laplace_experiment(
     PetscCall(destroy_global_matrix(&lor_stiffness));
     PetscCall(destroy_global_vector(&high_load));
     PetscCall(destroy_global_matrix(&high_stiffness));
+
+    // Raise the synchronized output failure only after collective cleanup, so
+    // no rank can strand its peers inside Mat/Vec destruction.
+    if (!output_error.empty())
+        throw std::runtime_error(output_error);
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 

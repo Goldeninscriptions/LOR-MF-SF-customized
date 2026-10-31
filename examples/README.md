@@ -35,7 +35,7 @@ f(x)=\left[\sum_d\left(\frac{\pi}{b_d-a_d}\right)^2\right]u(x).
 \]
 
 它只适用于轴对齐矩形/长方体。曲边输入能够被 IO、Mesh 和 refinement 使用，但
-当前 Driver 会在组装前拒绝该制造解不适用的几何。
+当前 `ManufacturedSolution` 会在组装前拒绝该解析解不适用的几何。
 
 ## 构建
 
