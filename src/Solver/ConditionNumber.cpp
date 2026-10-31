@@ -44,6 +44,12 @@ PetscErrorCode extreme_singular_value(Mat matrix, const SVDWhich which,
 {
     PetscFunctionBeginUser;
 
+    // Every SVD object must live on the same communicator as its distributed
+    // operator; using PETSC_COMM_SELF here would give each rank an unrelated
+    // serial spectral problem.
+    const MPI_Comm comm = PetscObjectComm(
+        reinterpret_cast<PetscObject>(matrix));
+
     // Limit the requested Krylov subspace to the operator dimension while
     // retaining at least one expansion vector beyond the requested triplet.
     PetscInt rows = 0;
@@ -52,7 +58,7 @@ PetscErrorCode extreme_singular_value(Mat matrix, const SVDWhich which,
     const PetscInt operator_dimension = std::min(rows, columns);
     const PetscInt subspace_dimension =
         std::min(requested_subspace_dimension, operator_dimension);
-    PetscCheck(subspace_dimension >= 2, PETSC_COMM_SELF,
+    PetscCheck(subspace_dimension >= 2, comm,
         PETSC_ERR_ARG_SIZ,
         "SVD operator must have dimension at least two");
 
@@ -60,7 +66,7 @@ PetscErrorCode extreme_singular_value(Mat matrix, const SVDWhich which,
     // iteration allowance for ill-conditioned operators. The enlarged search
     // space is reserved for the difficult smallest-singular-value solve.
     SVD svd = nullptr;
-    PetscCall(SVDCreate(PETSC_COMM_SELF, &svd));
+    PetscCall(SVDCreate(comm, &svd));
     PetscCall(SVDSetOptionsPrefix(svd, prefix));
     PetscCall(SVDSetOperators(svd, matrix, nullptr));
     PetscCall(SVDSetProblemType(svd, SVD_STANDARD));
@@ -81,7 +87,7 @@ PetscErrorCode extreme_singular_value(Mat matrix, const SVDWhich which,
     SVDConvergedReason reason = SVD_CONVERGED_ITERATING;
     PetscCall(SVDGetConverged(svd, &converged));
     PetscCall(SVDGetConvergedReason(svd, &reason));
-    PetscCheck(converged > 0 && reason > 0, PETSC_COMM_SELF,
+    PetscCheck(converged > 0 && reason > 0, comm,
         PETSC_ERR_NOT_CONVERGED,
         "SLEPc singular-value solve with prefix '%s' did not converge",
         prefix);
@@ -97,11 +103,13 @@ PetscErrorCode condition_number(Mat matrix, const char *largest_prefix,
     ConditionNumberResult &result)
 {
     PetscFunctionBeginUser;
+    const MPI_Comm comm = PetscObjectComm(
+        reinterpret_cast<PetscObject>(matrix));
     PetscCall(extreme_singular_value(matrix, SVD_LARGEST, largest_prefix,
         tolerance, max_iterations, subspace_dimension, result.sigma_max));
     PetscCall(extreme_singular_value(matrix, SVD_SMALLEST, smallest_prefix,
         tolerance, max_iterations, subspace_dimension, result.sigma_min));
-    PetscCheck(result.sigma_min > 0.0, PETSC_COMM_SELF, PETSC_ERR_PLIB,
+    PetscCheck(result.sigma_min > 0.0, comm, PETSC_ERR_PLIB,
         "SLEPc reported a nonpositive minimum singular value");
     result.condition_number = result.sigma_max / result.sigma_min;
     PetscFunctionReturn(PETSC_SUCCESS);
@@ -116,15 +124,17 @@ PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
     ConditionNumberResult *original, ConditionNumberResult *preconditioned)
 {
     PetscFunctionBeginUser;
+    const MPI_Comm comm = PetscObjectComm(
+        reinterpret_cast<PetscObject>(stiffness));
     PetscCheck(original != nullptr && preconditioned != nullptr,
-        PETSC_COMM_SELF, PETSC_ERR_ARG_NULL,
+        comm, PETSC_ERR_ARG_NULL,
         "Condition-number results must not be null");
-    PetscCheck(svd_tolerance > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE,
+    PetscCheck(svd_tolerance > 0.0, comm, PETSC_ERR_ARG_OUTOFRANGE,
         "SVD tolerance must be positive");
-    PetscCheck(max_iterations > 0, PETSC_COMM_SELF,
+    PetscCheck(max_iterations > 0, comm,
         PETSC_ERR_ARG_OUTOFRANGE,
         "SVD maximum iteration count must be positive");
-    PetscCheck(subspace_dimension >= 2, PETSC_COMM_SELF,
+    PetscCheck(subspace_dimension >= 2, comm,
         PETSC_ERR_ARG_OUTOFRANGE,
         "SVD subspace dimension must be at least two");
 
@@ -135,7 +145,7 @@ PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
     PetscCall(MatGetSize(stiffness, &high_rows, &high_columns));
     PetscCall(MatGetSize(lor_stiffness, &lor_rows, &lor_columns));
     PetscCheck(high_rows == high_columns && lor_rows == lor_columns &&
-        high_rows == lor_rows, PETSC_COMM_SELF, PETSC_ERR_ARG_SIZ,
+        high_rows == lor_rows, comm, PETSC_ERR_ARG_SIZ,
         "K and K_LOR must be square matrices of the same size");
 
     // Analyze K directly.
@@ -145,20 +155,40 @@ PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
     // Create an exact reusable LOR solve solely for the spectral MatShell.
     LeftPreconditionedContext context;
     context.stiffness = stiffness;
-    PetscCall(KSPCreate(PETSC_COMM_SELF, &context.lor_solver));
+    PetscCall(KSPCreate(comm, &context.lor_solver));
     PetscCall(KSPSetOperators(context.lor_solver,
         lor_stiffness, lor_stiffness));
     PetscCall(KSPSetType(context.lor_solver, KSPPREONLY));
     PC pc = nullptr;
     PetscCall(KSPGetPC(context.lor_solver, &pc));
     PetscCall(PCSetType(pc, PCLU));
+
+    // The spectral experiment requires the action of the exact inverse of
+    // K_LOR. For more than one rank, MUMPS supplies the distributed sparse LU
+    // factorization; a PETSc build without MUMPS cannot perform this exact
+    // parallel condition-number experiment.
+    PetscMPIInt comm_size = 1;
+    PetscCallMPI(MPI_Comm_size(comm, &comm_size));
+    if (comm_size > 1)
+    {
+#if defined(PETSC_HAVE_MUMPS)
+        PetscCall(PCFactorSetMatSolverType(pc, MATSOLVERMUMPS));
+#else
+        SETERRQ(comm, PETSC_ERR_SUP,
+            "Parallel cond_2(K_LOR^{-1}K) requires PETSc with MUMPS");
+#endif
+    }
     PetscCall(KSPSetErrorIfNotConverged(context.lor_solver, PETSC_TRUE));
     PetscCall(KSPSetUp(context.lor_solver));
     PetscCall(MatCreateVecs(stiffness, &context.work, nullptr));
 
     // Supply M=P^{-1}K and M^T=KP^{-1} to obtain the true 2-norm.
     Mat preconditioned_operator = nullptr;
-    PetscCall(MatCreateShell(PETSC_COMM_SELF, high_rows, high_columns,
+    PetscInt high_local_rows = 0;
+    PetscInt high_local_columns = 0;
+    PetscCall(MatGetLocalSize(stiffness,
+        &high_local_rows, &high_local_columns));
+    PetscCall(MatCreateShell(comm, high_local_rows, high_local_columns,
         high_rows, high_columns, &context, &preconditioned_operator));
     PetscCall(MatShellSetOperation(preconditioned_operator, MATOP_MULT,
         reinterpret_cast<void (*)(void)>(apply_left_preconditioned)));

@@ -2,27 +2,35 @@
 set -euo pipefail
 
 # Usage:
-#   ./run_case.sh GEOMETRY_FILE REFINEMENT P N_TUPLE LOR_POINTS LOR_PC OUTPUT_FILE \
+#   ./run_case.sh MPI_RANKS GEOMETRY_FILE REFINEMENT P N_TUPLE LOR_POINTS LOR_PC OUTPUT_FILE \
 #       [OUTER_RTOL OUTER_ATOL INNER_RTOL INNER_ATOL]
 # Example:
-#   ./run_case.sh input/square_2d.txt k_refine 5 16,16 greville cg_lu \
-#       results/p5_n16x16_cg_lu.log 1e-10 1e-12 1e-10 1e-10
-# Alternative GMRES-shell example (uncomment to use as a command):
-# ./run_case.sh input/square_2d.txt k_refine 5 16,16 demko gmres_shell \
+#   ./run_case.sh 4 input/square_2d.txt k_refine 5 16,16 greville gmres_shell \
 #     results/p5_n16x16_gmres_shell.log 1e-10 1e-10 1e-10 1e-10
+# Alternative exact-LU research mode (uncomment to use as a command):
+# ./run_case.sh 4 input/square_2d.txt k_refine 5 16,16 greville cg_lu \
+#     results/p5_n16x16_cg_lu.log 1e-10 1e-12 1e-10 1e-10
 
-if [[ $# -ne 7 && $# -ne 11 ]]; then
-  echo "Usage: $0 GEOMETRY_FILE REFINEMENT P N_TUPLE LOR_POINTS LOR_PC OUTPUT_FILE [OUTER_RTOL OUTER_ATOL INNER_RTOL INNER_ATOL]" >&2
+if [[ $# -ne 8 && $# -ne 12 ]]; then
+  echo "Usage: $0 MPI_RANKS GEOMETRY_FILE REFINEMENT P N_TUPLE LOR_POINTS LOR_PC OUTPUT_FILE [OUTER_RTOL OUTER_ATOL INNER_RTOL INNER_ATOL]" >&2
   exit 2
 fi
 
-geometry_file=$1
-refinement=$2
-degree=$3
-element_tuple=$4
-lor_points=$5
-lor_pc=$6
-output_file=$7
+mpi_ranks=$1
+geometry_file=$2
+refinement=$3
+degree=$4
+element_tuple=$5
+lor_points=$6
+lor_pc=$7
+output_file=$8
+
+# MPI size is a launch-time choice, not a discretization option. Require an
+# explicit positive rank count and pass it unchanged to mpirun -n.
+if ! [[ "$mpi_ranks" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MPI_RANKS must be a positive integer" >&2
+  exit 2
+fi
 
 # Reject unknown refinement policies before starting the executable.
 case "$refinement" in
@@ -80,11 +88,11 @@ svd_max_it=${SVD_MAX_IT:-100000}
 svd_ncv=${SVD_NCV:-100}
 
 # Explicit command-line residuals override the mode defaults.
-if [[ $# -eq 11 ]]; then
-  outer_rtol=$8
-  outer_atol=$9
-  inner_rtol=${10}
-  inner_atol=${11}
+if [[ $# -eq 12 ]]; then
+  outer_rtol=$9
+  outer_atol=${10}
+  inner_rtol=${11}
+  inner_atol=${12}
 fi
 
 common_options=(
@@ -113,5 +121,9 @@ if [[ "$lor_pc" == "gmres_shell" ]]; then
   )
 fi
 
-echo "[run] refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
-"$driver" "${common_options[@]}"
+# Keep threaded numerical libraries from competing with the MPI ranks. Users
+# can still override MPIEXEC when their cluster exposes another launcher name.
+export OMP_NUM_THREADS=1
+mpi_launcher=${MPIEXEC:-mpirun}
+echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+"$mpi_launcher" -n "$mpi_ranks" "$driver" "${common_options[@]}"

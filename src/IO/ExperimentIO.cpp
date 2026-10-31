@@ -42,7 +42,7 @@ ExperimentOptions read_experiment_options(const int dimension)
     char output[PETSC_MAX_PATH_LEN] = "results.log";
     char elements[256] = "";
     char refinement[32] = "k_refine";
-    char mode[32] = "cg_lu";
+    char mode[32] = "gmres_shell";
     char point_set[32] = "greville";
     PetscBool geometry_set = PETSC_FALSE;
     PetscBool degree_set = PETSC_FALSE;
@@ -121,6 +121,30 @@ ExperimentOptions read_experiment_options(const int dimension)
     return options;
 }
 
+template <int Dim>
+RefinementRequest<Dim> make_refinement_request(
+    const ExperimentOptions &options)
+{
+    // Validate the dynamic tuple before copying it into the Mesh-owned fixed
+    // tensor shape.
+    if (static_cast<int>(options.elements.size()) != Dim)
+        throw std::invalid_argument(
+            "Refinement element tuple does not match template dimension");
+    RefinementRequest<Dim> request;
+    request.target_degree = options.degree;
+    for (int direction = 0; direction < Dim; ++direction)
+        request.target_elements[direction] = options.elements[direction];
+
+    // Translate the already validated text option at the IO/Mesh boundary.
+    if (options.refinement_mode == "p_refine")
+        request.mode = RefinementMode::p_refine;
+    else if (options.refinement_mode == "h_refine")
+        request.mode = RefinementMode::h_refine;
+    else
+        request.mode = RefinementMode::k_refine;
+    return request;
+}
+
 std::string read_geometry_filename()
 {
     // Read geometry first so the driver can dispatch its 2D/3D template before
@@ -148,6 +172,7 @@ void write_experiment_results(const std::string &filename,
     // Write refinement metadata from the realized Patch before numerical
     // diagnostics so every result file is self-describing.
     output << "refinement = " << results.refinement_mode << '\n'
+           << "mpi_ranks = " << results.mpi_ranks << '\n'
            << "p = " << results.actual_degree << '\n'
            << "n = (";
     for (std::size_t direction = 0;
@@ -167,5 +192,11 @@ void write_experiment_results(const std::string &filename,
            << "L2_error(K_LOR^{-1}K) = "
            << results.l2_error_lor_K << '\n';
 }
+
+// Emit fixed-dimensional option adapters used by the one runtime driver.
+template RefinementRequest<2> make_refinement_request<2>(
+    const ExperimentOptions &);
+template RefinementRequest<3> make_refinement_request<3>(
+    const ExperimentOptions &);
 
 } // namespace lor

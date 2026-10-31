@@ -1,6 +1,7 @@
 #ifndef LOR_SOLVER_MANUFACTURED_SOLUTION_HPP
 #define LOR_SOLVER_MANUFACTURED_SOLUTION_HPP
 
+#include "Assembly/LexicographicOrdering.hpp"
 #include "Mesh/BSplinePatch.hpp"
 
 #include <array>
@@ -39,6 +40,35 @@ public:
                 throw std::invalid_argument(
                     "Manufactured-solution bounding box is degenerate");
         }
+
+        // Reject a geometry whose parameter boundaries are not the physical
+        // rectangle/box faces on which this analytic function has zero trace.
+        validate_patch(patch);
+    }
+
+    // Verify that every parameter-boundary control point has the corresponding
+    // constant physical coordinate of this solution's bounding box. Throws if
+    // the current manufactured solution is not applicable to the Patch.
+    void validate_patch(const BSplinePatch<Dim> &patch) const
+    {
+        const LexicographicOrdering<Dim> ordering(patch.basis_shape());
+        for (int direction = 0; direction < Dim; ++direction)
+            for (int side = 0; side < 2; ++side)
+            {
+                const double expected = side == 0 ?
+                    lower_[direction] : upper_[direction];
+                const double scale = std::max(1.0, length_[direction]);
+                for (const auto &multi_index :
+                    patch.boundary(2 * direction + side))
+                {
+                    const double actual = patch.control_point(
+                        ordering.global_index(multi_index))[direction];
+                    if (std::abs(actual - expected) > 1.0e-10 * scale)
+                        throw std::invalid_argument(
+                            "The manufactured exact solution requires an "
+                            "axis-aligned rectangle or box geometry");
+                }
+            }
     }
 
     double exact(const Point &coor) const noexcept

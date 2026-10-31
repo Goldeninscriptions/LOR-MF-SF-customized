@@ -1,6 +1,6 @@
 # LOR-MF-SF customized
 
-面向 `Matrix-free-IGA` 论文的单机 CPU 最小原型。当前版本已经贯通普通 B-spline
+面向 `Matrix-free-IGA` 论文的 CPU/MPI 最小原型。当前版本已经贯通普通 B-spline
 高阶 assembled Laplace 系统、Greville/Demko LOR 网格、Q1 LOR 预条件矩阵、两种
 KSP 应用方式、SLEPc 条件数和 L2 误差分析。Matrix-free 与 sum factorization
 尚未实现，当前 assembled 路径是后续优化的正确性基线。
@@ -13,11 +13,13 @@ KSP 应用方式、SLEPc 条件数和 L2 误差分析。Matrix-free 与 sum fact
 - 全边界齐次 Dirichlet 条件；
 - 高阶与 LOR Q1 的刚度、质量、荷载独立按需组装；
 - `greville|demko` LOR point set；
-- `cg_lu|gmres_shell` 两种 LOR 求解配置；
+- MPI 方向切片并行组装、分布式 PETSc 矩阵/向量和并行 KSP；
+- 几何文件与 p/h/k refinement 仅在 rank 0 执行，refined Patch 广播重建；
+- 默认 `gmres_shell`，并保留 `cg_lu` 精确研究模式；
 - `cond_2(K)`、`cond_2(K_LOR^{-1}K)`、外层迭代数和 L2 误差输出；
 - 单算例与顺序批处理脚本。
 
-当前不支持 NURBS、周期边界、多 patch、MPI 分布式计算、MF/SF 算子或曲边制造解。
+当前不支持 NURBS、周期边界、多 patch、MF/SF 算子或曲边制造解。
 
 ## 构建
 
@@ -35,9 +37,10 @@ make -j
 
 ```bash
 ./work/run_case.sh \
+  4 \
   work/input/square_2d.txt \
   k_refine 5 16,16 \
-  greville cg_lu \
+  greville gmres_shell \
   work/results/example.log
 ```
 

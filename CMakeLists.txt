@@ -8,7 +8,7 @@ project(LOR_MF_SF LANGUAGES C CXX)
 
 lor_set_project_defaults()
 
-option(LOR_ENABLE_OPENMP "Enable OpenMP support" ON)
+option(LOR_ENABLE_OPENMP "Enable optional OpenMP support" OFF)
 option(LOR_BUILD_EXAMPLES "Build experiment drivers" ON)
 
 set(_lor_dependencies REQUIRE_PETSC USE_SLEPC)
@@ -23,10 +23,14 @@ add_library(lor_core
   src/Mesh/IEN.cpp
   src/Mesh/LORMesh.cpp
   src/Mesh/LORPointSet.cpp
+  src/Mesh/TensorSlabPartition.cpp
   src/Mesh/PRefinement.cpp
   src/Mesh/HRefinement.cpp
   src/Mesh/KRefinement.cpp
+  src/Mesh/Refinement.cpp
+  src/Mesh/DistributedPatch.cpp
   src/IO/GeometryInput.cpp
+  src/IO/DistributedGeometryInput.cpp
   src/IO/PatchInput.cpp
   src/Element/BSplineBasis1D.cpp
   src/Element/FEMHex8.cpp
@@ -67,6 +71,7 @@ add_library(lor_solver
   src/Solver/LinearSolver.cpp
   src/Solver/ConditionNumber.cpp
   src/Solver/ErrorAnalysis.cpp
+  src/Solver/AssembledLaplaceExperiment.cpp
 )
 target_include_directories(lor_solver PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(lor_solver PUBLIC cxx_std_17)

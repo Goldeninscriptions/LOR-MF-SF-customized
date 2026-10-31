@@ -36,8 +36,12 @@ summary_file="$script_dir/batch_summary.log"
 lor_points="greville"
 # lor_points="demko"
 
-lor_pc="cg_lu"
-# lor_pc="gmres_shell"
+# The batch launcher forwards this value directly to mpirun -n. It may be any
+# positive count; nondivisible tensor layers are distributed by floor division.
+mpi_ranks=4
+
+lor_pc="gmres_shell"
+# lor_pc="cg_lu"
 
 # SLEPc controls for the potentially difficult smallest singular values.
 svd_tol="1.0e-8"
@@ -57,7 +61,7 @@ batch_start=$(date +%s)
 echo "Planned $total cases from geometry: $geometry_file"
 for degree in "${degrees[@]}"; do
   for element_tuple in "${element_cases[@]}"; do
-    echo "  refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+    echo "  mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
   done
 done
 
@@ -67,20 +71,20 @@ if [[ ${BATCH_DRY_RUN:-0} == 1 ]]; then
   exit 0
 fi
 
-printf 'case\tstatus\trefinement\tp\tn\tpoint_set\tlor_pc\tsvd_tol\tsvd_max_it\tsvd_ncv\telapsed_s\tresult\tconsole\n' > "$summary_file"
+printf 'case\tstatus\tmpi_ranks\trefinement\tp\tn\tpoint_set\tlor_pc\tsvd_tol\tsvd_max_it\tsvd_ncv\telapsed_s\tresult\tconsole\n' > "$summary_file"
 
 for degree in "${degrees[@]}"; do
   for element_tuple in "${element_cases[@]}"; do
     case_number=$((case_number + 1))
     element_tag=${element_tuple//,/x}
-    stem="${refinement}_p${degree}_n${element_tag}_${lor_points}_${lor_pc}"
+    stem="mpi${mpi_ranks}_${refinement}_p${degree}_n${element_tag}_${lor_points}_${lor_pc}"
     result_file="$result_dir/${stem}.log"
     console_file="$console_dir/${stem}.console.log"
     case_start=$(date +%s)
 
-    echo "[$case_number/$total] starting refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc"
+    echo "[$case_number/$total] starting mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc"
     if SVD_TOL="$svd_tol" SVD_MAX_IT="$svd_max_it" SVD_NCV="$svd_ncv" \
-      "$script_dir/run_case.sh" "$geometry_file" "$refinement" "$degree" \
+      "$script_dir/run_case.sh" "$mpi_ranks" "$geometry_file" "$refinement" "$degree" \
       "$element_tuple" "$lor_points" "$lor_pc" "$result_file" \
       2>&1 | tee "$console_file"; then
       status="success"
@@ -91,8 +95,8 @@ for degree in "${degrees[@]}"; do
 
     case_end=$(date +%s)
     elapsed=$((case_end-case_start))
-    printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n' \
-      "$case_number" "$status" "$refinement" "$degree" "$element_tuple" \
+    printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n' \
+      "$case_number" "$status" "$mpi_ranks" "$refinement" "$degree" "$element_tuple" \
       "$lor_points" "$lor_pc" "$svd_tol" "$svd_max_it" "$svd_ncv" \
       "$elapsed" "$result_file" "$console_file" \
       >> "$summary_file"

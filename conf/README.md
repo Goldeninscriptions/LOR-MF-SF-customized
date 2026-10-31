@@ -1,7 +1,7 @@
 # Build configuration files
 
-`conf/` 将机器路径与通用构建逻辑分开。这里的 MPI compiler wrapper 是为了匹配
-PETSc 的构建 ABI，不表示当前代码实现了分布式计算。
+`conf/` 将机器路径与通用构建逻辑分开。MPI compiler wrapper 必须与 PETSc 的构建
+ABI 一致；当前代码会在 `PETSC_COMM_WORLD` 上执行分布式组装、KSP 和 SLEPc。
 
 | 文件 | 当前职责 |
 |---|---|

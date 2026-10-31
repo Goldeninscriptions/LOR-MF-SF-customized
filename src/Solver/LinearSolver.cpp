@@ -47,15 +47,17 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     LinearSolveResult *result)
 {
     PetscFunctionBeginUser;
-    PetscCheck(result != nullptr, PETSC_COMM_SELF, PETSC_ERR_ARG_NULL,
+    const MPI_Comm comm = PetscObjectComm(
+        reinterpret_cast<PetscObject>(stiffness));
+    PetscCheck(result != nullptr, comm, PETSC_ERR_ARG_NULL,
         "LinearSolveResult must not be null");
-    PetscCheck(result->solution == nullptr, PETSC_COMM_SELF,
+    PetscCheck(result->solution == nullptr, comm,
         PETSC_ERR_ARG_WRONGSTATE, "LinearSolveResult already owns a solution");
 
     // Configure the outer method and common stopping tolerances.
     const bool use_shell = mode == LORPCMode::gmres_shell;
     KSP ksp = nullptr;
-    PetscCall(KSPCreate(PETSC_COMM_SELF, &ksp));
+    PetscCall(KSPCreate(comm, &ksp));
     PetscCall(KSPSetOperators(ksp, stiffness,
         lor_stiffness != nullptr && !use_shell ? lor_stiffness : stiffness));
     PetscCall(KSPSetType(ksp, use_shell ? KSPGMRES : KSPCG));
@@ -80,7 +82,7 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     {
         PetscCall(PCSetType(pc, PCSHELL));
         PetscCall(PetscNew(&shell_context));
-        PetscCall(KSPCreate(PETSC_COMM_SELF, &shell_context->inner_ksp));
+        PetscCall(KSPCreate(comm, &shell_context->inner_ksp));
         PetscCall(KSPSetOperators(shell_context->inner_ksp,
             lor_stiffness, lor_stiffness));
         PetscCall(KSPSetType(shell_context->inner_ksp, KSPCG));

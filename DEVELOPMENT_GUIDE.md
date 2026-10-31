@@ -2,7 +2,7 @@
 
 ## 1. 项目定位
 
-本项目是 `Matrix-free-IGA` 论文的单机 CPU 最小原型，研究二维/三维单 patch
+本项目是 `Matrix-free-IGA` 论文的 CPU/MPI 最小原型，研究二维/三维单 patch
 高阶 B-spline 离散求解 Poisson/Laplace 方程时的 LOR 预条件效果，并为后续
 matrix-free（MF）和 sum factorization（SF）实现提供清晰基线。它不是通用 IGA
 框架，也不迁移旧仓库中的 CUDA、多 patch、MPI 分区和无关应用代码。
@@ -21,20 +21,22 @@ matrix-free（MF）和 sum factorization（SF）实现提供清晰基线。它�
 
 ```text
 geometry txt
-  -> GeometryInput
-  -> minimal BSplinePatch
-  -> PRefinement / HRefinement / KRefinement
-  -> refined analysis BSplinePatch
+  -> rank 0 GeometryInput -> broadcast minimal GeometryInput
+  -> rank 0 minimal BSplinePatch
+  -> rank 0 PRefinement / HRefinement / KRefinement
+  -> broadcast refined analysis BSplinePatch
   -> boundary multi_index -> DirichletBC -> ID
-  -> BSplineIEN -> BSplineElement -> LocalAssembly -> 按需组装 PETSc K / M / F
+  -> TensorSlabPartition -> BSplineIEN -> BSplineElement
+  -> LocalAssembly -> 分布式组装 PETSc K / M / F
   -> GrevillePointSet / DemkoPointSet
-  -> LORMesh -> LORIEN -> FEMQuad4/FEMHex8 -> 按需组装 PETSc K_LOR / M_LOR / F_LOR
-  -> cg_lu / gmres_shell
+  -> LORMesh -> LORIEN -> FEMQuad4/FEMHex8 -> 分布式组装 K_LOR / M_LOR / F_LOR
+  -> 默认 gmres_shell（保留 cg_lu）
   -> SLEPc condition numbers + L2 error + result log
 ```
 
-`examples/assembled_driver.cpp` 是目前唯一主程序。它负责连接上述对象，不把基函数、
-单元积分、网格拓扑或求解器算法重新实现在主程序中。
+`examples/assembled_driver.cpp` 是薄入口，只负责初始化、集体 IO 和 2D/3D 分派。
+`AssembledLaplaceExperiment` 连接上述对象，不把基函数、refinement、单元积分、网格
+拓扑或求解器算法重新实现在主程序中。
 
 ## 3. 当前已经实现的功能
 
@@ -76,7 +78,21 @@ geometry txt
 - 高阶空间和 LOR 空间分别拥有 `BSplineIEN` 与 `LORIEN`，但 coefficient-aligned
   点集使二者可以使用同一个 `ID` 代数编号。
 
-### 3.4 边界、组装和求解
+### 3.4 MPI 分区
+
+- direction 0 始终最快，2D 沿 direction 1、3D 沿 direction 2 切连续 slabs；
+- `floor(rank*N/P)` 同时支持整除和非整除规模，最多相差一个慢方向层；
+- 最小几何文件仅由 rank 0 读取，读取错误会广播给所有 ranks；
+- p/h/k refinement 仅在 rank 0 执行一次；随后广播 degree、各向 knot vectors 和
+  direction-0-fastest 控制网格，在每个 rank 重建相同 refined Patch；
+- 高阶元素、LOR cells、自由 ID 按各自层数独立划分，不要求三种数量相等；
+- IEN 按需计算，不在每个 rank 保存完整 element-major 表；
+- 一个 element/cell 只由一个 rank 积分，公共自由度贡献使用 PETSc `ADD_VALUES`
+  collective 汇总；编号本身不重排；
+- 误差积分只遍历本 rank 高阶元素，所需非本地系数由最小连续 halo scatter 提供，最后做
+  `MPI_Allreduce`，因此不会漏算或重复积分。
+
+### 3.5 边界、组装和求解
 
 - `LexicographicOrdering` 独占 `multi_index <-> global_index` 转换；
 - `DirichletBC` 只消费 Patch 给出的边界 `multi_index` 和一个 Ordering；
@@ -94,6 +110,8 @@ geometry txt
 - `cg_lu`：外层 CG，LOR 矩阵用 LU 精确应用；
 - `gmres_shell`：外层 restarted GMRES，`PCSHELL` 内部使用 CG+Jacobi 近似应用
   LOR 逆；
+- 默认使用 `gmres_shell`；外层、内层 KSP、SLEPc 和矩阵 shell 均使用矩阵的 MPI
+  communicator；
 - SLEPc 分别计算 `cond_2(K)` 与 `cond_2(K_LOR^{-1}K)`；
 - SVD 默认允许 100000 次迭代，并为最小奇异值使用最多 100 维搜索子空间；
   `-svd_max_it`、`-svd_ncv` 和 `-svd_tol` 可以逐次覆盖；
@@ -105,10 +123,12 @@ geometry txt
 
 - matrix-free 高阶算子；
 - sum-factorized 高阶算子；
-- Element/Assembly 中实际启用的 OpenMP 并行循环；
+- Element/Assembly 中实际启用的 OpenMP 并行循环（CMake 默认关闭 OpenMP）；
 - NURBS、有理权重和精确圆弧；
 - 周期、非齐次 Dirichlet、Neumann 或 Robin 边界；
-- 多 patch、分布式网格和 MPI 并行求解；
+- 多 patch、非结构分区和跨节点分布式几何存储；
+- refined Patch 和 LORMesh 的局部 slab+halo 存储；当前二者仍在每个 rank 保存完整
+  副本，已经消除重复 refinement 计算，但尚未消除完整几何的重复内存；
 - k-/h-/p-refinement 的自动收敛阶分析；
 - AMG 或不完全分解型 LOR 求解；
 - 统一可切换的 `float/double/long double` 数值别名。当前离散核心使用 `double`，
@@ -168,7 +188,8 @@ n = {(4,4),(16,16),(128,128)}
 refinement = k_refine
 ```
 
-point set 可选 `greville|demko`，LOR 求解模式可选 `cg_lu|gmres_shell`。脚本为每个
+point set 可选 `greville|demko`，LOR 求解默认 `gmres_shell`。`mpi_ranks` 配置会
+直接成为 `mpirun -n` 的进程数。脚本为每个
 case 保存数值结果、控制台日志和批处理汇总；`BATCH_DRY_RUN=1` 只打印计划。
 
 ## 7. 目录和依赖关系
@@ -204,9 +225,10 @@ Mesh 和 Element 不持有 PETSc 对象。PETSc 全局对象从 `GlobalAssembly`
 - `lor_solver`：ExperimentIO、PETSc KSP、SLEPc 条件数和误差分析；
 - `assembled_driver`：当前端到端程序。
 
-PETSc 和 SLEPc 是当前主程序的必需依赖。OpenMP 可以由 CMake 查找并链接，但当前
-核心循环尚未并行化。PETSc 在本机由 MPICH wrapper 构建，因此编译器使用
-`mpicc/mpicxx` 保证 ABI 一致；程序仍按单进程原型运行。
+PETSc 和 SLEPc 是当前主程序的必需依赖。PETSc 必须以 MPI 构建，编译器 wrapper
+必须与其 MPI 实现一致。并行 `cond_2(K_LOR^{-1}K)` 需要 PETSc 带 MUMPS，以便
+MatShell 中精确应用分布式 (K_{LOR}^{-1})。OpenMP 默认关闭，运行脚本也设置
+`OMP_NUM_THREADS=1`，避免线程与 MPI ranks 竞争 CPU。
 
 机器相关路径位于被 Git 忽略的 `conf/system_lib_loading.cmake`，Linux 模板位于
 `conf/system_lib_loading.linux.example.cmake`。可通过
@@ -222,17 +244,20 @@ PETSc 和 SLEPc 是当前主程序的必需依赖。OpenMP 可以由 CMake 查�
 - 每个方向即使次数相同，也不得假设 knot vector 相同；
 - 新优化必须先与 assembled 参考实现比较数值结果；
 - 修改接口、文件职责或当前能力后，同步更新本指南和对应目录 README。
+- MPI collective 前的 root-only IO/refinement 异常必须先广播状态，防止其他 ranks
+  永久等待未匹配的 collective。
 
 ## 10. 下一阶段
 
 当前 assembled + LOR 基线已经贯通。下一阶段合理顺序是：
 
-1. 固化小规模数值回归检查，包括细化前后几何不变性、矩阵对称性、正 Jacobian、
-   制造解误差和两种 point set；
+1. 固化 1/2/非整除 MPI rank 数的数值回归检查，包括 root refinement 广播、细化
+   前后几何不变性、矩阵
+   对称性、正 Jacobian、制造解误差和两种 point set；
 2. 把高阶算子作用从全局组装中抽象出来，增加朴素 matrix-free 参考实现；
 3. 实现张量 sum factorization，并逐向量比较 assembled、MF、MF+SF；
-4. 在串行结果一致后加入 OpenMP，并分别记录 setup、operator apply、LOR apply 和
-   总求解时间；
-5. 为曲边几何设计与全边界齐次 Dirichlet 相容的制造解。
+4. 把 refined Patch 控制网格与 LORMesh 节点改成 slab+halo 存储，消除全量几何复制；
+5. 分别记录 MPI setup、assembly、operator apply、LOR apply 和总求解时间；
+6. 为曲边几何设计与全边界齐次 Dirichlet 相容的制造解。
 
 各目录中每个头文件和源文件的当前职责见对应 `README.md`。

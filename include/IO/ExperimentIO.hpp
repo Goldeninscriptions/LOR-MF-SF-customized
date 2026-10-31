@@ -2,6 +2,7 @@
 #define LOR_IO_EXPERIMENT_IO_HPP
 
 #include "Solver/LinearSolver.hpp"
+#include "Mesh/Refinement.hpp"
 
 #include <petscsys.h>
 
@@ -27,7 +28,7 @@ struct ExperimentOptions
 
     // LOR point strategy and one of the two supported solver hierarchies.
     std::string lor_points = "greville";
-    LORPCMode lor_pc = LORPCMode::cg_lu;
+    LORPCMode lor_pc = LORPCMode::gmres_shell;
 
     // KSP stopping controls and independent SLEPc singular-value controls.
     // The larger defaults are intended for very ill-conditioned high-order
@@ -43,9 +44,10 @@ struct ExperimentOptions
 // only because the solver modes terminate at different tolerances.
 struct ExperimentResults
 {
-    // Actual case metadata queried from the refined Patch, never copied
-    // blindly from requested command-line targets.
+    // Actual launch and case metadata queried at runtime, never copied blindly
+    // from requested command-line targets.
     std::string refinement_mode;
+    int mpi_ranks = 1;
     int actual_degree = 0;
     std::vector<int> actual_elements;
 
@@ -63,6 +65,17 @@ struct ExperimentResults
 // Read the experiment command line after PETSc/SLEPc initialization.
 std::string read_geometry_filename();
 ExperimentOptions read_experiment_options(int dimension);
+
+// Convert dynamic command-line p/n/mode fields into the fixed-dimensional,
+// IO-independent Mesh request consumed by apply_refinement.
+template <int Dim>
+RefinementRequest<Dim> make_refinement_request(
+    const ExperimentOptions &options);
+
+extern template RefinementRequest<2> make_refinement_request<2>(
+    const ExperimentOptions &);
+extern template RefinementRequest<3> make_refinement_request<3>(
+    const ExperimentOptions &);
 
 // Write actual refined-space metadata followed by the six numerical results,
 // with one key-value item on every line.

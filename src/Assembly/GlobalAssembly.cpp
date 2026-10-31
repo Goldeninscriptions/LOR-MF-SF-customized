@@ -32,12 +32,18 @@ void initialize_statistics(AssemblyStatistics &statistics)
 
 // Create one reduced symmetric PETSc matrix with connectivity-based uniform
 // row preallocation.
-PetscErrorCode create_matrix(const PetscInt size,
-    const PetscInt nonzeros_per_row, GlobalMatrixAssemblyResult &result)
+PetscErrorCode create_matrix(const MPI_Comm comm, const PetscInt local_size,
+    const PetscInt global_size, const PetscInt nonzeros_per_row,
+    GlobalMatrixAssemblyResult &result)
 {
     PetscFunctionBeginUser;
-    PetscCall(MatCreateSeqAIJ(PETSC_COMM_SELF, size, size,
-        nonzeros_per_row, nullptr, &result.matrix));
+    const PetscInt diagonal_nonzeros =
+        std::min(nonzeros_per_row, local_size);
+    const PetscInt off_diagonal_nonzeros = std::min(nonzeros_per_row,
+        std::max<PetscInt>(0, global_size - local_size));
+    PetscCall(MatCreateAIJ(comm, local_size, local_size,
+        global_size, global_size, diagonal_nonzeros, nullptr,
+        off_diagonal_nonzeros, nullptr, &result.matrix));
     PetscCall(MatSetOption(result.matrix, MAT_SYMMETRIC, PETSC_TRUE));
     initialize_statistics(result.statistics);
     PetscFunctionReturn(PETSC_SUCCESS);
@@ -45,15 +51,50 @@ PetscErrorCode create_matrix(const PetscInt size,
 
 // Create one reduced load vector and configure ID=-1 entries to be ignored
 // during homogeneous Dirichlet scatter.
-PetscErrorCode create_vector(const PetscInt size,
-    GlobalVectorAssemblyResult &result)
+PetscErrorCode create_vector(const MPI_Comm comm, const PetscInt local_size,
+    const PetscInt global_size, GlobalVectorAssemblyResult &result)
 {
     PetscFunctionBeginUser;
-    PetscCall(VecCreateSeq(PETSC_COMM_SELF, size, &result.vector));
+    PetscCall(VecCreateMPI(comm, local_size, global_size, &result.vector));
     PetscCall(VecSet(result.vector, 0.0));
     PetscCall(VecSetOption(
         result.vector, VEC_IGNORE_NEGATIVE_INDICES, PETSC_TRUE));
     initialize_statistics(result.statistics);
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Verify that PETSc's contiguous ownership matches the slab-derived ID range.
+// This catches a mismatched local-size ordering before any shared-node entry is
+// inserted into the distributed matrix or vector.
+PetscErrorCode validate_matrix_ownership(Mat matrix, const IEN &IEN_map)
+{
+    PetscFunctionBeginUser;
+    if (IEN_map.owned_ID_begin() >= 0)
+    {
+        PetscInt begin = 0;
+        PetscInt end = 0;
+        PetscCall(MatGetOwnershipRange(matrix, &begin, &end));
+        PetscCheck(begin == IEN_map.owned_ID_begin() &&
+            end == IEN_map.owned_ID_end(), IEN_map.communicator(),
+            PETSC_ERR_ARG_INCOMP,
+            "PETSc matrix rows do not match MPI slab ID ownership");
+    }
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+PetscErrorCode validate_vector_ownership(Vec vector, const IEN &IEN_map)
+{
+    PetscFunctionBeginUser;
+    if (IEN_map.owned_ID_begin() >= 0)
+    {
+        PetscInt begin = 0;
+        PetscInt end = 0;
+        PetscCall(VecGetOwnershipRange(vector, &begin, &end));
+        PetscCheck(begin == IEN_map.owned_ID_begin() &&
+            end == IEN_map.owned_ID_end(), IEN_map.communicator(),
+            PETSC_ERR_ARG_INCOMP,
+            "PETSc vector rows do not match MPI slab ID ownership");
+    }
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -144,6 +185,23 @@ void update_statistics(const LocalResult &local,
         std::min(statistics.min_det_jac, local.min_det_jac);
     statistics.max_det_jac =
         std::max(statistics.max_det_jac, local.max_det_jac);
+}
+
+// Combine element-local geometry extrema over every MPI slab so all ranks
+// expose identical diagnostics independent of the chosen process count.
+PetscErrorCode reduce_statistics(
+    const MPI_Comm comm, AssemblyStatistics &statistics)
+{
+    PetscFunctionBeginUser;
+    double global_min = 0.0;
+    double global_max = 0.0;
+    PetscCallMPI(MPI_Allreduce(&statistics.min_det_jac, &global_min,
+        1, MPI_DOUBLE, MPI_MIN, comm));
+    PetscCallMPI(MPI_Allreduce(&statistics.max_det_jac, &global_max,
+        1, MPI_DOUBLE, MPI_MAX, comm));
+    statistics.min_det_jac = global_min;
+    statistics.max_det_jac = global_max;
+    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 // Gather the high-order control points associated with one BSplineIEN row.
@@ -247,16 +305,19 @@ PetscErrorCode assemble_high_order_matrix(
 
     // Allocate only the requested sparse matrix.
     const PetscInt matrix_size = ID_map.num_free_dofs();
-    PetscCall(create_matrix(matrix_size,
+    const PetscInt local_size = IEN_map.num_owned_dofs() < 0 ?
+        matrix_size : IEN_map.num_owned_dofs();
+    PetscCall(create_matrix(IEN_map.communicator(), local_size, matrix_size,
         high_order_nonzeros_per_row(patch, matrix_size), *result));
+    PetscCall(validate_matrix_ownership(result->matrix, IEN_map));
 
     // Follow gather -> Element -> selected LocalAssembly -> matrix scatter.
     std::vector<typename BSplinePatch<Dim>::Point> control_points(
         IEN_map.num_local_basis());
     std::vector<PetscInt> ID_values(IEN_map.num_local_basis());
     LocalMatrixAssemblyResult local;
-    for (std::size_t element_index = 0;
-         element_index < patch.num_elements(); ++element_index)
+    for (std::size_t element_index = IEN_map.local_element_begin();
+         element_index < IEN_map.local_element_end(); ++element_index)
     {
         gather_control_points(
             patch, IEN_map, element_index, control_points);
@@ -271,8 +332,9 @@ PetscErrorCode assemble_high_order_matrix(
             element_index, local, ID_values));
     }
 
-    // Finalize this matrix independently of all other equation terms.
+    // Finalize this matrix and reduce geometry diagnostics over all slabs.
     PetscCall(finalize_matrix(result->matrix));
+    PetscCall(reduce_statistics(IEN_map.communicator(), result->statistics));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -298,15 +360,20 @@ PetscErrorCode assemble_high_order_load(
         patch, IEN_map, ID_map, basis_tables));
 
     // Allocate only the requested reduced load vector.
-    PetscCall(create_vector(ID_map.num_free_dofs(), *result));
+    const PetscInt global_size = ID_map.num_free_dofs();
+    const PetscInt local_size = IEN_map.num_owned_dofs() < 0 ?
+        global_size : IEN_map.num_owned_dofs();
+    PetscCall(create_vector(IEN_map.communicator(), local_size,
+        global_size, *result));
+    PetscCall(validate_vector_ownership(result->vector, IEN_map));
 
     // Follow gather -> Element -> load-only LocalAssembly -> vector scatter.
     std::vector<typename BSplinePatch<Dim>::Point> control_points(
         IEN_map.num_local_basis());
     std::vector<PetscInt> ID_values(IEN_map.num_local_basis());
     LocalVectorAssemblyResult local;
-    for (std::size_t element_index = 0;
-         element_index < patch.num_elements(); ++element_index)
+    for (std::size_t element_index = IEN_map.local_element_begin();
+         element_index < IEN_map.local_element_end(); ++element_index)
     {
         gather_control_points(
             patch, IEN_map, element_index, control_points);
@@ -320,6 +387,7 @@ PetscErrorCode assemble_high_order_load(
 
     // Finalize the load independently of both matrices.
     PetscCall(finalize_vector(result->vector));
+    PetscCall(reduce_statistics(IEN_map.communicator(), result->statistics));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -343,11 +411,14 @@ PetscErrorCode assemble_lor_matrix(const MatrixQuantity quantity,
     // Allocate only the selected Q1 matrix with at most 3^Dim neighbors per
     // interior tensor-grid row.
     const PetscInt matrix_size = ID_map.num_free_dofs();
+    const PetscInt local_size = IEN_map.num_owned_dofs() < 0 ?
+        matrix_size : IEN_map.num_owned_dofs();
     PetscInt nonzeros_per_row = 1;
     for (int direction = 0; direction < Dim; ++direction)
         nonzeros_per_row *= 3;
-    PetscCall(create_matrix(matrix_size,
+    PetscCall(create_matrix(IEN_map.communicator(), local_size, matrix_size,
         std::min(matrix_size, nonzeros_per_row), *result));
+    PetscCall(validate_matrix_ownership(result->matrix, IEN_map));
 
     // Reuse one reference Q1 table for gather -> Element -> selected local
     // matrix integration -> scatter over all LOR cells.
@@ -355,8 +426,8 @@ PetscErrorCode assemble_lor_matrix(const MatrixQuantity quantity,
     using FEMElement = std::conditional_t<Dim == 2, FEMQuad4, FEMHex8>;
     std::vector<PetscInt> ID_values(IEN_map.num_local_basis());
     LocalMatrixAssemblyResult local;
-    for (std::size_t cell_index = 0;
-         cell_index < mesh.num_cells(); ++cell_index)
+    for (std::size_t cell_index = IEN_map.local_element_begin();
+         cell_index < IEN_map.local_element_end(); ++cell_index)
     {
         const auto phy_nodes =
             gather_lor_nodes(mesh, IEN_map, cell_index);
@@ -372,6 +443,7 @@ PetscErrorCode assemble_lor_matrix(const MatrixQuantity quantity,
 
     // Finalize this LOR matrix without creating a load vector.
     PetscCall(finalize_matrix(result->matrix));
+    PetscCall(reduce_statistics(IEN_map.communicator(), result->statistics));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -395,15 +467,20 @@ PetscErrorCode assemble_lor_load(const LORMesh<Dim> &mesh,
     PetscCall(validate_lor_inputs(mesh, IEN_map, ID_map));
 
     // Allocate only the requested reduced LOR load vector.
-    PetscCall(create_vector(ID_map.num_free_dofs(), *result));
+    const PetscInt global_size = ID_map.num_free_dofs();
+    const PetscInt local_size = IEN_map.num_owned_dofs() < 0 ?
+        global_size : IEN_map.num_owned_dofs();
+    PetscCall(create_vector(IEN_map.communicator(), local_size,
+        global_size, *result));
+    PetscCall(validate_vector_ownership(result->vector, IEN_map));
 
     // Reuse one Q1 reference table for load-only integration over all cells.
     const FEMQ1Basis<Dim> ref_basis(quad);
     using FEMElement = std::conditional_t<Dim == 2, FEMQuad4, FEMHex8>;
     std::vector<PetscInt> ID_values(IEN_map.num_local_basis());
     LocalVectorAssemblyResult local;
-    for (std::size_t cell_index = 0;
-         cell_index < mesh.num_cells(); ++cell_index)
+    for (std::size_t cell_index = IEN_map.local_element_begin();
+         cell_index < IEN_map.local_element_end(); ++cell_index)
     {
         const auto phy_nodes =
             gather_lor_nodes(mesh, IEN_map, cell_index);
@@ -416,6 +493,7 @@ PetscErrorCode assemble_lor_load(const LORMesh<Dim> &mesh,
 
     // Finalize this LOR vector without creating either matrix.
     PetscCall(finalize_vector(result->vector));
+    PetscCall(reduce_statistics(IEN_map.communicator(), result->statistics));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -468,14 +546,25 @@ PetscErrorCode assemble_high_order_with_load(
     // Allocate exactly the requested global objects with the same high-order
     // connectivity estimate for either matrix.
     const PetscInt matrix_size = ID_map.num_free_dofs();
+    const PetscInt local_size = IEN_map.num_owned_dofs() < 0 ?
+        matrix_size : IEN_map.num_owned_dofs();
     const PetscInt nonzeros_per_row =
         high_order_nonzeros_per_row(patch, matrix_size);
     if constexpr (DoStiffness)
-        PetscCall(create_matrix(
+    {
+        PetscCall(create_matrix(IEN_map.communicator(), local_size,
             matrix_size, nonzeros_per_row, *stiffness));
+        PetscCall(validate_matrix_ownership(stiffness->matrix, IEN_map));
+    }
     if constexpr (DoMass)
-        PetscCall(create_matrix(matrix_size, nonzeros_per_row, *mass));
-    PetscCall(create_vector(matrix_size, *load));
+    {
+        PetscCall(create_matrix(IEN_map.communicator(), local_size,
+            matrix_size, nonzeros_per_row, *mass));
+        PetscCall(validate_matrix_ownership(mass->matrix, IEN_map));
+    }
+    PetscCall(create_vector(IEN_map.communicator(), local_size,
+        matrix_size, *load));
+    PetscCall(validate_vector_ownership(load->vector, IEN_map));
 
     // Construct each physical element once, integrate all requested terms in
     // one Gauss loop, and compose its IEN/ID row once for every scatter.
@@ -485,8 +574,8 @@ PetscErrorCode assemble_high_order_with_load(
     LocalMatrixAssemblyResult local_stiffness;
     LocalMatrixAssemblyResult local_mass;
     LocalVectorAssemblyResult local_load;
-    for (std::size_t element_index = 0;
-         element_index < patch.num_elements(); ++element_index)
+    for (std::size_t element_index = IEN_map.local_element_begin();
+         element_index < IEN_map.local_element_end(); ++element_index)
     {
         gather_control_points(
             patch, IEN_map, element_index, control_points);
@@ -524,10 +613,19 @@ PetscErrorCode assemble_high_order_with_load(
 
     // Finalize every requested PETSc object after the shared traversal.
     if constexpr (DoStiffness)
+    {
         PetscCall(finalize_matrix(stiffness->matrix));
+        PetscCall(reduce_statistics(
+            IEN_map.communicator(), stiffness->statistics));
+    }
     if constexpr (DoMass)
+    {
         PetscCall(finalize_matrix(mass->matrix));
+        PetscCall(reduce_statistics(
+            IEN_map.communicator(), mass->statistics));
+    }
     PetscCall(finalize_vector(load->vector));
+    PetscCall(reduce_statistics(IEN_map.communicator(), load->statistics));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -578,16 +676,27 @@ PetscErrorCode assemble_lor_with_load(
 
     // Allocate exactly the selected Q1 matrices and load vector.
     const PetscInt matrix_size = ID_map.num_free_dofs();
+    const PetscInt local_size = IEN_map.num_owned_dofs() < 0 ?
+        matrix_size : IEN_map.num_owned_dofs();
     PetscInt nonzeros_per_row = 1;
     for (int direction = 0; direction < Dim; ++direction)
         nonzeros_per_row *= 3;
     nonzeros_per_row = std::min(matrix_size, nonzeros_per_row);
     if constexpr (DoStiffness)
-        PetscCall(create_matrix(
+    {
+        PetscCall(create_matrix(IEN_map.communicator(), local_size,
             matrix_size, nonzeros_per_row, *stiffness));
+        PetscCall(validate_matrix_ownership(stiffness->matrix, IEN_map));
+    }
     if constexpr (DoMass)
-        PetscCall(create_matrix(matrix_size, nonzeros_per_row, *mass));
-    PetscCall(create_vector(matrix_size, *load));
+    {
+        PetscCall(create_matrix(IEN_map.communicator(), local_size,
+            matrix_size, nonzeros_per_row, *mass));
+        PetscCall(validate_matrix_ownership(mass->matrix, IEN_map));
+    }
+    PetscCall(create_vector(IEN_map.communicator(), local_size,
+        matrix_size, *load));
+    PetscCall(validate_vector_ownership(load->vector, IEN_map));
 
     // Reuse the reference table and fuse all selected cell integrations.
     const FEMQ1Basis<Dim> ref_basis(quad);
@@ -596,8 +705,8 @@ PetscErrorCode assemble_lor_with_load(
     LocalMatrixAssemblyResult local_stiffness;
     LocalMatrixAssemblyResult local_mass;
     LocalVectorAssemblyResult local_load;
-    for (std::size_t cell_index = 0;
-         cell_index < mesh.num_cells(); ++cell_index)
+    for (std::size_t cell_index = IEN_map.local_element_begin();
+         cell_index < IEN_map.local_element_end(); ++cell_index)
     {
         const auto phy_nodes =
             gather_lor_nodes(mesh, IEN_map, cell_index);
@@ -633,10 +742,19 @@ PetscErrorCode assemble_lor_with_load(
 
     // Finalize all selected matrices and the shared-traversal load vector.
     if constexpr (DoStiffness)
+    {
         PetscCall(finalize_matrix(stiffness->matrix));
+        PetscCall(reduce_statistics(
+            IEN_map.communicator(), stiffness->statistics));
+    }
     if constexpr (DoMass)
+    {
         PetscCall(finalize_matrix(mass->matrix));
+        PetscCall(reduce_statistics(
+            IEN_map.communicator(), mass->statistics));
+    }
     PetscCall(finalize_vector(load->vector));
+    PetscCall(reduce_statistics(IEN_map.communicator(), load->statistics));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
