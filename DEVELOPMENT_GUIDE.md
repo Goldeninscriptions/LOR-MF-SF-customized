@@ -201,7 +201,7 @@ PETSc 和 SLEPc 是当前主程序的必需依赖。OpenMP 可以由 CMake 查�
 核心循环尚未并行化。PETSc 在本机由 MPICH wrapper 构建，因此编译器使用
 `mpicc/mpicxx` 保证 ABI 一致；程序仍按单进程原型运行。
 
-机器相关路径位于 `conf/system_lib_loading.cmake`，Linux 模板位于
+机器相关路径位于被 Git 忽略的 `conf/system_lib_loading.cmake`，Linux 模板位于
 `conf/system_lib_loading.linux.example.cmake`。可通过
 `SYSTEM_LIB_LOADING_FILE` 指向仓库外的机器配置。
 
