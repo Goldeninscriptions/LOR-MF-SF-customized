@@ -1,3 +1,4 @@
 .DS_Store
 build/
 conf/system_lib_loading.cmake
+*.log
