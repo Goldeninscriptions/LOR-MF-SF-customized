@@ -6,10 +6,11 @@
 namespace lor
 {
 
-// Exact tensor-product B-spline degree elevation. Every parameter direction
-// is elevated to the same target degree required by the paper. Interior knot
-// multiplicities grow with the degree increment, preserving the original
-// continuity, element partition, spline space nesting, and physical geometry.
+// Exact tensor-product B-spline degree elevation using the standard Bezier
+// elevation and knot-removal procedure of Algorithm A5.9. Every parameter
+// direction is elevated to the same target degree required by the paper.
+// Interior knot multiplicities grow with the degree increment, preserving the
+// original continuity, element partition, nesting, and physical geometry.
 template <int Dim>
 class PRefinement
 {
