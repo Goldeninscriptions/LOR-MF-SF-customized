@@ -105,6 +105,19 @@ ExperimentOptions read_experiment_options(const int dimension)
         &options.tolerances.inner_max_it, nullptr);
     PetscOptionsGetReal(nullptr, nullptr, "-svd_tol",
         &options.svd_tolerance, nullptr);
+
+    // Read generous but user-adjustable SLEPc iteration and search-subspace
+    // limits for the difficult smallest-singular-value calculations.
+    PetscOptionsGetInt(nullptr, nullptr, "-svd_max_it",
+        &options.svd_max_iterations, nullptr);
+    PetscOptionsGetInt(nullptr, nullptr, "-svd_ncv",
+        &options.svd_subspace_dimension, nullptr);
+    if (!(options.svd_tolerance > 0.0))
+        throw std::invalid_argument("-svd_tol must be positive");
+    if (options.svd_max_iterations < 1)
+        throw std::invalid_argument("-svd_max_it must be positive");
+    if (options.svd_subspace_dimension < 2)
+        throw std::invalid_argument("-svd_ncv must be at least two");
     return options;
 }
 

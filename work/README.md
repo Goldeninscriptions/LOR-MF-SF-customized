@@ -56,6 +56,16 @@ lor_points="greville"
 
 lor_pc="cg_lu"
 # lor_pc="gmres_shell"
+
+svd_tol="1.0e-8"
+svd_max_it="100000"
+svd_ncv="100"
+```
+
+单算例也可以用环境变量覆盖 SVD 设置，例如：
+
+```bash
+SVD_MAX_IT=200000 SVD_NCV=160 ./work/run_case.sh ...
 ```
 
 先预览 15 个 case 而不启动求解：

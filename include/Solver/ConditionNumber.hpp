@@ -17,8 +17,11 @@ struct ConditionNumberResult
 };
 
 // Compute cond_2(K) and cond_2(K_LOR^{-1}K) independently of the linear KSP.
+// max_iterations and subspace_dimension configure each of the four SLEPc SVD
+// solves; prefixed SLEPc command-line options may still override them.
 PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
     Mat lor_stiffness, PetscReal svd_tolerance,
+    PetscInt max_iterations, PetscInt subspace_dimension,
     ConditionNumberResult *original,
     ConditionNumberResult *preconditioned);
 

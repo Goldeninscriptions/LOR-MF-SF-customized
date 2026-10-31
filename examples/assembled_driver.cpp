@@ -218,7 +218,8 @@ PetscErrorCode run_experiment(const lor::GeometryInput &geometry_input,
     lor::ConditionNumberResult preconditioned_condition;
     PetscCall(lor::compute_stiffness_condition_numbers(
         high_system.stiffness, lor_system.stiffness,
-        options.svd_tolerance, &original_condition,
+        options.svd_tolerance, options.svd_max_iterations,
+        options.svd_subspace_dimension, &original_condition,
         &preconditioned_condition));
 
     // Record actual refined-space metadata and the six numerical diagnostics.

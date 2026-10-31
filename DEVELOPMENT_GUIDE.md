@@ -88,6 +88,8 @@ geometry txt
 - `gmres_shell`：外层 restarted GMRES，`PCSHELL` 内部使用 CG+Jacobi 近似应用
   LOR 逆；
 - SLEPc 分别计算 `cond_2(K)` 与 `cond_2(K_LOR^{-1}K)`；
+- SVD 默认允许 100000 次迭代，并为最小奇异值使用最多 100 维搜索子空间；
+  `-svd_max_it`、`-svd_ncv` 和 `-svd_tol` 可以逐次覆盖；
 - 制造解模块和误差模块计算高阶数值解的物理域 L2 误差。
 
 ## 4. 当前限制

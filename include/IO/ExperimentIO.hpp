@@ -29,9 +29,13 @@ struct ExperimentOptions
     std::string lor_points = "greville";
     LORPCMode lor_pc = LORPCMode::cg_lu;
 
-    // KSP stopping controls and independent SLEPc singular-value tolerance.
+    // KSP stopping controls and independent SLEPc singular-value controls.
+    // The larger defaults are intended for very ill-conditioned high-order
+    // stiffness matrices; command-line options may reduce or enlarge them.
     SolverTolerances tolerances;
     PetscReal svd_tolerance = 1.0e-8;
+    PetscInt svd_max_iterations = 100000;
+    PetscInt svd_subspace_dimension = 100;
 };
 
 // Self-describing experiment record used by both direct and batch workflows.

@@ -73,6 +73,12 @@ inner_atol="1.0e-10"
 inner_dtol="1.0e4"
 inner_max_it="10000"
 
+# SLEPc defaults may be overridden through environment variables without
+# lengthening the positional single-case interface.
+svd_tol=${SVD_TOL:-1.0e-8}
+svd_max_it=${SVD_MAX_IT:-100000}
+svd_ncv=${SVD_NCV:-100}
+
 # Explicit command-line residuals override the mode defaults.
 if [[ $# -eq 11 ]]; then
   outer_rtol=$8
@@ -92,6 +98,9 @@ common_options=(
   -outer_atol "$outer_atol"
   -outer_dtol "$outer_dtol"
   -outer_max_it "$outer_max_it"
+  -svd_tol "$svd_tol"
+  -svd_max_it "$svd_max_it"
+  -svd_ncv "$svd_ncv"
   -output "$output_file"
 )
 
@@ -104,5 +113,5 @@ if [[ "$lor_pc" == "gmres_shell" ]]; then
   )
 fi
 
-echo "[run] refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc"
+echo "[run] refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
 "$driver" "${common_options[@]}"

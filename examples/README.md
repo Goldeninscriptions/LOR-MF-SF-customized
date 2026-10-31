@@ -65,6 +65,7 @@ make -j
 
 - `-lor_points greville|demko`；
 - `-lor_pc cg_lu|gmres_shell`；
+- `-svd_tol`、`-svd_max_it`、`-svd_ncv` 控制四个 SLEPc 极端奇异值求解；
 - `cg_lu` 使用外层 CG 和精确 LOR LU；
 - `gmres_shell` 使用外层 restarted GMRES 和 PCSHELL 内层 CG/Jacobi。
 

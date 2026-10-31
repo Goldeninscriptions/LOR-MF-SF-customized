@@ -38,6 +38,11 @@ lor_points="greville"
 
 lor_pc="cg_lu"
 # lor_pc="gmres_shell"
+
+# SLEPc controls for the potentially difficult smallest singular values.
+svd_tol="1.0e-8"
+svd_max_it="100000"
+svd_ncv="100"
 # -------------------------------------------------------------------------
 
 mkdir -p "$result_dir" "$console_dir"
@@ -52,7 +57,7 @@ batch_start=$(date +%s)
 echo "Planned $total cases from geometry: $geometry_file"
 for degree in "${degrees[@]}"; do
   for element_tuple in "${element_cases[@]}"; do
-    echo "  refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc"
+    echo "  refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
   done
 done
 
@@ -62,7 +67,7 @@ if [[ ${BATCH_DRY_RUN:-0} == 1 ]]; then
   exit 0
 fi
 
-printf 'case\tstatus\trefinement\tp\tn\tpoint_set\tlor_pc\telapsed_s\tresult\tconsole\n' > "$summary_file"
+printf 'case\tstatus\trefinement\tp\tn\tpoint_set\tlor_pc\tsvd_tol\tsvd_max_it\tsvd_ncv\telapsed_s\tresult\tconsole\n' > "$summary_file"
 
 for degree in "${degrees[@]}"; do
   for element_tuple in "${element_cases[@]}"; do
@@ -74,7 +79,8 @@ for degree in "${degrees[@]}"; do
     case_start=$(date +%s)
 
     echo "[$case_number/$total] starting refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc"
-    if "$script_dir/run_case.sh" "$geometry_file" "$refinement" "$degree" \
+    if SVD_TOL="$svd_tol" SVD_MAX_IT="$svd_max_it" SVD_NCV="$svd_ncv" \
+      "$script_dir/run_case.sh" "$geometry_file" "$refinement" "$degree" \
       "$element_tuple" "$lor_points" "$lor_pc" "$result_file" \
       2>&1 | tee "$console_file"; then
       status="success"
@@ -85,9 +91,10 @@ for degree in "${degrees[@]}"; do
 
     case_end=$(date +%s)
     elapsed=$((case_end-case_start))
-    printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n' \
+    printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n' \
       "$case_number" "$status" "$refinement" "$degree" "$element_tuple" \
-      "$lor_points" "$lor_pc" "$elapsed" "$result_file" "$console_file" \
+      "$lor_points" "$lor_pc" "$svd_tol" "$svd_max_it" "$svd_ncv" \
+      "$elapsed" "$result_file" "$console_file" \
       >> "$summary_file"
     echo "[$case_number/$total] $status in $elapsed s; result=$result_file"
   done

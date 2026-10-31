@@ -3,7 +3,7 @@
 | 文件 | 当前实现 | 调用关系 |
 |---|---|---|
 | `BSplinePatch.cpp` | 验证 Patch；建立 basis shape、active spans、element spans 和 boundary multi-indices；通过一维 B-spline 值做几何单点/张量网格求值；执行 Boehm knot insertion | 所有几何和高阶拓扑的中心对象 |
-| `PRefinement.cpp` | 构造提高 multiplicity 的目标 knot vectors；在目标 Greville 张量网格采样旧几何；用逐方向带主元 LU 解 target-basis transformation 得到升阶控制点 | 保持旧连续性、元素划分和几何到舍入误差 |
+| `PRefinement.cpp` | 对每条张量 fiber 执行《The NURBS Book》Algorithm A5.9：Bezier 分段升阶并移除临时分解 knots，再逐方向重组控制网格 | 不依赖配点线性求解；保持旧连续性、元素划分和几何到舍入误差 |
 | `HRefinement.cpp` | 构造目标均匀 breakpoints，验证包含全部旧断点，对缺失断点调用 Patch knot insertion | 每方向目标 \(n_i\) 独立，次数不变 |
 | `KRefinement.cpp` | 依次构造并调用 PRefinement 和 HRefinement | 实现经典“先升阶、后插节点”语义 |
 | `LORPointSet.cpp` | 验证任意显式 point set；生成 Greville 点；实现逐方向 Greville 初始化的 Demko/Remez 插值、极值搜索与等振荡检查 | 输出参数点给 LORMesh；不计算物理几何 |
