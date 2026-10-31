@@ -11,7 +11,7 @@ KSP 应用方式、SLEPc 条件数和 L2 误差分析。Matrix-free 与 sum fact
 - 各方向相同次数、独立 knot vector 和独立 \(n_i\)；
 - 数学正确的 p-/h-/k-refinement；
 - 全边界齐次 Dirichlet 条件；
-- 高阶刚度、质量、荷载和 LOR Q1 刚度、质量、荷载组装；
+- 高阶与 LOR Q1 的刚度、质量、荷载独立按需组装；
 - `greville|demko` LOR point set；
 - `cg_lu|gmres_shell` 两种 LOR 求解配置；
 - `cond_2(K)`、`cond_2(K_LOR^{-1}K)`、外层迭代数和 L2 误差输出；

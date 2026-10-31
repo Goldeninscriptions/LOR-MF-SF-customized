@@ -17,9 +17,9 @@ sum-factorization 的数值参考。
 3. `Patch::boundaries -> LexicographicOrdering -> DirichletBC -> ID` 建立全边界
    齐次约束；
 4. 预计算逐方向 `BSplineBasis1D` Gauss 表，通过 `BSplineIEN` 和
-   `GlobalAssembly` 组装高阶 K、M、F；
+   `GlobalAssembly` 的 `stiffness+load` 融合入口组装本算例需要的高阶 K 与 F；
 5. `GrevillePointSet|DemkoPointSet -> LORMesh -> LORIEN -> GlobalAssembly`
-   组装 Q1 LOR 系统；
+   只组装作为预条件器的 Q1 LOR 刚度矩阵；
 6. 分别调用无预条件和 LOR 预条件 Solver；
 7. `ErrorAnalysis` 和 `ConditionNumber` 生成论文当前需要的六项数值指标。
 
@@ -84,3 +84,5 @@ L2_error(K_LOR^{-1}K)
 
 条件数来自独立 SLEPc SVD，不由 CG/GMRES 迭代投影估计。两个 L2 error 都针对同一
 高阶系统 `K u=F`；LOR 系统只作为预条件器，不作为另一个 PDE 解进行误差比较。
+质量矩阵接口仍由 Assembly 提供，但该 Laplace Driver 不请求它，因此运行时不会
+产生高阶或 LOR 质量矩阵。

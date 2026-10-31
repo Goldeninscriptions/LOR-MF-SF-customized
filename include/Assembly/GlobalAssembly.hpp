@@ -17,74 +17,150 @@ namespace lor
 
 struct AssemblyStatistics
 {
-    // Extremal geometry-Jacobian determinants over all assembled elements.
+    // Extremal geometry-Jacobian determinants over the quadrature points
+    // visited by this one independently requested global assembly.
     double min_det_jac = 0.0;
     double max_det_jac = 0.0;
 };
 
-// PETSc objects produced by one complete scalar global assembly. The caller
-// owns these handles and releases them with destroy_global_system().
-struct GlobalAssemblyResult
+// One independently assembled reduced PETSc matrix. The variable holding this
+// object determines whether matrix is stiffness or mass; the caller releases
+// it with destroy_global_matrix().
+struct GlobalMatrixAssemblyResult
 {
-    GlobalAssemblyResult() = default;
-    GlobalAssemblyResult(const GlobalAssemblyResult &) = delete;
-    GlobalAssemblyResult &operator=(const GlobalAssemblyResult &) = delete;
+    GlobalMatrixAssemblyResult() = default;
+    GlobalMatrixAssemblyResult(const GlobalMatrixAssemblyResult &) = delete;
+    GlobalMatrixAssemblyResult &operator=(
+        const GlobalMatrixAssemblyResult &) = delete;
 
-    // Reduced stiffness matrix after homogeneous Dirichlet elimination.
-    Mat stiffness = nullptr;
+    // Reduced symmetric matrix after homogeneous Dirichlet elimination.
+    Mat matrix = nullptr;
 
-    // Reduced consistent mass matrix using the same ID numbering.
-    Mat mass = nullptr;
-
-    // Reduced load vector using ID as its PETSc index.
-    Vec load = nullptr;
-
-    // Geometry diagnostics accumulated during element traversal.
+    // Geometry diagnostics from this matrix's element traversal.
     AssemblyStatistics statistics;
 };
 
-// Destroy every PETSc object owned by result and reset its handles to null.
-PetscErrorCode destroy_global_system(GlobalAssemblyResult *result);
+// One independently assembled reduced PETSc vector. The caller owns vector
+// and releases it with destroy_global_vector().
+struct GlobalVectorAssemblyResult
+{
+    GlobalVectorAssemblyResult() = default;
+    GlobalVectorAssemblyResult(const GlobalVectorAssemblyResult &) = delete;
+    GlobalVectorAssemblyResult &operator=(
+        const GlobalVectorAssemblyResult &) = delete;
 
-// Assemble the high-order B-spline stiffness, mass, and load in one element
-// traversal. Geometry/basis data remain owned by Patch and Element.
+    // Reduced load vector indexed by unconstrained ID values.
+    Vec vector = nullptr;
+
+    // Geometry diagnostics from this vector's element traversal.
+    AssemblyStatistics statistics;
+};
+
+// Destroy one independently owned PETSc result and reset its handle to null.
+PetscErrorCode destroy_global_matrix(GlobalMatrixAssemblyResult *result);
+PetscErrorCode destroy_global_vector(GlobalVectorAssemblyResult *result);
+
+// Assemble only the high-order B-spline stiffness matrix.
 template <int Dim>
-PetscErrorCode assemble_global_system(
-    const BSplinePatch<Dim> &patch,
-    const BSplineIEN<Dim> &IEN,
-    const ID &ID_map,
-    const QuadratureRule1D &quad,
+PetscErrorCode assemble_global_stiffness(
+    const BSplinePatch<Dim> &patch, const BSplineIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    const std::vector<BSplineBasis1D> &basis_tables,
+    GlobalMatrixAssemblyResult *result);
+
+// Assemble only the high-order B-spline consistent mass matrix.
+template <int Dim>
+PetscErrorCode assemble_global_mass(
+    const BSplinePatch<Dim> &patch, const BSplineIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    const std::vector<BSplineBasis1D> &basis_tables,
+    GlobalMatrixAssemblyResult *result);
+
+// Assemble only the high-order B-spline load vector.
+template <int Dim>
+PetscErrorCode assemble_global_load(
+    const BSplinePatch<Dim> &patch, const BSplineIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
     const std::vector<BSplineBasis1D> &basis_tables,
     const ScalarSource<Dim> &source,
-    GlobalAssemblyResult *result);
+    GlobalVectorAssemblyResult *result);
 
-// Assemble the LOR Quad4/Hex8 stiffness, mass, and load with the same ID used
-// by the coefficient-aligned high-order space.
+// Assemble only the LOR Quad4/Hex8 stiffness matrix.
 template <int Dim>
-PetscErrorCode assemble_global_system(
-    const LORMesh<Dim> &mesh,
-    const LORIEN<Dim> &IEN,
-    const ID &ID_map,
-    const QuadratureRule1D &quad,
-    const ScalarSource<Dim> &source,
-    GlobalAssemblyResult *result);
+PetscErrorCode assemble_global_stiffness(
+    const LORMesh<Dim> &mesh, const LORIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    GlobalMatrixAssemblyResult *result);
 
-extern template PetscErrorCode assemble_global_system<2>(
-    const BSplinePatch<2> &, const BSplineIEN<2> &, const ID &,
-    const QuadratureRule1D &, const std::vector<BSplineBasis1D> &,
-    const ScalarSource<2> &, GlobalAssemblyResult *);
-extern template PetscErrorCode assemble_global_system<3>(
-    const BSplinePatch<3> &, const BSplineIEN<3> &, const ID &,
-    const QuadratureRule1D &, const std::vector<BSplineBasis1D> &,
-    const ScalarSource<3> &, GlobalAssemblyResult *);
-extern template PetscErrorCode assemble_global_system<2>(
-    const LORMesh<2> &, const LORIEN<2> &, const ID &,
-    const QuadratureRule1D &, const ScalarSource<2> &,
-    GlobalAssemblyResult *);
-extern template PetscErrorCode assemble_global_system<3>(
-    const LORMesh<3> &, const LORIEN<3> &, const ID &,
-    const QuadratureRule1D &, const ScalarSource<3> &,
-    GlobalAssemblyResult *);
+// Assemble only the LOR Quad4/Hex8 consistent mass matrix.
+template <int Dim>
+PetscErrorCode assemble_global_mass(
+    const LORMesh<Dim> &mesh, const LORIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    GlobalMatrixAssemblyResult *result);
+
+// Assemble only the LOR Quad4/Hex8 load vector.
+template <int Dim>
+PetscErrorCode assemble_global_load(
+    const LORMesh<Dim> &mesh, const LORIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    const ScalarSource<Dim> &source,
+    GlobalVectorAssemblyResult *result);
+
+// Assemble high-order stiffness and load in one element/Gauss traversal.
+template <int Dim>
+PetscErrorCode assemble_global_stiffness_load(
+    const BSplinePatch<Dim> &patch, const BSplineIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    const std::vector<BSplineBasis1D> &basis_tables,
+    const ScalarSource<Dim> &source,
+    GlobalMatrixAssemblyResult *stiffness,
+    GlobalVectorAssemblyResult *load);
+
+// Assemble high-order mass and load in one element/Gauss traversal.
+template <int Dim>
+PetscErrorCode assemble_global_mass_load(
+    const BSplinePatch<Dim> &patch, const BSplineIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    const std::vector<BSplineBasis1D> &basis_tables,
+    const ScalarSource<Dim> &source, GlobalMatrixAssemblyResult *mass,
+    GlobalVectorAssemblyResult *load);
+
+// Assemble every high-order term in one element/Gauss traversal.
+template <int Dim>
+PetscErrorCode assemble_global_stiffness_mass_load(
+    const BSplinePatch<Dim> &patch, const BSplineIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    const std::vector<BSplineBasis1D> &basis_tables,
+    const ScalarSource<Dim> &source,
+    GlobalMatrixAssemblyResult *stiffness,
+    GlobalMatrixAssemblyResult *mass, GlobalVectorAssemblyResult *load);
+
+// Assemble LOR stiffness and load in one cell/Gauss traversal.
+template <int Dim>
+PetscErrorCode assemble_global_stiffness_load(
+    const LORMesh<Dim> &mesh, const LORIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    const ScalarSource<Dim> &source,
+    GlobalMatrixAssemblyResult *stiffness,
+    GlobalVectorAssemblyResult *load);
+
+// Assemble LOR mass and load in one cell/Gauss traversal.
+template <int Dim>
+PetscErrorCode assemble_global_mass_load(
+    const LORMesh<Dim> &mesh, const LORIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    const ScalarSource<Dim> &source, GlobalMatrixAssemblyResult *mass,
+    GlobalVectorAssemblyResult *load);
+
+// Assemble every LOR term in one cell/Gauss traversal.
+template <int Dim>
+PetscErrorCode assemble_global_stiffness_mass_load(
+    const LORMesh<Dim> &mesh, const LORIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    const ScalarSource<Dim> &source,
+    GlobalMatrixAssemblyResult *stiffness,
+    GlobalMatrixAssemblyResult *mass, GlobalVectorAssemblyResult *load);
 
 } // namespace lor
 

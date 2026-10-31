@@ -165,14 +165,18 @@ PetscErrorCode run_experiment(const lor::GeometryInput &geometry_input,
             return manufactured.exact(coor);
         };
 
-    // Assemble the high-order Galerkin system.
+    // Assemble the two high-order terms used by this Laplace solve in one
+    // fused traversal. Mass remains optional and is deliberately not requested.
     const lor::BSplineIEN<Dim> high_IEN(patch);
-    lor::GlobalAssemblyResult high_system;
-    PetscCall(lor::assemble_global_system<Dim>(patch, high_IEN, ID_map,
-        assembly_quad, assembly_basis, source, &high_system));
+    lor::GlobalMatrixAssemblyResult high_stiffness;
+    lor::GlobalVectorAssemblyResult high_load;
+    PetscCall(lor::assemble_global_stiffness_load<Dim>(patch, high_IEN,
+        ID_map, assembly_quad, assembly_basis, source,
+        &high_stiffness, &high_load));
 
     // Construct the selected coefficient-aligned LOR points and assemble its
-    // Q1 stiffness matrix. Its load is not used to solve the high-order PDE.
+    // Q1 stiffness matrix. Neither LOR mass nor LOR load is requested because
+    // the low-order system is used only as a preconditioner.
     std::unique_ptr<lor::LORPointSet<Dim>> lor_points;
     if (options.lor_points == "greville")
         lor_points = std::make_unique<lor::GrevillePointSet<Dim>>(patch);
@@ -181,19 +185,19 @@ PetscErrorCode run_experiment(const lor::GeometryInput &geometry_input,
     const lor::LORMesh<Dim> lor_mesh(patch, *lor_points);
     const lor::LORIEN<Dim> lor_IEN(lor_mesh);
     const lor::QuadratureRule1D lor_quad = lor::gauss_legendre_rule(2);
-    lor::GlobalAssemblyResult lor_system;
-    PetscCall(lor::assemble_global_system<Dim>(lor_mesh, lor_IEN, ID_map,
-        lor_quad, source, &lor_system));
+    lor::GlobalMatrixAssemblyResult lor_stiffness;
+    PetscCall(lor::assemble_global_stiffness<Dim>(
+        lor_mesh, lor_IEN, ID_map, lor_quad, &lor_stiffness));
 
     // Solve the same high-order system first without and then with the LOR
     // preconditioner. Retain both solution vectors for independent L2 errors.
     lor::LinearSolveResult original_solve;
     lor::LinearSolveResult preconditioned_solve;
-    PetscCall(lor::solve_unpreconditioned(high_system.stiffness,
-        high_system.load, options.lor_pc, options.tolerances,
+    PetscCall(lor::solve_unpreconditioned(high_stiffness.matrix,
+        high_load.vector, options.lor_pc, options.tolerances,
         &original_solve));
-    PetscCall(lor::solve_with_lor(high_system.stiffness,
-        lor_system.stiffness, high_system.load, options.lor_pc,
+    PetscCall(lor::solve_with_lor(high_stiffness.matrix,
+        lor_stiffness.matrix, high_load.vector, options.lor_pc,
         options.tolerances, &preconditioned_solve));
 
     // Use a slightly richer rule for the non-polynomial exact-error integral.
@@ -217,7 +221,7 @@ PetscErrorCode run_experiment(const lor::GeometryInput &geometry_input,
     lor::ConditionNumberResult original_condition;
     lor::ConditionNumberResult preconditioned_condition;
     PetscCall(lor::compute_stiffness_condition_numbers(
-        high_system.stiffness, lor_system.stiffness,
+        high_stiffness.matrix, lor_stiffness.matrix,
         options.svd_tolerance, options.svd_max_iterations,
         options.svd_subspace_dimension, &original_condition,
         &preconditioned_condition));
@@ -262,8 +266,9 @@ PetscErrorCode run_experiment(const lor::GeometryInput &geometry_input,
     // Destroy all PETSc-owned results after output and error analysis.
     PetscCall(lor::destroy_linear_solve_result(&preconditioned_solve));
     PetscCall(lor::destroy_linear_solve_result(&original_solve));
-    PetscCall(lor::destroy_global_system(&lor_system));
-    PetscCall(lor::destroy_global_system(&high_system));
+    PetscCall(lor::destroy_global_matrix(&lor_stiffness));
+    PetscCall(lor::destroy_global_vector(&high_load));
+    PetscCall(lor::destroy_global_matrix(&high_stiffness));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 

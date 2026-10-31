@@ -26,9 +26,9 @@ geometry txt
   -> PRefinement / HRefinement / KRefinement
   -> refined analysis BSplinePatch
   -> boundary multi_index -> DirichletBC -> ID
-  -> BSplineIEN -> BSplineElement -> LocalAssembly -> PETSc K, M, F
+  -> BSplineIEN -> BSplineElement -> LocalAssembly -> 按需组装 PETSc K / M / F
   -> GrevillePointSet / DemkoPointSet
-  -> LORMesh -> LORIEN -> FEMQuad4/FEMHex8 -> PETSc K_LOR, M_LOR, F_LOR
+  -> LORMesh -> LORIEN -> FEMQuad4/FEMHex8 -> 按需组装 PETSc K_LOR / M_LOR / F_LOR
   -> cg_lu / gmres_shell
   -> SLEPc condition numbers + L2 error + result log
 ```
@@ -81,9 +81,16 @@ geometry txt
 - `LexicographicOrdering` 独占 `multi_index <-> global_index` 转换；
 - `DirichletBC` 只消费 Patch 给出的边界 `multi_index` 和一个 Ordering；
 - `ID` 将全边界齐次 Dirichlet 自由度标为 `-1`，其余自由度连续编号；
-- `LocalAssembly` 在一次 quadrature 遍历中同时计算刚度、相容质量和荷载；
+- `LocalAssembly` 分别提供局部刚度、相容质量和荷载接口；每次调用只积分并分配
+  被请求的一个局部对象；
+- `LocalAssembly` 和 `GlobalAssembly` 还提供 `stiffness+load`、`mass+load` 与
+  `stiffness+mass+load` 三种融合入口，在调用者需要多个对象时复用单元构造、
+  Gauss 遍历、几何测度和索引转换；
 - `GlobalAssembly` 对高阶 IGA 和 LOR Q1 使用相同的
-  gather -> element -> local assembly -> IEN/ID scatter 结构；
+  gather -> element -> local assembly -> IEN/ID scatter 结构，并分别提供刚度、
+  质量和荷载入口；
+- 当前 Driver 通过融合入口请求高阶刚度与荷载，并单独请求作为预条件器的 LOR
+  刚度；质量矩阵和 LOR 荷载不会被隐式构造；
 - `cg_lu`：外层 CG，LOR 矩阵用 LU 精确应用；
 - `gmres_shell`：外层 restarted GMRES，`PCSHELL` 内部使用 CG+Jacobi 近似应用
   LOR 逆；
