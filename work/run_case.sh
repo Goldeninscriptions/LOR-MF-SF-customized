@@ -6,7 +6,7 @@ set -euo pipefail
 #       [OUTER_RTOL OUTER_ATOL INNER_RTOL INNER_ATOL]
 # Automatic-rank example:
 #   ./run_case.sh default input/square_2d.txt k_refine 5 16,16 greville gmres_shell \
-#     results/p5_n16x16_gmres_shell.log 1e-10 1e-10 1e-10 1e-10
+#     results/p5_n16x16_gmres_shell.log 1e-12 1e-14 1e-12 1e-14
 # Alternative exact-LU research mode (uncomment to use as a command):
 # ./run_case.sh 8 input/square_2d.txt k_refine 5 16,16 greville cg_lu \
 #     results/p5_n16x16_cg_lu.log 1e-10 1e-12 1e-10 1e-10
@@ -94,16 +94,16 @@ if [[ "$lor_pc" == "cg_lu" ]]; then
   outer_atol="1.0e-12"
   outer_dtol="1.0e8"
 elif [[ "$lor_pc" == "gmres_shell" ]]; then
-  outer_rtol="1.0e-10"
-  outer_atol="1.0e-10"
+  outer_rtol="1.0e-12"
+  outer_atol="1.0e-14"
   outer_dtol="1.0e4"
 else
   echo "LOR_PC must be cg_lu or gmres_shell" >&2
   exit 2
 fi
 outer_max_it="10000"
-inner_rtol="1.0e-10"
-inner_atol="1.0e-10"
+inner_rtol="1.0e-12"
+inner_atol="1.0e-14"
 inner_dtol="1.0e4"
 inner_max_it="10000"
 
@@ -112,6 +112,23 @@ inner_max_it="10000"
 svd_tol=${SVD_TOL:-1.0e-8}
 svd_max_it=${SVD_MAX_IT:-100000}
 svd_ncv=${SVD_NCV:-100}
+
+# Independent experiment features. Environment variables make the single-case
+# launcher configurable without lengthening its positional interface.
+compute_solution=${COMPUTE_SOLUTION:-true}
+compute_l2_error=${COMPUTE_L2_ERROR:-true}
+compute_condition_number=${COMPUTE_CONDITION_NUMBER:-false}
+for feature_value in \
+  "$compute_solution" "$compute_l2_error" "$compute_condition_number"; do
+  if [[ "$feature_value" != "true" && "$feature_value" != "false" ]]; then
+    echo "COMPUTE_SOLUTION, COMPUTE_L2_ERROR, and COMPUTE_CONDITION_NUMBER must be true or false" >&2
+    exit 2
+  fi
+done
+if [[ "$compute_l2_error" == "true" && "$compute_solution" != "true" ]]; then
+  echo "COMPUTE_L2_ERROR=true requires COMPUTE_SOLUTION=true" >&2
+  exit 2
+fi
 
 # Explicit command-line residuals override the mode defaults.
 if [[ $# -eq 12 ]]; then
@@ -128,6 +145,9 @@ common_options=(
   -n "$element_tuple"
   -lor_points "$lor_points"
   -lor_pc "$lor_pc"
+  -compute_solution "$compute_solution"
+  -compute_l2_error "$compute_l2_error"
+  -compute_condition_number "$compute_condition_number"
   -outer_rtol "$outer_rtol"
   -outer_atol "$outer_atol"
   -outer_dtol "$outer_dtol"
@@ -151,5 +171,5 @@ fi
 # can still override MPIEXEC when their cluster exposes another launcher name.
 export OMP_NUM_THREADS=1
 mpi_launcher=${MPIEXEC:-mpirun}
-echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol inner_rtol=$inner_rtol inner_atol=$inner_atol svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
 "$mpi_launcher" -n "$mpi_ranks" "$driver" "${common_options[@]}"

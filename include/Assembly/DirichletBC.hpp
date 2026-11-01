@@ -10,8 +10,8 @@ namespace lor
 {
 
 // Convert tensor-product boundary multi_index sets into immutable global_index
-// sets used by ID and global assembly. The current paper prototype
-// applies homogeneous Dirichlet conditions on every patch boundary.
+// sets used by ID and global assembly. This class records constraint topology;
+// prescribed coefficient values are stored separately as a Dirichlet lift.
 template <int Dim>
 class DirichletBC
 {
@@ -41,7 +41,7 @@ public:
         int boundary_id) const;
 
     // Return the sorted, duplicate-free global_index values constrained by
-    // the full homogeneous Dirichlet condition.
+    // the full-patch Dirichlet condition.
     const std::vector<int> &constrained_global_indices() const noexcept
     {
         return constrained_global_indices_;

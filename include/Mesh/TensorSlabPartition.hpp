@@ -32,8 +32,8 @@ class TensorSlabPartition
 public:
     using Shape = std::array<int, Dim>;
 
-    // Build a balanced slab partition on comm. All-boundary homogeneous
-    // Dirichlet numbering is validated against ID because contiguous ownership
+    // Build a balanced slab partition on comm. All-boundary Dirichlet
+    // constraint topology is validated against ID because contiguous ownership
     // relies on each directional boundary layer being removed.
     TensorSlabPartition(const BSplinePatch<Dim> &patch,
         const LORMesh<Dim> &lor_mesh, const ID &ID_map,

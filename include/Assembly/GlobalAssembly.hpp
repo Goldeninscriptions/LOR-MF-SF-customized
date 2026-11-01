@@ -33,7 +33,7 @@ struct GlobalMatrixAssemblyResult
     GlobalMatrixAssemblyResult &operator=(
         const GlobalMatrixAssemblyResult &) = delete;
 
-    // Reduced symmetric matrix after homogeneous Dirichlet elimination.
+    // Reduced symmetric matrix after constrained rows and columns are omitted.
     Mat matrix = nullptr;
 
     // Geometry diagnostics from this matrix's element traversal.
@@ -56,9 +56,27 @@ struct GlobalVectorAssemblyResult
     AssemblyStatistics statistics;
 };
 
+// Extreme singular values and ordinary 2-norm condition number of one
+// globally assembled distributed operator.
+struct ConditionNumberResult
+{
+    PetscReal sigma_min = 0.0;
+    PetscReal sigma_max = 0.0;
+    PetscReal condition_number = 0.0;
+};
+
 // Destroy one independently owned PETSc result and reset its handle to null.
 PetscErrorCode destroy_global_matrix(GlobalMatrixAssemblyResult *result);
 PetscErrorCode destroy_global_vector(GlobalVectorAssemblyResult *result);
+
+// Independently analyze cond_2(K) and cond_2(K_LOR^{-1}K). This expensive
+// SLEPc operation is never implied by matrix assembly; experiment orchestration
+// must call it explicitly when the user enables condition-number analysis.
+PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
+    Mat lor_stiffness, PetscReal svd_tolerance,
+    PetscInt max_iterations, PetscInt subspace_dimension,
+    ConditionNumberResult *original,
+    ConditionNumberResult *preconditioned);
 
 // Assemble only the high-order B-spline stiffness matrix.
 template <int Dim>
@@ -114,6 +132,20 @@ PetscErrorCode assemble_global_stiffness_load(
     const ID &ID_map, const QuadratureRule1D &quad,
     const std::vector<BSplineBasis1D> &basis_tables,
     const ScalarSource<Dim> &source,
+    GlobalMatrixAssemblyResult *stiffness,
+    GlobalVectorAssemblyResult *load);
+
+// Assemble the reduced high-order stiffness and source load for prescribed
+// B-spline Dirichlet coefficients g. Free rows receive the exact elimination
+// correction -K_fc*g_c; constrained entries of the full coefficient vector
+// are never inserted into the reduced PETSc system.
+template <int Dim>
+PetscErrorCode assemble_global_stiffness_load_with_dirichlet(
+    const BSplinePatch<Dim> &patch, const BSplineIEN<Dim> &IEN,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    const std::vector<BSplineBasis1D> &basis_tables,
+    const ScalarSource<Dim> &source,
+    const std::vector<double> &dirichlet_coefficients,
     GlobalMatrixAssemblyResult *stiffness,
     GlobalVectorAssemblyResult *load);
 

@@ -1,12 +1,12 @@
 /*
  * Manufactured solution used by this driver:
  *
- *   u_exact(x) = product_d sin(pi (x_d-a_d)/(b_d-a_d)),
- *   f(x) = -Delta u_exact
- *        = [sum_d (pi/(b_d-a_d))^2] u_exact(x).
+ *   u_exact(x) = 1 + sum_d x_d + geometry-compatible zero-trace bubble(x).
  *
- * ManufacturedSolution implements and validates this formula; the executable
- * remains responsible only for runtime initialization and dimension dispatch.
+ * Its nonzero physical Dirichlet trace is represented exactly through the
+ * B-spline geometry coefficients on affine or curved Patches, while the
+ * interior bubble supplies a nonzero source and discretization error. This
+ * executable only initializes the runtime and dispatches the dimension.
  */
 
 #include "IO/DistributedGeometryInput.hpp"

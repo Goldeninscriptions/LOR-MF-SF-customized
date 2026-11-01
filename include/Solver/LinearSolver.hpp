@@ -13,7 +13,8 @@ enum class LORPCMode
     // Outer CG with an exact LU application of the SPD LOR matrix.
     cg_lu,
 
-    // Outer restarted GMRES with PCSHELL and inner CG/Jacobi LOR solves.
+    // Outer right-preconditioned restarted GMRES with PCSHELL and inner
+    // CG/Jacobi LOR solves.
     gmres_shell
 };
 
@@ -22,14 +23,14 @@ enum class LORPCMode
 struct SolverTolerances
 {
     // Stopping thresholds and iteration limit for the outer K or PC(K) solve.
-    PetscReal outer_rtol = 1.0e-10;
-    PetscReal outer_atol = 1.0e-12;
+    PetscReal outer_rtol = 1.0e-12;
+    PetscReal outer_atol = 1.0e-14;
     PetscReal outer_dtol = 1.0e8;
     PetscInt outer_max_it = 10000;
 
     // Stopping thresholds and limit for each inner K_LOR CG application.
-    PetscReal inner_rtol = 1.0e-10;
-    PetscReal inner_atol = 1.0e-10;
+    PetscReal inner_rtol = 1.0e-12;
+    PetscReal inner_atol = 1.0e-14;
     PetscReal inner_dtol = 1.0e4;
     PetscInt inner_max_it = 10000;
 };
@@ -50,6 +51,10 @@ struct LinearSolveResult
     // Common physical residual ||F-Ku||_2 recomputed after convergence.
     PetscReal residual_norm = 0.0;
 
+    // Scale-independent physical residual ||F-Ku||_2/||F||_2. For a zero
+    // right-hand side this stores the absolute residual instead.
+    PetscReal relative_residual_norm = 0.0;
+
     // PETSc termination code for the outer KSP.
     KSPConvergedReason reason = KSP_CONVERGED_ITERATING;
 };
@@ -64,7 +69,7 @@ PetscErrorCode solve_unpreconditioned(Mat stiffness, Vec load,
     LinearSolveResult *result);
 
 // Solve K u = F with either CG+LU(K_LOR) or the legacy-style
-// GMRES+PCSHELL+inner-CG/Jacobi LOR application.
+// right-preconditioned GMRES+PCSHELL+inner-CG/Jacobi LOR application.
 PetscErrorCode solve_with_lor(Mat stiffness, Mat lor_stiffness, Vec load,
     LORPCMode mode, const SolverTolerances &tolerances,
     LinearSolveResult *result);

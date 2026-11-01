@@ -7,8 +7,8 @@ namespace lor
 {
 
 // Immutable global_index-to-ID map. DirichletBC supplies constrained
-// global_index values; their ID entries are -1 and every remaining entry is
-// numbered consecutively for global matrix and vector assembly.
+// global_index values; their ID entries are -1 regardless of prescribed value,
+// while every remaining entry is numbered consecutively for reduced assembly.
 class ID
 {
 public:

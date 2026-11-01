@@ -8,8 +8,8 @@
 | `IO/` | `GeometryInput`、`HardwareConcurrency`、`ExperimentOptions`、Patch 转换与结果输出 | 把几何、硬件和 PETSc options 转成 planner、Mesh 和 Solver 可消费的数据 |
 | `Mesh/` | Patch、三种 refinement、point set、LOR mesh、IEN、ID | 保存全局拓扑、几何和代数编号，不计算单元积分 |
 | `Element/` | B-spline/Q1 基函数和高阶/低阶单元积分点数据 | 从 Mesh gather 几何，由 Assembly 只读消费 |
-| `Assembly/` | ordering、Dirichlet、局部与 PETSc 全局组装 | 组合 Mesh 的映射和 Element 的积分数据 |
-| `Solver/` | KSP、条件数、误差和制造解接口 | 消费 Assembly 产生的系统和高阶离散信息 |
+| `Assembly/` | ordering、Dirichlet、局部/全局组装与条件数入口 | 组合 Mesh/Element 数据；按显式调用执行 SLEPc 谱分析 |
+| `Solver/` | KSP、误差、制造解和实验编排接口 | 按功能开关消费 Assembly 产生的系统和高阶离散信息 |
 
 具体到每个头文件的职责见相应子目录 README。接口设计的关键约束是：Element
 不持有 IEN/ID 或矩阵，index 转换只由 `LexicographicOrdering` 完成，PETSc 对象只从

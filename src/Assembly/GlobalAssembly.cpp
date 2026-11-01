@@ -5,6 +5,9 @@
 #include "Element/FEMQ1Basis.hpp"
 #include "Element/FEMQuad4.hpp"
 
+#include <petscksp.h>
+#include <slepcsvd.h>
+
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -49,8 +52,8 @@ PetscErrorCode create_matrix(const MPI_Comm comm, const PetscInt local_size,
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-// Create one reduced load vector and configure ID=-1 entries to be ignored
-// during homogeneous Dirichlet scatter.
+// Create one reduced load vector and configure ID=-1 constrained entries to
+// be ignored during scatter.
 PetscErrorCode create_vector(const MPI_Comm comm, const PetscInt local_size,
     const PetscInt global_size, GlobalVectorAssemblyResult &result)
 {
@@ -147,7 +150,7 @@ PetscErrorCode add_local_matrix(Mat matrix, const IEN &IEN_map,
 }
 
 // Scatter one local source vector into the independently selected global load
-// vector; configured negative indices apply zero Dirichlet elimination.
+// vector; configured negative indices omit constrained equations.
 PetscErrorCode add_local_vector(Vec vector, const IEN &IEN_map,
     const ID &ID_map, const std::size_t element,
     const LocalVectorAssemblyResult &local,
@@ -506,7 +509,8 @@ PetscErrorCode assemble_high_order_with_load(
     const std::vector<BSplineBasis1D> &basis_tables,
     const ScalarSource<Dim> &source,
     GlobalMatrixAssemblyResult *stiffness,
-    GlobalMatrixAssemblyResult *mass, GlobalVectorAssemblyResult *load)
+    GlobalMatrixAssemblyResult *mass, GlobalVectorAssemblyResult *load,
+    const std::vector<double> *dirichlet_coefficients = nullptr)
 {
     PetscFunctionBeginUser;
 
@@ -540,6 +544,14 @@ PetscErrorCode assemble_high_order_with_load(
     if constexpr (DoStiffness && DoMass)
         PetscCheck(stiffness != mass, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP,
             "Stiffness and mass require distinct global matrix results");
+    if (dirichlet_coefficients != nullptr)
+    {
+        PetscCheck(DoStiffness, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP,
+            "Dirichlet elimination requires a stiffness matrix");
+        PetscCheck(dirichlet_coefficients->size() == patch.num_basis(),
+            PETSC_COMM_SELF, PETSC_ERR_ARG_SIZ,
+            "Dirichlet coefficient vector must match the Patch basis count");
+    }
     PetscCall(validate_high_order_inputs(
         patch, IEN_map, ID_map, basis_tables));
 
@@ -591,9 +603,31 @@ PetscErrorCode assemble_high_order_with_load(
             assemble_local_mass_load<Dim>(
                 element, source, local_mass, local_load);
 
+        // Compose the element equation row once. When prescribed coefficients
+        // are present, eliminate constrained columns from every free load row
+        // before the reduced matrix and vector are scattered.
+        build_element_IDs(IEN_map, ID_map, element_index, ID_values);
+        if (dirichlet_coefficients != nullptr)
+            for (int row = 0; row < IEN_map.num_local_basis(); ++row)
+            {
+                if (ID_values[row] < 0)
+                    continue;
+                for (int column = 0;
+                     column < IEN_map.num_local_basis(); ++column)
+                    if (ID_values[column] < 0)
+                    {
+                        const int constrained_global_index =
+                            IEN_map.get_IEN(element_index, column);
+                        local_load.entries[row] -=
+                            local_stiffness.entries[
+                                row * IEN_map.num_local_basis() + column] *
+                            (*dirichlet_coefficients)[
+                                constrained_global_index];
+                    }
+            }
+
         // All fused local results visit identical geometry points, but each
         // global result retains its own diagnostics for independent ownership.
-        build_element_IDs(IEN_map, ID_map, element_index, ID_values);
         if constexpr (DoStiffness)
         {
             update_statistics(local_stiffness, stiffness->statistics);
@@ -758,7 +792,197 @@ PetscErrorCode assemble_lor_with_load(
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+// State for the exact left-LOR-preconditioned shell used only by the optional
+// SLEPc condition-number analysis.
+struct LeftPreconditionedContext
+{
+    Mat stiffness = nullptr;
+    KSP lor_solver = nullptr;
+    Vec work = nullptr;
+};
+
+PetscErrorCode apply_left_preconditioned(Mat matrix, Vec x, Vec y)
+{
+    PetscFunctionBeginUser;
+    LeftPreconditionedContext *context = nullptr;
+    PetscCall(MatShellGetContext(matrix, &context));
+    PetscCall(MatMult(context->stiffness, x, context->work));
+    PetscCall(KSPSolve(context->lor_solver, context->work, y));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+PetscErrorCode apply_left_preconditioned_transpose(Mat matrix, Vec x, Vec y)
+{
+    PetscFunctionBeginUser;
+    LeftPreconditionedContext *context = nullptr;
+    PetscCall(MatShellGetContext(matrix, &context));
+    PetscCall(KSPSolve(context->lor_solver, x, context->work));
+    PetscCall(MatMult(context->stiffness, context->work, y));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Compute one requested extreme singular value with an independently prefixed
+// two-sided TRLanczos solve on the matrix communicator.
+PetscErrorCode extreme_singular_value(Mat matrix, const SVDWhich which,
+    const char *prefix, const PetscReal tolerance,
+    const PetscInt max_iterations,
+    const PetscInt requested_subspace_dimension, PetscReal &sigma)
+{
+    PetscFunctionBeginUser;
+    const MPI_Comm comm = PetscObjectComm(
+        reinterpret_cast<PetscObject>(matrix));
+
+    // Clamp the Krylov space to the operator dimension while retaining one
+    // expansion vector beyond the requested singular triplet.
+    PetscInt rows = 0;
+    PetscInt columns = 0;
+    PetscCall(MatGetSize(matrix, &rows, &columns));
+    const PetscInt operator_dimension = std::min(rows, columns);
+    const PetscInt subspace_dimension =
+        std::min(requested_subspace_dimension, operator_dimension);
+    PetscCheck(subspace_dimension >= 2, comm, PETSC_ERR_ARG_SIZ,
+        "SVD operator must have dimension at least two");
+
+    // Configure one SVD object; prefixed PETSc options remain able to override
+    // defaults for focused spectral experiments.
+    SVD svd = nullptr;
+    PetscCall(SVDCreate(comm, &svd));
+    PetscCall(SVDSetOptionsPrefix(svd, prefix));
+    PetscCall(SVDSetOperators(svd, matrix, nullptr));
+    PetscCall(SVDSetProblemType(svd, SVD_STANDARD));
+    PetscCall(SVDSetType(svd, SVDTRLANCZOS));
+    PetscCall(SVDTRLanczosSetOneSide(svd, PETSC_FALSE));
+    if (which == SVD_SMALLEST)
+        PetscCall(SVDSetDimensions(svd, 1, subspace_dimension,
+            subspace_dimension - 1));
+    else
+        PetscCall(SVDSetDimensions(svd, 1,
+            PETSC_DEFAULT, PETSC_DEFAULT));
+    PetscCall(SVDSetTolerances(svd, tolerance, max_iterations));
+    PetscCall(SVDSetWhichSingularTriplets(svd, which));
+    PetscCall(SVDSetFromOptions(svd));
+    PetscCall(SVDSolve(svd));
+
+    // Reject a partial spectral result instead of emitting a misleading
+    // condition number from an unconverged triplet.
+    PetscInt converged = 0;
+    SVDConvergedReason reason = SVD_CONVERGED_ITERATING;
+    PetscCall(SVDGetConverged(svd, &converged));
+    PetscCall(SVDGetConvergedReason(svd, &reason));
+    PetscCheck(converged > 0 && reason > 0, comm,
+        PETSC_ERR_NOT_CONVERGED,
+        "SLEPc singular-value solve with prefix '%s' did not converge",
+        prefix);
+    PetscCall(SVDGetSingularTriplet(svd, 0, &sigma, nullptr, nullptr));
+    PetscCall(SVDDestroy(&svd));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Combine two independently converged extreme singular values into cond_2.
+PetscErrorCode condition_number(Mat matrix, const char *largest_prefix,
+    const char *smallest_prefix, const PetscReal tolerance,
+    const PetscInt max_iterations, const PetscInt subspace_dimension,
+    ConditionNumberResult &result)
+{
+    PetscFunctionBeginUser;
+    const MPI_Comm comm = PetscObjectComm(
+        reinterpret_cast<PetscObject>(matrix));
+    PetscCall(extreme_singular_value(matrix, SVD_LARGEST, largest_prefix,
+        tolerance, max_iterations, subspace_dimension, result.sigma_max));
+    PetscCall(extreme_singular_value(matrix, SVD_SMALLEST, smallest_prefix,
+        tolerance, max_iterations, subspace_dimension, result.sigma_min));
+    PetscCheck(result.sigma_min > 0.0, comm, PETSC_ERR_PLIB,
+        "SLEPc reported a nonpositive minimum singular value");
+    result.condition_number = result.sigma_max / result.sigma_min;
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 } // namespace
+
+PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
+    Mat lor_stiffness, const PetscReal svd_tolerance,
+    const PetscInt max_iterations, const PetscInt subspace_dimension,
+    ConditionNumberResult *original, ConditionNumberResult *preconditioned)
+{
+    PetscFunctionBeginUser;
+    const MPI_Comm comm = PetscObjectComm(
+        reinterpret_cast<PetscObject>(stiffness));
+
+    // Validate optional-analysis arguments independently of every assembly and
+    // linear-solve entry point.
+    PetscCheck(original != nullptr && preconditioned != nullptr,
+        comm, PETSC_ERR_ARG_NULL,
+        "Condition-number results must not be null");
+    PetscCheck(svd_tolerance > 0.0, comm, PETSC_ERR_ARG_OUTOFRANGE,
+        "SVD tolerance must be positive");
+    PetscCheck(max_iterations > 0, comm, PETSC_ERR_ARG_OUTOFRANGE,
+        "SVD maximum iteration count must be positive");
+    PetscCheck(subspace_dimension >= 2, comm, PETSC_ERR_ARG_OUTOFRANGE,
+        "SVD subspace dimension must be at least two");
+
+    PetscInt high_rows = 0;
+    PetscInt high_columns = 0;
+    PetscInt lor_rows = 0;
+    PetscInt lor_columns = 0;
+    PetscCall(MatGetSize(stiffness, &high_rows, &high_columns));
+    PetscCall(MatGetSize(lor_stiffness, &lor_rows, &lor_columns));
+    PetscCheck(high_rows == high_columns && lor_rows == lor_columns &&
+        high_rows == lor_rows, comm, PETSC_ERR_ARG_SIZ,
+        "K and K_LOR must be square matrices of the same size");
+
+    // Analyze the assembled high-order stiffness directly.
+    PetscCall(condition_number(stiffness, "cond_k_max_", "cond_k_min_",
+        svd_tolerance, max_iterations, subspace_dimension, *original));
+
+    // Factor K_LOR once and reuse exact inverse applications throughout the
+    // preconditioned shell's two singular-value solves.
+    LeftPreconditionedContext context;
+    context.stiffness = stiffness;
+    PetscCall(KSPCreate(comm, &context.lor_solver));
+    PetscCall(KSPSetOperators(context.lor_solver,
+        lor_stiffness, lor_stiffness));
+    PetscCall(KSPSetType(context.lor_solver, KSPPREONLY));
+    PC pc = nullptr;
+    PetscCall(KSPGetPC(context.lor_solver, &pc));
+    PetscCall(PCSetType(pc, PCLU));
+    PetscMPIInt comm_size = 1;
+    PetscCallMPI(MPI_Comm_size(comm, &comm_size));
+    if (comm_size > 1)
+    {
+#if defined(PETSC_HAVE_MUMPS)
+        PetscCall(PCFactorSetMatSolverType(pc, MATSOLVERMUMPS));
+#else
+        SETERRQ(comm, PETSC_ERR_SUP,
+            "Parallel cond_2(K_LOR^{-1}K) requires PETSc with MUMPS");
+#endif
+    }
+    PetscCall(KSPSetErrorIfNotConverged(context.lor_solver, PETSC_TRUE));
+    PetscCall(KSPSetUp(context.lor_solver));
+    PetscCall(MatCreateVecs(stiffness, &context.work, nullptr));
+
+    // Expose M=P^{-1}K and M^T=KP^{-1} so SLEPc computes the true 2-norm.
+    Mat preconditioned_operator = nullptr;
+    PetscInt high_local_rows = 0;
+    PetscInt high_local_columns = 0;
+    PetscCall(MatGetLocalSize(stiffness,
+        &high_local_rows, &high_local_columns));
+    PetscCall(MatCreateShell(comm, high_local_rows, high_local_columns,
+        high_rows, high_columns, &context, &preconditioned_operator));
+    PetscCall(MatShellSetOperation(preconditioned_operator, MATOP_MULT,
+        reinterpret_cast<void (*)(void)>(apply_left_preconditioned)));
+    PetscCall(MatShellSetOperation(preconditioned_operator,
+        MATOP_MULT_TRANSPOSE,
+        reinterpret_cast<void (*)(void)>(apply_left_preconditioned_transpose)));
+    PetscCall(condition_number(preconditioned_operator,
+        "cond_lor_k_max_", "cond_lor_k_min_", svd_tolerance,
+        max_iterations, subspace_dimension, *preconditioned));
+
+    // Release every object owned solely by this optional analysis call.
+    PetscCall(MatDestroy(&preconditioned_operator));
+    PetscCall(VecDestroy(&context.work));
+    PetscCall(KSPDestroy(&context.lor_solver));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
 
 PetscErrorCode destroy_global_matrix(GlobalMatrixAssemblyResult *result)
 {
@@ -853,6 +1077,23 @@ PetscErrorCode assemble_global_stiffness_load(
     // Select the high-order stiffness-plus-load fused traversal.
     return assemble_high_order_with_load<Dim, true, false>(patch, IEN_map,
         ID_map, quad, basis_tables, source, stiffness, nullptr, load);
+}
+
+template <int Dim>
+PetscErrorCode assemble_global_stiffness_load_with_dirichlet(
+    const BSplinePatch<Dim> &patch, const BSplineIEN<Dim> &IEN_map,
+    const ID &ID_map, const QuadratureRule1D &quad,
+    const std::vector<BSplineBasis1D> &basis_tables,
+    const ScalarSource<Dim> &source,
+    const std::vector<double> &dirichlet_coefficients,
+    GlobalMatrixAssemblyResult *stiffness,
+    GlobalVectorAssemblyResult *load)
+{
+    // Reuse the fused stiffness/source traversal and activate its local
+    // -K_fc*g_c correction before reduced PETSc insertion.
+    return assemble_high_order_with_load<Dim, true, false>(patch, IEN_map,
+        ID_map, quad, basis_tables, source, stiffness, nullptr, load,
+        &dirichlet_coefficients);
 }
 
 template <int Dim>
@@ -976,6 +1217,16 @@ template PetscErrorCode assemble_global_stiffness_load<3>(
     const QuadratureRule1D &, const std::vector<BSplineBasis1D> &,
     const ScalarSource<3> &, GlobalMatrixAssemblyResult *,
     GlobalVectorAssemblyResult *);
+template PetscErrorCode assemble_global_stiffness_load_with_dirichlet<2>(
+    const BSplinePatch<2> &, const BSplineIEN<2> &, const ID &,
+    const QuadratureRule1D &, const std::vector<BSplineBasis1D> &,
+    const ScalarSource<2> &, const std::vector<double> &,
+    GlobalMatrixAssemblyResult *, GlobalVectorAssemblyResult *);
+template PetscErrorCode assemble_global_stiffness_load_with_dirichlet<3>(
+    const BSplinePatch<3> &, const BSplineIEN<3> &, const ID &,
+    const QuadratureRule1D &, const std::vector<BSplineBasis1D> &,
+    const ScalarSource<3> &, const std::vector<double> &,
+    GlobalMatrixAssemblyResult *, GlobalVectorAssemblyResult *);
 template PetscErrorCode assemble_global_mass_load<2>(
     const BSplinePatch<2> &, const BSplineIEN<2> &, const ID &,
     const QuadratureRule1D &, const std::vector<BSplineBasis1D> &,

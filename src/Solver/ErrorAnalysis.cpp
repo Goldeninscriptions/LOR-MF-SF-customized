@@ -15,7 +15,8 @@ PetscErrorCode compute_l2_error(const BSplinePatch<Dim> &patch,
     const BSplineIEN<Dim> &IEN_map, const ID &ID_map,
     const QuadratureRule1D &quad,
     const std::vector<BSplineBasis1D> &basis_tables,
-    Vec solution, const ScalarExactSolution<Dim> &exact,
+    Vec solution, const std::vector<double> &dirichlet_coefficients,
+    const ScalarExactSolution<Dim> &exact,
     PetscReal *l2_error)
 {
     PetscFunctionBeginUser;
@@ -28,6 +29,9 @@ PetscErrorCode compute_l2_error(const BSplinePatch<Dim> &patch,
         "Solution and L2-error output must not be null");
     PetscCheck(static_cast<bool>(exact), comm,
         PETSC_ERR_ARG_NULL, "Exact-solution function must not be empty");
+    PetscCheck(dirichlet_coefficients.size() == patch.num_basis(), comm,
+        PETSC_ERR_ARG_SIZ,
+        "Dirichlet coefficient vector must match the Patch basis count");
 
     // Find the smallest contiguous algebraic interval needed by this rank's
     // element support. With full-boundary tensor ID numbering, a slow-direction
@@ -90,7 +94,8 @@ PetscErrorCode compute_l2_error(const BSplinePatch<Dim> &patch,
                 IEN_map.get_IEN(element_index, local);
             control_points[local] = patch.control_point(global_index);
             const int ID_value = ID_map.get_ID(global_index);
-            local_solution[local] = ID_value < 0 ? 0.0 :
+            local_solution[local] = ID_value < 0 ?
+                dirichlet_coefficients[global_index] :
                 PetscRealPart(reduced_solution[ID_value - halo_begin]);
         }
 
@@ -107,6 +112,8 @@ PetscErrorCode compute_l2_error(const BSplinePatch<Dim> &patch,
         }
     }
 
+    // Release the temporary halo view and all PETSc scatter objects after the
+    // complete rank-local error integral has consumed their coefficient data.
     PetscCall(VecRestoreArrayRead(halo_solution, &reduced_solution));
     PetscCall(VecScatterDestroy(&solution_scatter));
     PetscCall(VecDestroy(&halo_solution));
@@ -125,10 +132,12 @@ PetscErrorCode compute_l2_error(const BSplinePatch<Dim> &patch,
 template PetscErrorCode compute_l2_error<2>(
     const BSplinePatch<2> &, const BSplineIEN<2> &, const ID &,
     const QuadratureRule1D &, const std::vector<BSplineBasis1D> &,
-    Vec, const ScalarExactSolution<2> &, PetscReal *);
+    Vec, const std::vector<double> &, const ScalarExactSolution<2> &,
+    PetscReal *);
 template PetscErrorCode compute_l2_error<3>(
     const BSplinePatch<3> &, const BSplineIEN<3> &, const ID &,
     const QuadratureRule1D &, const std::vector<BSplineBasis1D> &,
-    Vec, const ScalarExactSolution<3> &, PetscReal *);
+    Vec, const std::vector<double> &, const ScalarExactSolution<3> &,
+    PetscReal *);
 
 } // namespace lor

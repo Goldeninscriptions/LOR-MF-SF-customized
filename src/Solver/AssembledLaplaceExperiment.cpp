@@ -1,13 +1,12 @@
 /*
  * Manufactured solution used by this assembled Laplace experiment:
  *
- *   u_exact(x) = product_d sin(pi (x_d-a_d)/(b_d-a_d)),
- *   -Delta u_exact = f(x)
- *                  = [sum_d (pi/(b_d-a_d))^2] u_exact(x).
+ *   u_exact(x) = 1 + sum_d x_d + geometry-compatible bubble(x).
  *
- * Here [a_d,b_d] is the physical bounding interval in direction d. The
- * ManufacturedSolution object validates the axis-aligned rectangle/box
- * assumption before its exact and source functions are used.
+ * The bubble is zero on the physical boundary, so every geometry shares the
+ * exactly representable nonzero trace 1+sum_d x_d. The interior sine or curved
+ * polynomial term provides a nonzero source and meaningful discretization
+ * error while retaining exact strong Dirichlet coefficients.
  */
 
 #include "Solver/AssembledLaplaceExperiment.hpp"
@@ -24,7 +23,6 @@
 #include "Mesh/LORPointSet.hpp"
 #include "Mesh/Refinement.hpp"
 #include "Mesh/TensorSlabPartition.hpp"
-#include "Solver/ConditionNumber.hpp"
 #include "Solver/ErrorAnalysis.hpp"
 #include "Solver/LinearSolver.hpp"
 #include "Solver/ManufacturedSolution.hpp"
@@ -112,14 +110,13 @@ PetscErrorCode run_assembled_laplace_experiment(
 {
     PetscFunctionBeginUser;
 
-    // Refine once on root, distribute the refined control net, and construct
-    // the analytic source/exact solution on the replicated immutable Patch.
+    // Refine once on root and distribute the refined control net. Manufactured
+    // source/exact functions are created later only when a solve is requested.
     const BSplinePatch<Dim> patch = build_distributed_patch<Dim>(
         geometry_input, options, root, comm);
-    const ManufacturedSolution<Dim> manufactured(patch);
 
-    // Build homogeneous-Dirichlet ID numbering from the Patch boundary
-    // multi-indices and the one project-wide lexicographic ordering.
+    // Build Dirichlet constraint topology from Patch boundary multi-indices;
+    // prescribed coefficient values remain separate from the ID=-1 map.
     const LexicographicOrdering<Dim> ordering(patch.basis_shape());
     const DirichletBC<Dim> dirichlet_BC(patch.boundaries(), ordering);
     const ID ID_map(dirichlet_BC.num_global_indices(),
@@ -128,7 +125,7 @@ PetscErrorCode run_assembled_laplace_experiment(
         "All coefficients are constrained; increase the element counts");
 
     // Precompute one high-order one-dimensional basis table per independent
-    // knot vector. The manufactured object supplies both PDE callbacks.
+    // knot vector for stiffness and, when enabled, load assembly.
     const QuadratureRule1D assembly_quad =
         gauss_legendre_rule(patch.degree(0) + 1);
     std::vector<BSplineBasis1D> assembly_basis;
@@ -136,14 +133,38 @@ PetscErrorCode run_assembled_laplace_experiment(
     for (int direction = 0; direction < Dim; ++direction)
         assembly_basis.emplace_back(patch.degree(direction),
             patch.knots(direction), assembly_quad.points);
-    const ScalarSource<Dim> source =
-        [&manufactured](const std::array<double, Dim> &coor) {
-            return manufactured.source(coor);
+    std::unique_ptr<ManufacturedSolution<Dim>> manufactured;
+    ScalarSource<Dim> source;
+    ScalarExactSolution<Dim> exact;
+    std::vector<double> dirichlet_coefficients;
+    if (options.compute_solution)
+    {
+        // Instantiate the physical exact/source callbacks only for a requested
+        // solve, retaining their owner through subsequent error integration.
+        manufactured =
+            std::make_unique<ManufacturedSolution<Dim>>(patch);
+        const ManufacturedSolution<Dim> *manufactured_view =
+            manufactured.get();
+        source = [manufactured_view](
+            const std::array<double, Dim> &physical_coordinate) {
+            return manufactured_view->source(physical_coordinate);
         };
-    const ScalarExactSolution<Dim> exact =
-        [&manufactured](const std::array<double, Dim> &coor) {
-            return manufactured.exact(coor);
-        };
+        if (options.compute_l2_error)
+            exact = [manufactured_view](
+                const std::array<double, Dim> &physical_coordinate) {
+                return manufactured_view->exact(physical_coordinate);
+            };
+
+        // Build the MixPERIGEE-style nonzero Dirichlet lift separately from
+        // ID=-1 topology. Affine physical fields have exact B-spline
+        // coefficients obtained by applying the field to control points.
+        dirichlet_coefficients.assign(patch.num_basis(), 0.0);
+        for (const int global_index :
+             dirichlet_BC.constrained_global_indices())
+            dirichlet_coefficients[global_index] =
+                manufactured->boundary_coefficient(
+                    patch.control_point(global_index));
+    }
 
     // Construct coefficient-aligned LOR points and their sampled physical
     // mesh. This first distributed-Patch stage still replicates LORMesh; local
@@ -173,13 +194,17 @@ PetscErrorCode run_assembled_laplace_experiment(
         partition.lor_cell_end()));
     PetscCall(PetscSynchronizedFlush(comm, PETSC_STDOUT));
 
-    // Assemble high-order stiffness/load in one local traversal; PETSc sums
-    // shared-interface contributions inserted by different element ranks.
+    // Always assemble the high-order stiffness. Fuse load into the traversal
+    // only when the user requested the two linear solves.
     GlobalMatrixAssemblyResult high_stiffness;
     GlobalVectorAssemblyResult high_load;
-    PetscCall(assemble_global_stiffness_load<Dim>(patch, high_IEN,
-        ID_map, assembly_quad, assembly_basis, source,
-        &high_stiffness, &high_load));
+    if (options.compute_solution)
+        PetscCall(assemble_global_stiffness_load_with_dirichlet<Dim>(patch,
+            high_IEN, ID_map, assembly_quad, assembly_basis, source,
+            dirichlet_coefficients, &high_stiffness, &high_load));
+    else
+        PetscCall(assemble_global_stiffness<Dim>(patch, high_IEN,
+            ID_map, assembly_quad, assembly_basis, &high_stiffness));
 
     // Assemble only the Q1 LOR stiffness matrix used by the preconditioner.
     const QuadratureRule1D lor_quad = gauss_legendre_rule(2);
@@ -187,59 +212,83 @@ PetscErrorCode run_assembled_laplace_experiment(
     PetscCall(assemble_global_stiffness<Dim>(
         lor_mesh, lor_IEN, ID_map, lor_quad, &lor_stiffness));
 
-    // Solve the identical high-order system without and with LOR, retaining
-    // both distributed coefficient vectors for independent error integration.
+    // Optionally solve the identical high-order system without and with LOR.
+    // Iteration counts are a direct byproduct of these two solves.
     LinearSolveResult original_solve;
     LinearSolveResult preconditioned_solve;
-    PetscCall(solve_unpreconditioned(high_stiffness.matrix,
-        high_load.vector, options.lor_pc, options.tolerances,
-        &original_solve));
-    PetscCall(solve_with_lor(high_stiffness.matrix,
-        lor_stiffness.matrix, high_load.vector, options.lor_pc,
-        options.tolerances, &preconditioned_solve));
+    if (options.compute_solution)
+    {
+        PetscCall(solve_unpreconditioned(high_stiffness.matrix,
+            high_load.vector, options.lor_pc, options.tolerances,
+            &original_solve));
+        PetscCall(solve_with_lor(high_stiffness.matrix,
+            lor_stiffness.matrix, high_load.vector, options.lor_pc,
+            options.tolerances, &preconditioned_solve));
+    }
 
-    // Use a richer Gauss rule for the non-polynomial exact-error integrand and
-    // reuse its direction-specific B-spline tables for both solutions.
-    const QuadratureRule1D error_quad =
-        gauss_legendre_rule(patch.degree(0) + 3);
-    std::vector<BSplineBasis1D> error_basis;
-    error_basis.reserve(Dim);
-    for (int direction = 0; direction < Dim; ++direction)
-        error_basis.emplace_back(patch.degree(direction),
-            patch.knots(direction), error_quad.points);
+    // Optionally build the richer error quadrature and integrate both retained
+    // solutions. No error tables are allocated when this feature is disabled.
     PetscReal original_error = 0.0;
     PetscReal preconditioned_error = 0.0;
-    PetscCall(compute_l2_error<Dim>(patch, high_IEN, ID_map,
-        error_quad, error_basis, original_solve.solution, exact,
-        &original_error));
-    PetscCall(compute_l2_error<Dim>(patch, high_IEN, ID_map,
-        error_quad, error_basis, preconditioned_solve.solution, exact,
-        &preconditioned_error));
+    if (options.compute_l2_error)
+    {
+        const QuadratureRule1D error_quad =
+            gauss_legendre_rule(patch.degree(0) + 3);
+        std::vector<BSplineBasis1D> error_basis;
+        error_basis.reserve(Dim);
+        for (int direction = 0; direction < Dim; ++direction)
+            error_basis.emplace_back(patch.degree(direction),
+                patch.knots(direction), error_quad.points);
+        PetscCall(compute_l2_error<Dim>(patch, high_IEN, ID_map,
+            error_quad, error_basis, original_solve.solution,
+            dirichlet_coefficients, exact, &original_error));
+        PetscCall(compute_l2_error<Dim>(patch, high_IEN, ID_map,
+            error_quad, error_basis, preconditioned_solve.solution,
+            dirichlet_coefficients, exact, &preconditioned_error));
+    }
 
-    // Compute true SVD 2-norm condition numbers independently of both outer
-    // KSP convergence histories.
+    // Optionally invoke the independent GlobalAssembly spectral analysis. A
+    // disabled condition-number feature creates no SLEPc or factorization data.
     ConditionNumberResult original_condition;
     ConditionNumberResult preconditioned_condition;
-    PetscCall(compute_stiffness_condition_numbers(
-        high_stiffness.matrix, lor_stiffness.matrix,
-        options.svd_tolerance, options.svd_max_iterations,
-        options.svd_subspace_dimension, &original_condition,
-        &preconditioned_condition));
+    if (options.compute_condition_number)
+        PetscCall(compute_stiffness_condition_numbers(
+            high_stiffness.matrix, lor_stiffness.matrix,
+            options.svd_tolerance, options.svd_max_iterations,
+            options.svd_subspace_dimension, &original_condition,
+            &preconditioned_condition));
 
-    // Collect realized metadata and all six diagnostics; every rank retains
-    // identical scalar results while only root attempts filesystem output.
+    // Collect metadata and only the diagnostics whose computations were
+    // enabled; root writes a self-describing sparse result record.
     ExperimentResults results;
     results.refinement_mode = options.refinement_mode;
     results.mpi_ranks = partition.size();
     results.actual_degree = patch.degree(0);
     for (int direction = 0; direction < Dim; ++direction)
         results.actual_elements.push_back(patch.num_elements(direction));
-    results.condition_K = original_condition.condition_number;
-    results.iterations_K = original_solve.iterations;
-    results.l2_error_K = original_error;
-    results.condition_lor_K = preconditioned_condition.condition_number;
-    results.iterations_lor_K = preconditioned_solve.iterations;
-    results.l2_error_lor_K = preconditioned_error;
+    results.computed_solution = options.compute_solution;
+    results.computed_l2_error = options.compute_l2_error;
+    results.computed_condition_number = options.compute_condition_number;
+    if (options.compute_condition_number)
+    {
+        results.condition_K = original_condition.condition_number;
+        results.condition_lor_K = preconditioned_condition.condition_number;
+    }
+    if (options.compute_solution)
+    {
+        results.iterations_K = original_solve.iterations;
+        results.iterations_lor_K = preconditioned_solve.iterations;
+        results.residual_K = original_solve.residual_norm;
+        results.relative_residual_K = original_solve.relative_residual_norm;
+        results.residual_lor_K = preconditioned_solve.residual_norm;
+        results.relative_residual_lor_K =
+            preconditioned_solve.relative_residual_norm;
+    }
+    if (options.compute_l2_error)
+    {
+        results.l2_error_K = original_error;
+        results.l2_error_lor_K = preconditioned_error;
+    }
     std::string output_error;
     if (partition.rank() == root)
         try
@@ -266,18 +315,29 @@ PetscErrorCode run_assembled_laplace_experiment(
             PetscCall(PetscPrintf(comm, "%s%d", direction == 0 ? "" : ",",
                 patch.num_elements(direction)));
         PetscCall(PetscPrintf(comm,
-            "), mode=%s, point_set=%s\n"
-            "  cond_2(K) = %.12e, iterations = %" PetscInt_FMT
-            ", L2 error = %.12e\n"
-            "  cond_2(K_LOR^{-1}K) = %.12e, iterations = %" PetscInt_FMT
-            ", L2 error = %.12e\n"
-            "  result file: %s\n",
+            "), mode=%s, point_set=%s, solve=%s, L2=%s, condition=%s\n",
             lor_pc_mode_name(options.lor_pc), options.lor_points.c_str(),
-            static_cast<double>(results.condition_K), results.iterations_K,
-            static_cast<double>(results.l2_error_K),
-            static_cast<double>(results.condition_lor_K),
-            results.iterations_lor_K,
-            static_cast<double>(results.l2_error_lor_K),
+            options.compute_solution ? "true" : "false",
+            options.compute_l2_error ? "true" : "false",
+            options.compute_condition_number ? "true" : "false"));
+        if (options.compute_condition_number)
+            PetscCall(PetscPrintf(comm,
+                "  cond_2(K) = %.12e\n"
+                "  cond_2(K_LOR^{-1}K) = %.12e\n",
+                static_cast<double>(results.condition_K),
+                static_cast<double>(results.condition_lor_K)));
+        if (options.compute_solution)
+            PetscCall(PetscPrintf(comm,
+                "  iterations(K) = %" PetscInt_FMT "\n"
+                "  iterations(K_LOR^{-1}K) = %" PetscInt_FMT "\n",
+                results.iterations_K, results.iterations_lor_K));
+        if (options.compute_l2_error)
+            PetscCall(PetscPrintf(comm,
+                "  L2_error(K) = %.12e\n"
+                "  L2_error(K_LOR^{-1}K) = %.12e\n",
+                static_cast<double>(results.l2_error_K),
+                static_cast<double>(results.l2_error_lor_K)));
+        PetscCall(PetscPrintf(comm, "  result file: %s\n",
             options.output_file.c_str()));
     }
 

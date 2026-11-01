@@ -54,7 +54,9 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     PetscCheck(result->solution == nullptr, comm,
         PETSC_ERR_ARG_WRONGSTATE, "LinearSolveResult already owns a solution");
 
-    // Configure the outer method and common stopping tolerances.
+    // Configure the outer method and common stopping tolerances. GMRES uses
+    // right preconditioning so its monitored unpreconditioned norm measures
+    // the residual of the original equation instead of the PCSHELL-scaled one.
     const bool use_shell = mode == LORPCMode::gmres_shell;
     KSP ksp = nullptr;
     PetscCall(KSPCreate(comm, &ksp));
@@ -62,9 +64,11 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
         lor_stiffness != nullptr && !use_shell ? lor_stiffness : stiffness));
     PetscCall(KSPSetType(ksp, use_shell ? KSPGMRES : KSPCG));
     if (use_shell)
+    {
         PetscCall(KSPGMRESSetRestart(ksp, 200));
-    PetscCall(KSPSetNormType(ksp, use_shell ?
-        KSP_NORM_PRECONDITIONED : KSP_NORM_UNPRECONDITIONED));
+        PetscCall(KSPSetPCSide(ksp, PC_RIGHT));
+    }
+    PetscCall(KSPSetNormType(ksp, KSP_NORM_UNPRECONDITIONED));
     PetscCall(KSPSetTolerances(ksp, tolerances.outer_rtol,
         tolerances.outer_atol, tolerances.outer_dtol,
         tolerances.outer_max_it));
@@ -111,12 +115,17 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
         result->inner_iterations = shell_context->total_inner_iterations;
     }
 
-    // Recompute the same physical residual norm for every solver mode.
+    // Recompute the same absolute and right-hand-side-scaled physical
+    // residuals for every mode rather than trusting a projected KSP estimate.
     Vec residual = nullptr;
     PetscCall(VecDuplicate(load, &residual));
     PetscCall(MatMult(stiffness, result->solution, residual));
     PetscCall(VecAYPX(residual, -1.0, load));
     PetscCall(VecNorm(residual, NORM_2, &result->residual_norm));
+    PetscReal load_norm = 0.0;
+    PetscCall(VecNorm(load, NORM_2, &load_norm));
+    result->relative_residual_norm = load_norm > 0.0 ?
+        result->residual_norm / load_norm : result->residual_norm;
     PetscCall(VecDestroy(&residual));
     PetscCall(KSPDestroy(&ksp));
     PetscFunctionReturn(PETSC_SUCCESS);

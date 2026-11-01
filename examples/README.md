@@ -16,26 +16,31 @@ sum-factorization 的数值参考。
 2. Solver 的 `AssembledLaplaceExperiment` 调用 Mesh `Refinement`，只在 rank 0 构造
    实际分析 Patch，再通过 `DistributedPatch` 广播；
 3. `Patch::boundaries -> LexicographicOrdering -> DirichletBC -> ID` 建立全边界
-   齐次约束；
+   约束拓扑，制造解控制系数作为独立非零 Dirichlet lift；
 4. `TensorSlabPartition` 在最慢张量方向均衡划分高阶单元、LOR cells 和连续 ID
    所有权；
-5. 预计算逐方向 `BSplineBasis1D` Gauss 表，通过 `BSplineIEN` 和
-   `GlobalAssembly` 的 `stiffness+load` 融合入口组装本算例需要的高阶 K 与 F；
+5. 预计算逐方向 `BSplineBasis1D` Gauss 表，通过 `GlobalAssembly` 组装高阶 K；仅在
+   `compute_solution=true` 时融合组装 F，并逐单元加入 `-K_fc g_c` 消元贡献；
 6. `GrevillePointSet|DemkoPointSet -> LORMesh -> LORIEN -> GlobalAssembly`
    只组装作为预条件器的 Q1 LOR 刚度矩阵；
-7. 分别调用无预条件和 LOR 预条件 Solver；
-8. `ErrorAnalysis` 和 `ConditionNumber` 以 MPI collective 生成六项数值指标，rank 0
-   写结果文件。
+7. `compute_solution=true` 时分别调用无预条件和 LOR 预条件 Solver；
+8. `compute_l2_error=true` 时调用 `ErrorAnalysis`，
+   `compute_condition_number=true` 时显式调用 `GlobalAssembly` 条件数入口；rank 0
+   只写实际启用的数值字段。
 
 Solver 实验对象使用的制造解是
 
 \[
-u(x)=\prod_d\sin\!\left(\frac{\pi(x_d-a_d)}{b_d-a_d}\right),\qquad
-f(x)=\left[\sum_d\left(\frac{\pi}{b_d-a_d}\right)^2\right]u(x).
+u(x)=1+\sum_{d=1}^{\mathrm{Dim}}x_d+\psi(x),\qquad
+f(x)=-\Delta\psi(x).
 \]
 
-它只适用于轴对齐矩形/长方体。曲边输入能够被 IO、Mesh 和 refinement 使用，但
-当前 `ManufacturedSolution` 会在组装前拒绝该解析解不适用的几何。
+二维实例只包含 x、y，等价于令 z=0。矩形/长方体上的 \(\psi\) 是按物理边长
+缩放的张量正弦函数；曲边 Patch 上的 \(\psi\) 是四条精确多项式边界隐式因子的
+乘积。两者都在边界严格为零，因此公共边界迹为仿射函数
+\(g=1+\sum_d x_d\)，其精确 B-spline 系数为 `1 + sum(control_point[d])`。
+Assembly 在约化系统右端加入 `-K_fc g_c`，ErrorAnalysis 再恢复边界系数；内部
+bubble 则产生非零源项和可用于收敛比较的非平凡 L2 误差。
 
 ## 构建
 
@@ -55,7 +60,10 @@ mpirun -n 4 ./build/assembled_driver \
   -p 5 -n 16,16 \
   -lor_points greville \
   -lor_pc gmres_shell \
-  -outer_rtol 1e-10 -outer_atol 1e-10 \
+  -compute_solution true \
+  -compute_l2_error true \
+  -compute_condition_number false \
+  -outer_rtol 1e-12 -outer_atol 1e-14 \
   -output work/results/example.log
 ```
 
@@ -71,23 +79,35 @@ mpirun -n 4 ./build/assembled_driver \
 - `-lor_pc gmres_shell|cg_lu`，省略时默认为 `gmres_shell`；
 - `-svd_tol`、`-svd_max_it`、`-svd_ncv` 控制四个 SLEPc 极端奇异值求解；
 - `cg_lu` 使用外层 CG 和精确 LOR LU；
-- `gmres_shell` 使用外层 restarted GMRES 和 PCSHELL 内层 CG/Jacobi。
+- `gmres_shell` 使用外层右预条件 restarted GMRES 和 PCSHELL 内层 CG/Jacobi；
+  默认以原方程未预条件残差停止，外层/内层默认容差均为
+  `rtol=1e-12, atol=1e-14`，也可用命令行逐次覆盖。
+
+### Independent feature options
+
+- `-compute_solution true|false`：是否组装荷载并执行无预条件/LOR 两次求解；
+- `-compute_l2_error true|false`：是否对两个解做 L2 积分，启用时要求 solution 为 true；
+- `-compute_condition_number true|false`：是否调用四次 SLEPc 极端奇异值求解；
+- 三者默认分别为 `true`、`true`、`false`。
 
 ## 结果格式
 
-结果文件记录实际 refinement、实际 p/n，然后记录：
+结果文件先记录实际 refinement、p/n 和三个功能开关，然后只记录启用项：
 
 ```text
 mpi_ranks
-cond_2(K)
-iterations(K)
-L2_error(K)
-cond_2(K_LOR^{-1}K)
-iterations(K_LOR^{-1}K)
-L2_error(K_LOR^{-1}K)
+compute_solution
+compute_l2_error
+compute_condition_number
+[cond_2(K), cond_2(K_LOR^{-1}K)]
+[iterations(K), iterations(K_LOR^{-1}K)]
+[residual(K), relative_residual(K)]
+[residual(K_LOR^{-1}K), relative_residual(K_LOR^{-1}K)]
+[L2_error(K), L2_error(K_LOR^{-1}K)]
 ```
 
-条件数来自独立 SLEPc SVD，不由 CG/GMRES 迭代投影估计。两个 L2 error 都针对同一
+方括号字段只在对应开关启用时出现。条件数来自独立 SLEPc SVD，不由 CG/GMRES
+迭代投影估计。两个 L2 error 都针对同一
 高阶系统 `K u=F`；LOR 系统只作为预条件器，不作为另一个 PDE 解进行误差比较。
 质量矩阵接口仍由 Assembly 提供，但该 Laplace Driver 不请求它，因此运行时不会
 产生高阶或 LOR 质量矩阵。

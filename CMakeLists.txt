@@ -61,7 +61,7 @@ add_library(lor_petsc
 )
 target_include_directories(lor_petsc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(lor_petsc PUBLIC cxx_std_17)
-target_link_libraries(lor_petsc PUBLIC lor_core LOR::PETSc)
+target_link_libraries(lor_petsc PUBLIC lor_core LOR::PETSc LOR::SLEPc)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
   target_compile_options(lor_petsc PRIVATE -Wall -Wextra -Wpedantic)
@@ -70,13 +70,12 @@ endif()
 add_library(lor_solver
   src/IO/ExperimentIO.cpp
   src/Solver/LinearSolver.cpp
-  src/Solver/ConditionNumber.cpp
   src/Solver/ErrorAnalysis.cpp
   src/Solver/AssembledLaplaceExperiment.cpp
 )
 target_include_directories(lor_solver PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(lor_solver PUBLIC cxx_std_17)
-target_link_libraries(lor_solver PUBLIC lor_petsc LOR::SLEPc)
+target_link_libraries(lor_solver PUBLIC lor_petsc)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
   target_compile_options(lor_solver PRIVATE -Wall -Wextra -Wpedantic)

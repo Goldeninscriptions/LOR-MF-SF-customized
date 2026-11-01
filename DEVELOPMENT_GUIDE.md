@@ -11,8 +11,12 @@ matrix-free（MF）和 sum factorization（SF）实现提供清晰基线。它�
 
 \[
 -\Delta u=f\quad\text{in }\Omega,
-\qquad u=0\quad\text{on }\partial\Omega.
+\qquad u=g\quad\text{on }\partial\Omega.
 \]
+
+当前制造解取 `u(x)=1+sum_d x_d+bubble(x)`；bubble 在边界为零，因此
+`g=1+sum_d x_d` 通常非零。轴对齐几何使用张量正弦 bubble，曲边基准使用精确边界
+多项式因子的乘积；二维只使用 x、y。
 
 当前代码支持普通非有理、张量积、open-knot B-spline 几何；多个参数方向使用
 相同次数 \(p\)，但每个方向始终保留独立 knot vector 和独立单元数 \(n_i\)。
@@ -25,13 +29,15 @@ geometry txt
   -> rank 0 minimal BSplinePatch
   -> rank 0 PRefinement / HRefinement / KRefinement
   -> broadcast refined analysis BSplinePatch
-  -> boundary multi_index -> DirichletBC -> ID
+  -> boundary multi_index -> DirichletBC -> ID + prescribed lift
   -> TensorSlabPartition -> BSplineIEN -> BSplineElement
   -> LocalAssembly -> 分布式组装 PETSc K / M / F
   -> GrevillePointSet / DemkoPointSet
   -> LORMesh -> LORIEN -> FEMQuad4/FEMHex8 -> 分布式组装 K_LOR / M_LOR / F_LOR
-  -> 默认 gmres_shell（保留 cg_lu）
-  -> SLEPc condition numbers + L2 error + result log
+  -> [compute_solution] gmres_shell 或 cg_lu
+  -> [compute_l2_error] L2 error
+  -> [compute_condition_number] GlobalAssembly SLEPc condition numbers
+  -> 只含启用项的 result log
 ```
 
 `examples/assembled_driver.cpp` 是薄入口，只负责初始化、集体 IO 和 2D/3D 分派。
@@ -96,7 +102,8 @@ geometry txt
 
 - `LexicographicOrdering` 独占 `multi_index <-> global_index` 转换；
 - `DirichletBC` 只消费 Patch 给出的边界 `multi_index` 和一个 Ordering；
-- `ID` 将全边界齐次 Dirichlet 自由度标为 `-1`，其余自由度连续编号；
+- `ID` 将全边界 Dirichlet 系数标为 `-1`，其余自由度连续编号；约束值保存在独立
+  lift 中，不编码进 ID；
 - `LocalAssembly` 分别提供局部刚度、相容质量和荷载接口；每次调用只积分并分配
   被请求的一个局部对象；
 - `LocalAssembly` 和 `GlobalAssembly` 还提供 `stiffness+load`、`mass+load` 与
@@ -105,14 +112,21 @@ geometry txt
 - `GlobalAssembly` 对高阶 IGA 和 LOR Q1 使用相同的
   gather -> element -> local assembly -> IEN/ID scatter 结构，并分别提供刚度、
   质量和荷载入口；
-- 当前 `AssembledLaplaceExperiment` 通过融合入口请求高阶刚度与荷载，并单独请求作为预条件器的 LOR
-  刚度；质量矩阵和 LOR 荷载不会被隐式构造；
+- 非零 Dirichlet 制造解组装在局部 scatter 前执行
+  `F_f -= K_fc g_c`，与 MixPERIGEE 的 `ID=-1` 加 base solution/lifting 思路等价；
+- 当前 `AssembledLaplaceExperiment` 始终请求高阶/LOR 刚度；只有
+  `compute_solution=true` 才通过融合入口附带组装荷载；质量矩阵和 LOR 荷载不会
+  被隐式构造；
 - `cg_lu`：外层 CG，LOR 矩阵用 LU 精确应用；
-- `gmres_shell`：外层 restarted GMRES，`PCSHELL` 内部使用 CG+Jacobi 近似应用
-  LOR 逆；
+- `gmres_shell`：外层右预条件 restarted GMRES，使用原方程未预条件残差作为停止
+  判据；`PCSHELL` 内部使用 CG+Jacobi 近似应用 LOR 逆；外层/内层默认容差均为
+  `rtol=1e-12, atol=1e-14`；
+- `compute_solution`、`compute_l2_error`、`compute_condition_number` 独立控制求解、
+  误差和谱分析；L2 依赖 solution，条件数不依赖二者；
 - 默认使用 `gmres_shell`；外层、内层 KSP、SLEPc 和矩阵 shell 均使用矩阵的 MPI
   communicator；
-- SLEPc 分别计算 `cond_2(K)` 与 `cond_2(K_LOR^{-1}K)`；
+- GlobalAssembly 的显式 SLEPc 入口分别计算 `cond_2(K)` 与
+  `cond_2(K_LOR^{-1}K)`；
 - SVD 默认允许 100000 次迭代，并为最小奇异值使用最多 100 维搜索子空间；
   `-svd_max_it`、`-svd_ncv` 和 `-svd_tol` 可以逐次覆盖；
 - 制造解模块和误差模块计算高阶数值解的物理域 L2 误差。
@@ -125,7 +139,8 @@ geometry txt
 - sum-factorized 高阶算子；
 - Element/Assembly 中实际启用的 OpenMP 并行循环（CMake 默认关闭 OpenMP）；
 - NURBS、有理权重和精确圆弧；
-- 周期、非齐次 Dirichlet、Neumann 或 Robin 边界；
+- 当前曲边多项式 bubble 只对应仓库内记录的双三次曲边基准，不自动适配任意曲边；
+- 周期、Neumann、Robin，以及由输入文件指定的任意非齐次 Dirichlet 函数；
 - 多 patch、非结构分区和跨节点分布式几何存储；
 - refined Patch 和 LORMesh 的局部 slab+halo 存储；当前二者仍在每个 rank 保存完整
   副本，已经消除重复 refinement 计算，但尚未消除完整几何的重复内存；
@@ -134,10 +149,10 @@ geometry txt
 - 统一可切换的 `float/double/long double` 数值别名。当前离散核心使用 `double`，
   PETSc/SLEPc 接口使用其配置提供的标量与实数类型。
 
-曲边 B-spline 输入、几何求值和三种细化已经可用，但当前制造解
-\(u=\prod_d\sin(\pi(x_d-a_d)/(b_d-a_d))\) 只适用于轴对齐矩形/长方体。
-`assembled_driver` 因此会主动拒绝曲边算例；需要为曲边边界设计零迹解析解后才能
-进入同一求解流程。
+制造解的公共边界迹 \(g=1+\sum_d x_d\) 同时适用于二维矩形、三维长方体和曲边
+Patch。普通 B-spline 的单位分解与几何再现给出精确边界系数
+\(g_A=1+\sum_d P_{A,d}\)，因此无需边界插值或投影。域内叠加的非平凡零迹 bubble
+产生非零源项，使 L2 同时检验 Dirichlet 消元、线性求解和离散逼近误差。
 
 ## 5. 核心数学与索引约定
 
@@ -180,7 +195,7 @@ det_Jac(q)     = det(dx/dxi)
 `k_refine`。固定最终 \(p\) 改变 \(n_i\) 仍可作为 h-study，尽管每个独立 case 都
 从最小几何重新执行 k-refinement。
 
-`work/run_batch.sh` 默认运行
+`work/run_batch_square_2d.sh` 默认运行
 
 ```text
 p = {3,4,5,6,7}
@@ -193,6 +208,12 @@ point set 可选 `greville|demko`，LOR 求解默认 `gmres_shell`。单算例�
 的进程数，`default` 则逐 case 使用 planner 推荐值。脚本为每个 case 保存数值
 结果、控制台日志和批处理汇总；`BATCH_DRY_RUN=1` 只打印计划。
 
+三维长方体使用 `run_batch_cube_3d.sh`，默认 n sweep 为
+`(4,4,4),(8,8,8),(16,16,16)`，避免照搬二维规模造成单元数立方增长。曲边 Patch
+使用 `run_batch_curved_quadrilateral_2d.sh`。三个入口统一默认执行组装、求解和 L2，
+关闭条件数分析。三个入口共享同一个非零仿射边界 lift，并按几何选择内部 bubble；
+它们复用 `run_batch_common.sh`，分别写入独立的几何结果目录和 summary。
+
 ## 7. 目录和依赖关系
 
 ```text
@@ -200,7 +221,7 @@ include/IO, src/IO             输入、实验参数和结果输出
 include/Mesh, src/Mesh         Patch、细化、point set、LOR mesh、IEN、ID
 include/Element, src/Element   高阶与Q1局部基函数及几何积分数据
 include/Assembly, src/Assembly ordering、边界条件、局部/全局组装
-include/Solver, src/Solver     PETSc/SLEPc求解、条件数和误差
+include/Solver, src/Solver     PETSc 求解、误差和可选实验编排
 examples/                      当前assembled主程序
 work/                          几何输入与运行脚本
 conf/                          机器路径和PETSc/SLEPc查找
@@ -222,8 +243,8 @@ Mesh 和 Element 不持有 PETSc 对象。PETSc 全局对象从 `GlobalAssembly`
 
 - `lor_core`：Mesh、Element、Geometry/Patch IO、Ordering、DirichletBC 和
   LocalAssembly；
-- `lor_petsc`：PETSc GlobalAssembly；
-- `lor_solver`：ExperimentIO、PETSc KSP、SLEPc 条件数和误差分析；
+- `lor_petsc`：PETSc GlobalAssembly 与显式 SLEPc 条件数入口；
+- `lor_solver`：ExperimentIO、PETSc KSP、误差分析和功能开关编排；
 - `assembled_driver`：当前端到端程序；
 - `case_planner`：串行复用真实 refinement/ID 路径，计算自由度并依据 macOS/Linux
   逻辑 CPU 数推荐 MPI ranks。
@@ -261,6 +282,6 @@ MatShell 中精确应用分布式 (K_{LOR}^{-1})。OpenMP 默认关闭，运行�
 3. 实现张量 sum factorization，并逐向量比较 assembled、MF、MF+SF；
 4. 把 refined Patch 控制网格与 LORMesh 节点改成 slab+halo 存储，消除全量几何复制；
 5. 分别记录 MPI setup、assembly、operator apply、LOR apply 和总求解时间；
-6. 为曲边几何设计与全边界齐次 Dirichlet 相容的制造解。
+6. 为新的曲边几何增加对应零迹 bubble，或实现通用边界投影后允许任意物理解析解。
 
 各目录中每个头文件和源文件的当前职责见对应 `README.md`。

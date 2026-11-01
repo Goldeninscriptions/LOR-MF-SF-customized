@@ -30,6 +30,13 @@ struct ExperimentOptions
     std::string lor_points = "greville";
     LORPCMode lor_pc = LORPCMode::gmres_shell;
 
+    // Independent experiment features. Error analysis consumes solution
+    // vectors and therefore requires compute_solution; condition numbers use
+    // only the two assembled stiffness matrices.
+    bool compute_solution = true;
+    bool compute_l2_error = true;
+    bool compute_condition_number = false;
+
     // KSP stopping controls and independent SLEPc singular-value controls.
     // The larger defaults are intended for very ill-conditioned high-order
     // stiffness matrices; command-line options may reduce or enlarge them.
@@ -51,14 +58,26 @@ struct ExperimentResults
     int actual_degree = 0;
     std::vector<int> actual_elements;
 
-    // Unpreconditioned high-order stiffness result triplet.
+    // Record which optional computations actually ran. Disabled quantities
+    // are omitted from the result file rather than written as artificial zero.
+    bool computed_solution = false;
+    bool computed_l2_error = false;
+    bool computed_condition_number = false;
+
+    // Unpreconditioned high-order stiffness diagnostics, including physical
+    // absolute and right-hand-side-scaled residual norms.
     PetscReal condition_K = 0.0;
     PetscInt iterations_K = 0;
+    PetscReal residual_K = 0.0;
+    PetscReal relative_residual_K = 0.0;
     PetscReal l2_error_K = 0.0;
 
-    // Left-LOR-preconditioned operator result triplet.
+    // Right-LOR-preconditioned solve diagnostics for the same high-order
+    // equation; LOR remains a preconditioner rather than a second PDE system.
     PetscReal condition_lor_K = 0.0;
     PetscInt iterations_lor_K = 0;
+    PetscReal residual_lor_K = 0.0;
+    PetscReal relative_residual_lor_K = 0.0;
     PetscReal l2_error_lor_K = 0.0;
 };
 
@@ -77,7 +96,7 @@ extern template RefinementRequest<2> make_refinement_request<2>(
 extern template RefinementRequest<3> make_refinement_request<3>(
     const ExperimentOptions &);
 
-// Write actual refined-space metadata followed by the six numerical results,
+// Write actual refined-space metadata and only the enabled numerical results,
 // with one key-value item on every line.
 void write_experiment_results(const std::string &filename,
     const ExperimentResults &results);

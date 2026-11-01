@@ -47,6 +47,9 @@ ExperimentOptions read_experiment_options(const int dimension)
     PetscBool geometry_set = PETSC_FALSE;
     PetscBool degree_set = PETSC_FALSE;
     PetscBool elements_set = PETSC_FALSE;
+    PetscBool compute_solution = PETSC_TRUE;
+    PetscBool compute_l2_error = PETSC_TRUE;
+    PetscBool compute_condition_number = PETSC_FALSE;
 
     // Read refinement, discretization, LOR, and output selections.
     PetscOptionsGetString(nullptr, nullptr, "-geometry", geometry,
@@ -62,6 +65,12 @@ ExperimentOptions read_experiment_options(const int dimension)
         sizeof(mode), nullptr);
     PetscOptionsGetString(nullptr, nullptr, "-lor_points", point_set,
         sizeof(point_set), nullptr);
+    PetscOptionsGetBool(nullptr, nullptr, "-compute_solution",
+        &compute_solution, nullptr);
+    PetscOptionsGetBool(nullptr, nullptr, "-compute_l2_error",
+        &compute_l2_error, nullptr);
+    PetscOptionsGetBool(nullptr, nullptr, "-compute_condition_number",
+        &compute_condition_number, nullptr);
 
     // Transfer validated primitive strings into the typed option record.
     if (!geometry_set || !degree_set || !elements_set)
@@ -85,6 +94,13 @@ ExperimentOptions read_experiment_options(const int dimension)
     options.lor_points = point_set;
     if (options.lor_points != "greville" && options.lor_points != "demko")
         throw std::invalid_argument("-lor_points must be greville or demko");
+    options.compute_solution = compute_solution == PETSC_TRUE;
+    options.compute_l2_error = compute_l2_error == PETSC_TRUE;
+    options.compute_condition_number =
+        compute_condition_number == PETSC_TRUE;
+    if (options.compute_l2_error && !options.compute_solution)
+        throw std::invalid_argument(
+            "-compute_l2_error true requires -compute_solution true");
 
     // Apply any optional outer/inner KSP and SVD stopping-control overrides.
     PetscOptionsGetReal(nullptr, nullptr, "-outer_rtol",
@@ -112,12 +128,15 @@ ExperimentOptions read_experiment_options(const int dimension)
         &options.svd_max_iterations, nullptr);
     PetscOptionsGetInt(nullptr, nullptr, "-svd_ncv",
         &options.svd_subspace_dimension, nullptr);
-    if (!(options.svd_tolerance > 0.0))
-        throw std::invalid_argument("-svd_tol must be positive");
-    if (options.svd_max_iterations < 1)
-        throw std::invalid_argument("-svd_max_it must be positive");
-    if (options.svd_subspace_dimension < 2)
-        throw std::invalid_argument("-svd_ncv must be at least two");
+    if (options.compute_condition_number)
+    {
+        if (!(options.svd_tolerance > 0.0))
+            throw std::invalid_argument("-svd_tol must be positive");
+        if (options.svd_max_iterations < 1)
+            throw std::invalid_argument("-svd_max_it must be positive");
+        if (options.svd_subspace_dimension < 2)
+            throw std::invalid_argument("-svd_ncv must be at least two");
+    }
     return options;
 }
 
@@ -181,16 +200,33 @@ void write_experiment_results(const std::string &filename,
                << results.actual_elements[direction];
     output << ")\n";
 
-    // Write the two condition/iteration/error triplets in scientific format.
-    output << std::scientific << std::setprecision(16)
-           << "cond_2(K) = " << results.condition_K << '\n'
-           << "iterations(K) = " << results.iterations_K << '\n'
-           << "L2_error(K) = " << results.l2_error_K << '\n'
-           << "cond_2(K_LOR^{-1}K) = " << results.condition_lor_K << '\n'
-           << "iterations(K_LOR^{-1}K) = "
-           << results.iterations_lor_K << '\n'
-           << "L2_error(K_LOR^{-1}K) = "
-           << results.l2_error_lor_K << '\n';
+    // Preserve the feature selection in every result file, then omit all
+    // numerical fields belonging to computations that did not run.
+    output << std::boolalpha
+           << "compute_solution = " << results.computed_solution << '\n'
+           << "compute_l2_error = " << results.computed_l2_error << '\n'
+           << "compute_condition_number = "
+           << results.computed_condition_number << '\n'
+           << std::scientific << std::setprecision(16);
+    if (results.computed_condition_number)
+        output << "cond_2(K) = " << results.condition_K << '\n'
+               << "cond_2(K_LOR^{-1}K) = "
+               << results.condition_lor_K << '\n';
+    if (results.computed_solution)
+        output << "iterations(K) = " << results.iterations_K << '\n'
+               << "iterations(K_LOR^{-1}K) = "
+               << results.iterations_lor_K << '\n'
+               << "residual(K) = " << results.residual_K << '\n'
+               << "relative_residual(K) = "
+               << results.relative_residual_K << '\n'
+               << "residual(K_LOR^{-1}K) = "
+               << results.residual_lor_K << '\n'
+               << "relative_residual(K_LOR^{-1}K) = "
+               << results.relative_residual_lor_K << '\n';
+    if (results.computed_l2_error)
+        output << "L2_error(K) = " << results.l2_error_K << '\n'
+               << "L2_error(K_LOR^{-1}K) = "
+               << results.l2_error_lor_K << '\n';
 }
 
 // Emit fixed-dimensional option adapters used by the one runtime driver.
