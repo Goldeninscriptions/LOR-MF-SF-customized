@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(cd "$script_dir/.." && pwd)
+planner="$project_dir/build/case_planner"
 
 # -------------------------- Batch configuration ---------------------------
 # Two-dimensional example. For 3D, select a 3D geometry and use tuples such
@@ -36,9 +37,15 @@ summary_file="$script_dir/batch_summary.log"
 lor_points="greville"
 # lor_points="demko"
 
-# The batch launcher forwards this value directly to mpirun -n. It may be any
-# positive count; nondivisible tensor layers are distributed by floor division.
-mpi_ranks=4
+# Select one explicit rank count for every case, or let the planner choose a
+# separate count from each case's exact free DOFs. Bash assignments have no
+# spaces around '='.
+mpi_rank=${MPI_RANK:-default}
+# mpi_rank=8
+
+# In default mode the planner detects macOS/Linux logical CPUs. This optional
+# environment value may impose a smaller resource or scheduler limit.
+maximum_mpi_ranks=${MAX_MPI_RANKS:-}
 
 lor_pc="gmres_shell"
 # lor_pc="cg_lu"
@@ -55,12 +62,50 @@ total=$(( ${#degrees[@]} * ${#element_cases[@]} ))
 case_number=0
 failed_cases=0
 batch_start=$(date +%s)
+planned_ranks=()
+
+# Validate the common rank selection before planning any case.
+if [[ "$mpi_rank" != "default" ]] && ! [[ "$mpi_rank" =~ ^[1-9][0-9]*$ ]]; then
+  echo "mpi_rank must be 'default' or a positive integer" >&2
+  exit 2
+fi
+if [[ "$mpi_rank" == "default" && ! -x "$planner" ]]; then
+  echo "Missing executable: $planner" >&2
+  echo "Build it with: cd $project_dir/build && cmake ../examples && make -j" >&2
+  exit 3
+fi
+
+# Reuse the production refinement and ID path in the serial planner, retaining
+# one exact free-DOF-based MPI recommendation for every case in traversal order.
+for degree in "${degrees[@]}"; do
+  for element_tuple in "${element_cases[@]}"; do
+    if [[ "$mpi_rank" == "default" ]]; then
+      planner_command=(
+        "$planner"
+        -geometry "$geometry_file"
+        -refinement "$refinement"
+        -p "$degree"
+        -n "$element_tuple"
+        --recommended-ranks-only
+      )
+      if [[ -n "$maximum_mpi_ranks" ]]; then
+        planner_command+=(--max-ranks "$maximum_mpi_ranks")
+      fi
+      planned_ranks+=("$("${planner_command[@]}")")
+    else
+      planned_ranks+=("$mpi_rank")
+    fi
+  done
+done
 
 # Print the complete deterministic run order before starting a potentially
 # long batch, and initialize the machine-readable tab-separated summary.
 echo "Planned $total cases from geometry: $geometry_file"
+plan_index=0
 for degree in "${degrees[@]}"; do
   for element_tuple in "${element_cases[@]}"; do
+    mpi_ranks=${planned_ranks[$plan_index]}
+    plan_index=$((plan_index + 1))
     echo "  mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
   done
 done
@@ -73,8 +118,11 @@ fi
 
 printf 'case\tstatus\tmpi_ranks\trefinement\tp\tn\tpoint_set\tlor_pc\tsvd_tol\tsvd_max_it\tsvd_ncv\telapsed_s\tresult\tconsole\n' > "$summary_file"
 
+plan_index=0
 for degree in "${degrees[@]}"; do
   for element_tuple in "${element_cases[@]}"; do
+    mpi_ranks=${planned_ranks[$plan_index]}
+    plan_index=$((plan_index + 1))
     case_number=$((case_number + 1))
     element_tag=${element_tuple//,/x}
     stem="mpi${mpi_ranks}_${refinement}_p${degree}_n${element_tag}_${lor_points}_${lor_pc}"

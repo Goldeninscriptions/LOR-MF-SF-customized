@@ -5,7 +5,7 @@
 
 | 子目录 | 公开对象 | 与其他模块的关系 |
 |---|---|---|
-| `IO/` | `GeometryInput`、`ExperimentOptions`、Patch 转换与结果输出 | 把文本/PETSc options 转成 Mesh 和 Solver 可消费的数据 |
+| `IO/` | `GeometryInput`、`HardwareConcurrency`、`ExperimentOptions`、Patch 转换与结果输出 | 把几何、硬件和 PETSc options 转成 planner、Mesh 和 Solver 可消费的数据 |
 | `Mesh/` | Patch、三种 refinement、point set、LOR mesh、IEN、ID | 保存全局拓扑、几何和代数编号，不计算单元积分 |
 | `Element/` | B-spline/Q1 基函数和高阶/低阶单元积分点数据 | 从 Mesh gather 几何，由 Assembly 只读消费 |
 | `Assembly/` | ordering、Dirichlet、局部与 PETSc 全局组装 | 组合 Mesh 的映射和 Element 的积分数据 |

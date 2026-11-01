@@ -15,3 +15,6 @@ endif()
 add_executable(assembled_driver assembled_driver.cpp)
 target_link_libraries(assembled_driver PRIVATE lor_solver)
 
+add_executable(case_planner case_planner.cpp)
+target_link_libraries(case_planner PRIVATE lor_core)
+

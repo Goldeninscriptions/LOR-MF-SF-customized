@@ -188,9 +188,10 @@ n = {(4,4),(16,16),(128,128)}
 refinement = k_refine
 ```
 
-point set 可选 `greville|demko`，LOR 求解默认 `gmres_shell`。`mpi_ranks` 配置会
-直接成为 `mpirun -n` 的进程数。脚本为每个
-case 保存数值结果、控制台日志和批处理汇总；`BATCH_DRY_RUN=1` 只打印计划。
+point set 可选 `greville|demko`，LOR 求解默认 `gmres_shell`。单算例第一个参数和
+批处理的 `mpi_rank` 配置均接受正整数或 `default`：正整数直接成为 `mpirun -n`
+的进程数，`default` 则逐 case 使用 planner 推荐值。脚本为每个 case 保存数值
+结果、控制台日志和批处理汇总；`BATCH_DRY_RUN=1` 只打印计划。
 
 ## 7. 目录和依赖关系
 
@@ -223,7 +224,9 @@ Mesh 和 Element 不持有 PETSc 对象。PETSc 全局对象从 `GlobalAssembly`
   LocalAssembly；
 - `lor_petsc`：PETSc GlobalAssembly；
 - `lor_solver`：ExperimentIO、PETSc KSP、SLEPc 条件数和误差分析；
-- `assembled_driver`：当前端到端程序。
+- `assembled_driver`：当前端到端程序；
+- `case_planner`：串行复用真实 refinement/ID 路径，计算自由度并依据 macOS/Linux
+  逻辑 CPU 数推荐 MPI ranks。
 
 PETSc 和 SLEPc 是当前主程序的必需依赖。PETSc 必须以 MPI 构建，编译器 wrapper
 必须与其 MPI 实现一致。并行 `cond_2(K_LOR^{-1}K)` 需要 PETSc 带 MUMPS，以便

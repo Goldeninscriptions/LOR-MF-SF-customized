@@ -30,6 +30,18 @@ int main(int argc, char **argv)
     try
     {
         constexpr int root = 0;
+
+        // Record the communicator size immediately after initialization so a
+        // failed case still leaves its actual launch size in the console log.
+        PetscMPIInt actual_mpi_ranks = 0;
+        if (MPI_Comm_size(PETSC_COMM_WORLD, &actual_mpi_ranks) != MPI_SUCCESS)
+            throw std::runtime_error("Cannot query the actual MPI rank count");
+        PetscPrintf(PETSC_COMM_WORLD,
+            "Starting assembled experiment: actual_mpi_ranks = %d\n",
+            actual_mpi_ranks);
+
+        // Read the minimal geometry collectively after launch metadata has
+        // been written by communicator rank zero.
         const std::string geometry_file = lor::read_geometry_filename();
         const lor::GeometryInput geometry =
             lor::read_distributed_geometry_input(

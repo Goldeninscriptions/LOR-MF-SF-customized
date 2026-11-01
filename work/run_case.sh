@@ -2,21 +2,22 @@
 set -euo pipefail
 
 # Usage:
-#   ./run_case.sh MPI_RANKS GEOMETRY_FILE REFINEMENT P N_TUPLE LOR_POINTS LOR_PC OUTPUT_FILE \
+#   ./run_case.sh MPI_RANK GEOMETRY_FILE REFINEMENT P N_TUPLE LOR_POINTS LOR_PC OUTPUT_FILE \
 #       [OUTER_RTOL OUTER_ATOL INNER_RTOL INNER_ATOL]
-# Example:
-#   ./run_case.sh 4 input/square_2d.txt k_refine 5 16,16 greville gmres_shell \
+# Automatic-rank example:
+#   ./run_case.sh default input/square_2d.txt k_refine 5 16,16 greville gmres_shell \
 #     results/p5_n16x16_gmres_shell.log 1e-10 1e-10 1e-10 1e-10
 # Alternative exact-LU research mode (uncomment to use as a command):
-# ./run_case.sh 4 input/square_2d.txt k_refine 5 16,16 greville cg_lu \
+# ./run_case.sh 8 input/square_2d.txt k_refine 5 16,16 greville cg_lu \
 #     results/p5_n16x16_cg_lu.log 1e-10 1e-12 1e-10 1e-10
 
 if [[ $# -ne 8 && $# -ne 12 ]]; then
-  echo "Usage: $0 MPI_RANKS GEOMETRY_FILE REFINEMENT P N_TUPLE LOR_POINTS LOR_PC OUTPUT_FILE [OUTER_RTOL OUTER_ATOL INNER_RTOL INNER_ATOL]" >&2
+  echo "Usage: $0 MPI_RANK GEOMETRY_FILE REFINEMENT P N_TUPLE LOR_POINTS LOR_PC OUTPUT_FILE [OUTER_RTOL OUTER_ATOL INNER_RTOL INNER_ATOL]" >&2
+  echo "MPI_RANK must be 'default' or a positive integer" >&2
   exit 2
 fi
 
-mpi_ranks=$1
+mpi_rank_setting=$1
 geometry_file=$2
 refinement=$3
 degree=$4
@@ -25,10 +26,10 @@ lor_points=$6
 lor_pc=$7
 output_file=$8
 
-# MPI size is a launch-time choice, not a discretization option. Require an
-# explicit positive rank count and pass it unchanged to mpirun -n.
-if ! [[ "$mpi_ranks" =~ ^[1-9][0-9]*$ ]]; then
-  echo "MPI_RANKS must be a positive integer" >&2
+# Accept either an explicit launch size or per-case automatic planning.
+if [[ "$mpi_rank_setting" != "default" ]] &&
+   ! [[ "$mpi_rank_setting" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MPI_RANK must be 'default' or a positive integer" >&2
   exit 2
 fi
 
@@ -53,11 +54,36 @@ esac
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(cd "$script_dir/.." && pwd)
 driver="$project_dir/build/assembled_driver"
+planner="$project_dir/build/case_planner"
 
 if [[ ! -x "$driver" ]]; then
   echo "Missing executable: $driver" >&2
   echo "Build it with: cd $project_dir/build && cmake ../examples && make -j" >&2
   exit 3
+fi
+
+# Automatic mode computes this case's exact post-refinement free-DOF count.
+# MAX_MPI_RANKS optionally imposes a resource limit below detected hardware.
+if [[ "$mpi_rank_setting" == "default" ]]; then
+  if [[ ! -x "$planner" ]]; then
+    echo "Missing executable: $planner" >&2
+    echo "Build it with: cd $project_dir/build && cmake ../examples && make -j" >&2
+    exit 3
+  fi
+  planner_command=(
+    "$planner"
+    -geometry "$geometry_file"
+    -refinement "$refinement"
+    -p "$degree"
+    -n "$element_tuple"
+    --recommended-ranks-only
+  )
+  if [[ -n ${MAX_MPI_RANKS:-} ]]; then
+    planner_command+=(--max-ranks "$MAX_MPI_RANKS")
+  fi
+  mpi_ranks=$("${planner_command[@]}")
+else
+  mpi_ranks=$mpi_rank_setting
 fi
 
 mkdir -p "$(dirname "$output_file")"

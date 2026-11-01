@@ -30,6 +30,7 @@ add_library(lor_core
   src/Mesh/Refinement.cpp
   src/Mesh/DistributedPatch.cpp
   src/IO/GeometryInput.cpp
+  src/IO/HardwareInfo.cpp
   src/IO/DistributedGeometryInput.cpp
   src/IO/PatchInput.cpp
   src/Element/BSplineBasis1D.cpp

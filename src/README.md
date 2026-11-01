@@ -4,7 +4,7 @@
 
 | 子目录 | 当前实现范围 |
 |---|---|
-| `IO/` | 最小几何解析、Patch 转换、PETSc options 和结果文件 |
+| `IO/` | 最小几何解析、macOS/Linux 逻辑 CPU 检测、Patch 转换、PETSc options 和结果文件 |
 | `Mesh/` | Patch、细化、point set、LOR 网格、按需 IEN、ID 与 MPI slab 分区 |
 | `Element/` | Gauss rule、一维 B-spline、IGA 张量积单元、Q1 单元 |
 | `Assembly/` | ordering、全 Dirichlet、局部积分和分布式 PETSc 全局散射 |
