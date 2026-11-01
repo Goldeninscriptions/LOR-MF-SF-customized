@@ -26,7 +26,7 @@ geometry_file="$project_dir/work/input/square_2d.txt"
 # knots independently to reach each directional element-count tuple.
 refinement="k_refine"
 degrees=(3 4 5 6 7)
-element_cases=("4,4" "16,16" "128,128")
+element_cases=("4,4" "8,8" "16,16" "32,32" "64,64" "128,128" "256,256" "512,512" "1024,1024")
 
 # Result and real-time console logs are separated by p, n, and solver mode.
 result_dir="$script_dir/results"
