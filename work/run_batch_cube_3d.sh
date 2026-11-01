@@ -11,7 +11,7 @@ geometry_file="$script_dir/input/cube_3d.txt"
 # so the default n sequence is intentionally smaller than the square batch.
 refinement="k_refine"
 degrees=(3 4 5 6 7)
-element_cases=("4,4,4" "8,8,8" "16,16,16")
+element_cases=("4,4,4" "8,8,8" "16,16,16" "32,32,32" "64,64,64")
 
 result_dir="$script_dir/results/$batch_name"
 console_dir="$script_dir/logs/$batch_name"

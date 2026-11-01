@@ -11,7 +11,7 @@ geometry_file="$script_dir/input/curved_quadrilateral_2d.txt"
 # the geometry while producing the same analysis-space sweep as square_2d.
 refinement="k_refine"
 degrees=(3 4 5 6 7)
-element_cases=("4,4" "16,16" "128,128")
+element_cases=("4,4" "8,8" "16,16" "32,32" "64,64" "128,128" "256,256" "512,512")
 
 result_dir="$script_dir/results/$batch_name"
 console_dir="$script_dir/logs/$batch_name"

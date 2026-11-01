@@ -94,16 +94,16 @@ if [[ "$lor_pc" == "cg_lu" ]]; then
   outer_atol="1.0e-12"
   outer_dtol="1.0e8"
 elif [[ "$lor_pc" == "gmres_shell" ]]; then
-  outer_rtol="1.0e-12"
-  outer_atol="1.0e-14"
+  outer_rtol="1.0e-6"
+  outer_atol="1.0e-8"
   outer_dtol="1.0e4"
 else
   echo "LOR_PC must be cg_lu or gmres_shell" >&2
   exit 2
 fi
 outer_max_it="10000"
-inner_rtol="1.0e-12"
-inner_atol="1.0e-14"
+inner_rtol="1.0e-3"
+inner_atol="1.0e-4"
 inner_dtol="1.0e4"
 inner_max_it="10000"
 
