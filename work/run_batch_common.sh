@@ -75,26 +75,42 @@ fi
 case "$lor_pc" in
   left_cg_lu)
     preconditioner_side="left"
-    scheme_settings="exact_lor_lu"
+    outer_rtol=${outer_rtol:-${OUTER_RTOL:-1.0e-12}}
+    outer_atol=${outer_atol:-${OUTER_ATOL:-1.0e-14}}
+    outer_dtol=${outer_dtol:-${OUTER_DTOL:-1.0e8}}
+    outer_max_it=${outer_max_it:-${OUTER_MAX_IT:-10000}}
+    scheme_settings="outer_rtol=$outer_rtol,outer_atol=$outer_atol,outer_dtol=$outer_dtol,outer_max_it=$outer_max_it,exact_lor_lu"
     setting_tag="lu"
     ;;
   right_gmres_lu)
     preconditioner_side="right"
-    scheme_settings="exact_lor_lu"
+    outer_rtol=${outer_rtol:-${OUTER_RTOL:-1.0e-10}}
+    outer_atol=${outer_atol:-${OUTER_ATOL:-1.0e-10}}
+    outer_dtol=${outer_dtol:-${OUTER_DTOL:-1.0e4}}
+    outer_max_it=${outer_max_it:-${OUTER_MAX_IT:-10000}}
+    scheme_settings="outer_rtol=$outer_rtol,outer_atol=$outer_atol,outer_dtol=$outer_dtol,outer_max_it=$outer_max_it,exact_lor_lu"
     setting_tag="lu"
     ;;
   left_gmres_cg|right_gmres_cg|right_fgmres_cg)
     [[ "$lor_pc" == left_* ]] && preconditioner_side="left" || preconditioner_side="right"
+    outer_rtol=${outer_rtol:-${OUTER_RTOL:-1.0e-10}}
+    outer_atol=${outer_atol:-${OUTER_ATOL:-1.0e-10}}
+    outer_dtol=${outer_dtol:-${OUTER_DTOL:-1.0e4}}
+    outer_max_it=${outer_max_it:-${OUTER_MAX_IT:-10000}}
     if [[ "$inner_pc" != "jacobi" && "$inner_pc" != "gamg" ]]; then
       echo "inner_pc must be jacobi or gamg for a *_cg lor_pc" >&2
       exit 2
     fi
-    scheme_settings="inner_pc=$inner_pc,inner_rtol=$inner_rtol,inner_atol=$inner_atol,inner_max_it=$inner_max_it"
+    scheme_settings="outer_rtol=$outer_rtol,outer_atol=$outer_atol,outer_dtol=$outer_dtol,outer_max_it=$outer_max_it,inner_pc=$inner_pc,inner_rtol=$inner_rtol,inner_atol=$inner_atol,inner_max_it=$inner_max_it"
     setting_tag="inner_${inner_pc}"
     ;;
   left_gmres_fixed_jacobi)
     preconditioner_side="left"
-    scheme_settings="fixed_steps=$fixed_jacobi_steps,fixed_omega=$fixed_jacobi_omega"
+    outer_rtol=${outer_rtol:-${OUTER_RTOL:-1.0e-10}}
+    outer_atol=${outer_atol:-${OUTER_ATOL:-1.0e-10}}
+    outer_dtol=${outer_dtol:-${OUTER_DTOL:-1.0e4}}
+    outer_max_it=${outer_max_it:-${OUTER_MAX_IT:-10000}}
+    scheme_settings="outer_rtol=$outer_rtol,outer_atol=$outer_atol,outer_dtol=$outer_dtol,outer_max_it=$outer_max_it,fixed_steps=$fixed_jacobi_steps,fixed_omega=$fixed_jacobi_omega"
     setting_tag="fixed_m${fixed_jacobi_steps}"
     ;;
   *)
@@ -177,6 +193,8 @@ for degree in "${degrees[@]}"; do
         ;;
     esac
     if env "${scheme_environment[@]}" \
+      OUTER_RTOL="$outer_rtol" OUTER_ATOL="$outer_atol" \
+      OUTER_DTOL="$outer_dtol" OUTER_MAX_IT="$outer_max_it" \
       COMPUTE_SOLUTION="$compute_solution" COMPUTE_L2_ERROR="$compute_l2_error" \
       COMPUTE_CONDITION_NUMBER="$compute_condition_number" \
       SVD_TOL="$svd_tol" SVD_MAX_IT="$svd_max_it" SVD_NCV="$svd_ncv" \

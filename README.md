@@ -115,6 +115,9 @@ fixed 字段，固定 Jacobi 也没有 inner CG 字段。
 三个 `*_cg` 方案的样例默认写为 `inner_pc="jacobi"`；要使用 PETSc GAMG，将所选
 方案块中的值改成 `inner_pc="gamg"`。
 
+六个批处理方案块都显式列出 `outer_rtol`、`outer_atol`、`outer_dtol` 和
+`outer_max_it`。这些值由公共执行器传给单算例，不再只能依赖 `run_case.sh` 的隐藏默认值。
+
 GAMG 层次在 setup 阶段构造一次并在所有内层调用中复用。性能比较应使用
 `setup_time_seconds + outer_solve_time_seconds`，不能只看内层迭代数。
 

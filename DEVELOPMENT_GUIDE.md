@@ -129,6 +129,8 @@ geometry txt
 - `right_fgmres_cg`（方案 A1）用右预条件 FGMRES 匹配变化的内层 CG；
 - `left_gmres_fixed_jacobi`（方案 B，默认）固定执行 `m=4, omega=2/3` 的 weighted
   Jacobi，从零初值生成固定线性多项式近似逆，再应用标准左 GMRES；
+- 参数所有权按完整方案严格区分：LU 不接收 inner/fixed 参数，三个 `*_cg` 只接收
+  inner CG 参数，固定 Jacobi 只接收 fixed 参数；
 - 三个 `*_cg` 方案可选择 Jacobi 或 PETSc GAMG；GAMG 层次在 setup 中构造一次后
   复用；外层/内层默认容差均参考
   Parallel-Computing 实际生效值，采用 `rtol=1e-10, atol=1e-10, dtol=1e4,
@@ -229,6 +231,8 @@ point set 可选 `greville|demko`，LOR 求解默认 `left_gmres_fixed_jacobi`�
 批处理的 `mpi_rank` 配置均接受正整数或 `default`：正整数直接成为 `mpirun -n`
 的进程数，`default` 则逐 case 使用 planner 推荐值。脚本为每个 case 保存数值
 结果、控制台日志和批处理汇总；`BATCH_DRY_RUN=1` 只打印计划。
+每个方案块显式给出 `outer_rtol/outer_atol/outer_dtol/outer_max_it`，并只暴露该方案
+实际使用的 inner CG 或 fixed-Jacobi 参数。
 
 三维长方体使用 `run_batch_cube_3d.sh`，默认 n sweep 为
 `(4,4,4),(8,8,8),(16,16,16)`，避免照搬二维规模造成单元数立方增长。曲边 Patch

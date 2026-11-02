@@ -251,5 +251,5 @@ if [[ "$uses_inner_cg" == true ]]; then
 elif [[ "$uses_fixed_jacobi" == true ]]; then
   scheme_log=" fixed_jacobi_steps=$fixed_jacobi_steps fixed_jacobi_omega=$fixed_jacobi_omega"
 fi
-echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side${scheme_log} solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_max_it=$outer_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side${scheme_log} solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_dtol=$outer_dtol outer_max_it=$outer_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
 "$mpi_launcher" -n "$mpi_ranks" "$driver" "${common_options[@]}"

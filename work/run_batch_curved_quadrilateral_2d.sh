@@ -25,12 +25,24 @@ lor_points="greville"
 
 # Exact left LOR inverse; no inner iterative settings are used.
 # lor_pc="left_cg_lu"
+# outer_rtol="1.0e-12"
+# outer_atol="1.0e-14"
+# outer_dtol="1.0e8"
+# outer_max_it="10000"
 
 # Exact right LOR inverse; no inner iterative settings are used.
 # lor_pc="right_gmres_lu"
+# outer_rtol="1.0e-10"
+# outer_atol="1.0e-10"
+# outer_dtol="1.0e4"
+# outer_max_it="10000"
 
 # Standard left GMRES with tolerance-controlled inner CG.
 # lor_pc="left_gmres_cg"
+# outer_rtol="1.0e-10"
+# outer_atol="1.0e-10"
+# outer_dtol="1.0e4"
+# outer_max_it="10000"
 # inner_pc="jacobi"       # Alternative: "gamg"
 # inner_rtol="1.0e-10"
 # inner_atol="1.0e-10"
@@ -38,6 +50,10 @@ lor_points="greville"
 
 # Standard right GMRES with tolerance-controlled inner CG.
 # lor_pc="right_gmres_cg"
+# outer_rtol="1.0e-10"
+# outer_atol="1.0e-10"
+# outer_dtol="1.0e4"
+# outer_max_it="10000"
 # inner_pc="jacobi"       # Alternative: "gamg"
 # inner_rtol="1.0e-10"
 # inner_atol="1.0e-10"
@@ -45,6 +61,10 @@ lor_points="greville"
 
 # Scheme A1: flexible right GMRES permits an inexact, varying inner CG map.
 # lor_pc="right_fgmres_cg"
+# outer_rtol="1.0e-10"
+# outer_atol="1.0e-10"
+# outer_dtol="1.0e4"
+# outer_max_it="10000"
 # inner_pc="jacobi"       # Alternative: "gamg"
 # inner_rtol="1.0e-4"
 # inner_atol="1.0e-50"
@@ -52,6 +72,10 @@ lor_points="greville"
 
 # Scheme B (active/default): standard left GMRES with one fixed linear map.
 lor_pc="left_gmres_fixed_jacobi"
+outer_rtol="1.0e-10"
+outer_atol="1.0e-10"
+outer_dtol="1.0e4"
+outer_max_it="10000"
 fixed_jacobi_steps="4"
 fixed_jacobi_omega="0.6666666666666667"
 
