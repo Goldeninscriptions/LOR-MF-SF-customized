@@ -143,6 +143,12 @@ case "$lor_pc" in
     outer_atol="1.0e-10"
     outer_dtol="1.0e4"
     ;;
+  left_gmres_k_gamg|right_gmres_k_gamg)
+    [[ "$lor_pc" == left_* ]] && preconditioner_side="left" || preconditioner_side="right"
+    outer_rtol="1.0e-10"
+    outer_atol="1.0e-10"
+    outer_dtol="1.0e4"
+    ;;
   left_gmres_fixed_jacobi)
     preconditioner_side="left"
     uses_fixed_jacobi=true
@@ -151,7 +157,7 @@ case "$lor_pc" in
     outer_dtol="1.0e4"
     ;;
   *)
-    echo "LOR_PC must be left_cg_lu, right_gmres_lu, left_gmres_cg, right_gmres_cg, right_fgmres_cg, left_gmres_k_jacobi, or left_gmres_fixed_jacobi" >&2
+    echo "LOR_PC must be left_cg_lu, right_gmres_lu, left_gmres_cg, right_gmres_cg, right_fgmres_cg, left_gmres_k_jacobi, left_gmres_k_gamg, right_gmres_k_gamg, or left_gmres_fixed_jacobi" >&2
     exit 2
     ;;
 esac
@@ -192,6 +198,12 @@ for feature_value in \
 done
 if [[ "$compute_l2_error" == "true" && "$compute_solution" != "true" ]]; then
   echo "COMPUTE_L2_ERROR=true requires COMPUTE_SOLUTION=true" >&2
+  exit 2
+fi
+if [[ "$compute_condition_number" == "true" &&
+      ( "$lor_pc" == "left_gmres_k_gamg" ||
+        "$lor_pc" == "right_gmres_k_gamg" ) ]]; then
+  echo "COMPUTE_CONDITION_NUMBER=true is not supported for K-GAMG modes" >&2
   exit 2
 fi
 

@@ -113,6 +113,7 @@ PetscErrorCode destroy_lor_shell(PC pc)
 
 PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     const LORPCMode mode,
+    const bool apply_preconditioner,
     const InnerPCMode inner_pc_mode,
     const SolverTolerances &tolerances,
     const FixedJacobiParameters &fixed_jacobi,
@@ -136,8 +137,11 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
         mode == LORPCMode::left_gmres_fixed_jacobi;
     const bool use_k_jacobi =
         mode == LORPCMode::left_gmres_k_jacobi;
+    const bool use_k_gamg =
+        mode == LORPCMode::left_gmres_k_gamg ||
+        mode == LORPCMode::right_gmres_k_gamg;
     const bool use_shell = use_inner_cg || use_fixed_jacobi;
-    const bool use_fgmres = has_lor &&
+    const bool use_fgmres = apply_preconditioner &&
         mode == LORPCMode::right_fgmres_cg;
     const bool use_gmres = mode != LORPCMode::left_cg_lu;
     const PreconditionerSide side = lor_pc_mode_side(mode);
@@ -146,13 +150,16 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     PetscCheck(fixed_jacobi.omega > 0.0 && fixed_jacobi.omega < 1.0,
         comm, PETSC_ERR_ARG_OUTOFRANGE,
         "fixed_jacobi_omega must lie strictly between zero and one");
+    PetscCheck(!apply_preconditioner || !lor_pc_mode_uses_lor_matrix(mode) ||
+        has_lor, comm, PETSC_ERR_ARG_NULL,
+        "Selected LOR preconditioner requires an assembled K_LOR matrix");
 
     // Use standard GMRES for the fixed linear map and FGMRES only for A1's
     // variable inner solve. The unpreconditioned baseline remains GMRES.
     KSP ksp = nullptr;
     PetscCall(KSPCreate(comm, &ksp));
     PetscCall(KSPSetOperators(ksp, stiffness,
-        has_lor && use_exact_lu ? lor_stiffness : stiffness));
+        apply_preconditioner && use_exact_lu ? lor_stiffness : stiffness));
     PetscCall(KSPSetType(ksp, use_fgmres ? KSPFGMRES :
         (use_gmres ? KSPGMRES : KSPCG)));
     if (use_gmres)
@@ -161,25 +168,27 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     // Match the paper and Parallel-Computing default with explicit PC_LEFT;
     // retain PC_RIGHT as an independently selectable research path. PETSc
     // GMRES monitors the compatible preconditioned or physical residual norm.
-    if (has_lor)
+    if (apply_preconditioner)
         PetscCall(KSPSetPCSide(ksp,
             side == PreconditionerSide::left ? PC_LEFT : PC_RIGHT));
     PetscCall(KSPSetNormType(ksp,
-        has_lor && side == PreconditionerSide::left ?
+        apply_preconditioner && side == PreconditionerSide::left ?
             KSP_NORM_PRECONDITIONED : KSP_NORM_UNPRECONDITIONED));
     PetscCall(KSPSetTolerances(ksp, tolerances.outer_rtol,
         tolerances.outer_atol, tolerances.outer_dtol,
         tolerances.outer_max_it));
     PetscCall(KSPSetErrorIfNotConverged(ksp, PETSC_TRUE));
 
-    // Attach no PC, direct Jacobi on K, exact LOR LU, or a LOR shell.
+    // Attach no PC, a direct algebraic PC on K, exact LOR LU, or a LOR shell.
     PC pc = nullptr;
     PetscCall(KSPGetPC(ksp, &pc));
     LORShellContext *shell_context = nullptr;
-    if (lor_stiffness == nullptr)
+    if (!apply_preconditioner)
         PetscCall(PCSetType(pc, PCNONE));
     else if (use_k_jacobi)
         PetscCall(PCSetType(pc, PCJACOBI));
+    else if (use_k_gamg)
+        PetscCall(PCSetType(pc, PCGAMG));
     else if (!use_shell)
         PetscCall(PCSetType(pc, PCLU));
     else
@@ -297,11 +306,16 @@ LORPCMode parse_lor_pc_mode(const std::string &name)
         return LORPCMode::right_fgmres_cg;
     if (name == "left_gmres_k_jacobi")
         return LORPCMode::left_gmres_k_jacobi;
+    if (name == "left_gmres_k_gamg")
+        return LORPCMode::left_gmres_k_gamg;
+    if (name == "right_gmres_k_gamg")
+        return LORPCMode::right_gmres_k_gamg;
     if (name == "left_gmres_fixed_jacobi")
         return LORPCMode::left_gmres_fixed_jacobi;
     throw std::invalid_argument(
         "lor_pc must be left_cg_lu, right_gmres_lu, left_gmres_cg, "
-        "right_gmres_cg, right_fgmres_cg, left_gmres_k_jacobi, or "
+        "right_gmres_cg, right_fgmres_cg, left_gmres_k_jacobi, "
+        "left_gmres_k_gamg, right_gmres_k_gamg, or "
         "left_gmres_fixed_jacobi");
 }
 
@@ -322,6 +336,10 @@ const char *lor_pc_mode_name(const LORPCMode mode) noexcept
             return "right_fgmres_cg";
         case LORPCMode::left_gmres_k_jacobi:
             return "left_gmres_k_jacobi";
+        case LORPCMode::left_gmres_k_gamg:
+            return "left_gmres_k_gamg";
+        case LORPCMode::right_gmres_k_gamg:
+            return "right_gmres_k_gamg";
         case LORPCMode::left_gmres_fixed_jacobi:
             return "left_gmres_fixed_jacobi";
     }
@@ -334,8 +352,17 @@ PreconditionerSide lor_pc_mode_side(const LORPCMode mode) noexcept
 {
     return mode == LORPCMode::right_gmres_lu ||
         mode == LORPCMode::right_gmres_cg ||
-        mode == LORPCMode::right_fgmres_cg ?
+        mode == LORPCMode::right_fgmres_cg ||
+        mode == LORPCMode::right_gmres_k_gamg ?
         PreconditionerSide::right : PreconditionerSide::left;
+}
+
+// Separate K-only reference schemes from configurations requiring K_LOR.
+bool lor_pc_mode_uses_lor_matrix(const LORPCMode mode) noexcept
+{
+    return mode != LORPCMode::left_gmres_k_jacobi &&
+        mode != LORPCMode::left_gmres_k_gamg &&
+        mode != LORPCMode::right_gmres_k_gamg;
 }
 
 // Translate the user-facing low-order solver choice into a typed mode.
@@ -377,7 +404,7 @@ PetscErrorCode solve_unpreconditioned(Mat stiffness, Vec load,
     LinearSolveResult *result)
 {
     const FixedJacobiParameters unused_fixed_jacobi;
-    return solve(stiffness, nullptr, load, mode,
+    return solve(stiffness, nullptr, load, mode, false,
         InnerPCMode::jacobi, tolerances,
         unused_fixed_jacobi, result);
 }
@@ -388,7 +415,7 @@ PetscErrorCode solve_with_lor(Mat stiffness, Mat lor_stiffness, Vec load,
     const FixedJacobiParameters &fixed_jacobi,
     LinearSolveResult *result)
 {
-    return solve(stiffness, lor_stiffness, load, mode, inner_pc_mode,
+    return solve(stiffness, lor_stiffness, load, mode, true, inner_pc_mode,
         tolerances, fixed_jacobi, result);
 }
 

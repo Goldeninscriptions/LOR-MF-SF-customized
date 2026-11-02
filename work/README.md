@@ -82,6 +82,7 @@ REFINEMENT = p_refine | h_refine | k_refine
 LOR_POINTS = greville | demko
 LOR_PC = left_cg_lu | right_gmres_lu | left_gmres_cg |
          right_gmres_cg | right_fgmres_cg | left_gmres_k_jacobi |
+         left_gmres_k_gamg | right_gmres_k_gamg |
          left_gmres_fixed_jacobi
 INNER_PC = jacobi | gamg  # 仅用于三个 *_cg 方案
 ```
@@ -99,7 +100,7 @@ lor_points="greville"
 # lor_points="demko"
 
 mpi_rank=${MPI_RANK:-default}
-# 其他六个完整方案及其配套参数在实际脚本中以注释块列出。
+# 其他八个完整方案及其配套参数在实际脚本中以注释块列出。
 # 当前只暴露方案 B：
 lor_pc="left_gmres_fixed_jacobi"
 outer_rtol="1.0e-10"
@@ -118,7 +119,7 @@ svd_max_it="100000"
 svd_ncv="100"
 ```
 
-实际的三个几何入口都把七种方案写成独立配置块。切换时应先注释当前整个方案 B 块，
+实际的三个几何入口都把九种方案写成独立配置块。切换时应先注释当前整个方案 B 块，
 再取消注释目标块中的方案名和配套参数；不要同时暴露两个 `lor_pc` 赋值。公共执行器
 会在 dry-run 中打印当前方案真正使用的参数。每个方案块都显式给出外层
 `outer_rtol`、`outer_atol`、`outer_dtol` 和 `outer_max_it`，可以直接用于批处理精度扫描。

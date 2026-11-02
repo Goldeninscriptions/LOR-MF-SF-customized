@@ -129,6 +129,13 @@ ExperimentOptions read_experiment_options(const int dimension)
     if (options.compute_l2_error && !options.compute_solution)
         throw std::invalid_argument(
             "-compute_l2_error true requires -compute_solution true");
+    const bool uses_k_gamg =
+        options.lor_pc == LORPCMode::left_gmres_k_gamg ||
+        options.lor_pc == LORPCMode::right_gmres_k_gamg;
+    if (uses_k_gamg && options.compute_condition_number)
+        throw std::invalid_argument(
+            "K-GAMG modes do not support -compute_condition_number true; "
+            "use physical residual and L2 error diagnostics");
 
     // Apply any optional outer/inner KSP and SVD stopping-control overrides.
     PetscOptionsGetReal(nullptr, nullptr, "-outer_rtol",
@@ -313,16 +320,20 @@ void write_experiment_results(const std::string &filename,
            << "memory_bytes(K) = " << results.memory_bytes_K << '\n'
            << "estimated_minimum_bytes(K) = "
            << results.estimated_minimum_bytes_K << '\n'
-           << "predicted_nnz(K_LOR) = "
-           << results.predicted_nonzeros_lor << '\n'
-           << "used_nnz(K_LOR) = " << results.used_nonzeros_lor << '\n'
-           << "allocated_nnz(K_LOR) = "
-           << results.allocated_nonzeros_lor << '\n'
-           << "allocation_calls(K_LOR) = "
-           << results.allocation_calls_lor << '\n'
-           << "memory_bytes(K_LOR) = " << results.memory_bytes_lor << '\n';
-    output << "estimated_minimum_bytes(K_LOR) = "
-           << results.estimated_minimum_bytes_lor << '\n';
+           << "assembled(K_LOR) = " << results.assembled_lor_matrix << '\n';
+    if (results.assembled_lor_matrix)
+        output << "predicted_nnz(K_LOR) = "
+               << results.predicted_nonzeros_lor << '\n'
+               << "used_nnz(K_LOR) = "
+               << results.used_nonzeros_lor << '\n'
+               << "allocated_nnz(K_LOR) = "
+               << results.allocated_nonzeros_lor << '\n'
+               << "allocation_calls(K_LOR) = "
+               << results.allocation_calls_lor << '\n'
+               << "memory_bytes(K_LOR) = "
+               << results.memory_bytes_lor << '\n'
+               << "estimated_minimum_bytes(K_LOR) = "
+               << results.estimated_minimum_bytes_lor << '\n';
     // Keep the ideal exact-LOR spectral operator separate from the actual
     // algorithm label used by iterative solve and error diagnostics.
     const bool left =

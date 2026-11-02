@@ -70,7 +70,7 @@ struct ExperimentResults
     bool computed_l2_error = false;
     bool computed_condition_number = false;
 
-    // LOR inverse application and side used consistently by the solve and
+    // Preconditioner application and side used consistently by the solve and
     // labels. inner_pc is emitted as metadata only for a *_cg configuration.
     LORPCMode lor_pc = LORPCMode::left_gmres_fixed_jacobi;
     PreconditionerSide preconditioner_side = PreconditionerSide::left;
@@ -81,9 +81,9 @@ struct ExperimentResults
     SolverTolerances tolerances;
     FixedJacobiParameters fixed_jacobi;
 
-    // Global PETSc storage diagnostics for the assembled high-order and LOR
-    // stiffness matrices. These are always available because both matrices
-    // are required by every experiment configuration.
+    // Global PETSc storage diagnostics for the assembled high-order and
+    // optional LOR stiffness matrices. K-only reference modes skip K_LOR.
+    bool assembled_lor_matrix = false;
     PetscInt predicted_nonzeros_K = 0;
     PetscLogDouble allocated_nonzeros_K = 0.0;
     PetscLogDouble used_nonzeros_K = 0.0;
@@ -107,8 +107,8 @@ struct ExperimentResults
     PetscLogDouble setup_time_K = 0.0;
     PetscLogDouble outer_solve_time_K = 0.0;
 
-    // Selected-side LOR-preconditioned diagnostics for the same high-order
-    // equation; LOR remains a preconditioner rather than a second PDE system.
+    // Selected-side preconditioned diagnostics for the same high-order
+    // equation. The preconditioner may use K_LOR or be formed directly on K.
     PetscReal condition_lor_K = 0.0;
     PetscInt iterations_lor_K = 0;
     PetscReal residual_lor_K = 0.0;

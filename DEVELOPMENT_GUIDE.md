@@ -34,7 +34,7 @@ geometry txt
   -> LocalAssembly -> 分布式组装 PETSc K / M / F
   -> GrevillePointSet / DemkoPointSet
   -> LORMesh -> LORIEN -> FEMQuad4/FEMHex8 -> 分布式组装 K_LOR / M_LOR / F_LOR
-  -> [compute_solution] 七个显式预条件/Krylov 组合方案之一
+  -> [compute_solution] 九个显式预条件/Krylov 组合方案之一
   -> [compute_l2_error] L2 error
   -> [compute_condition_number] GlobalAssembly SLEPc condition numbers
   -> 只含启用项的 result log
@@ -120,14 +120,16 @@ geometry txt
   点，避免每个单元创建上千个嵌套 vector；
 - 非零 Dirichlet 制造解组装在局部 scatter 前执行
   `F_f -= K_fc g_c`，与 MixPERIGEE 的 `ID=-1` 加 base solution/lifting 思路等价；
-- 当前 `AssembledLaplaceExperiment` 始终请求高阶/LOR 刚度；只有
-  `compute_solution=true` 才通过融合入口附带组装荷载；质量矩阵和 LOR 荷载不会
-  被隐式构造；
-- `lor_pc` 的完整名称同时编码方向、外层方法和 LOR 逆应用，避免不相容的独立组合；
+- 当前 `AssembledLaplaceExperiment` 始终请求高阶刚度，LOR 刚度只为使用它的模式
+  组装；只有 `compute_solution=true` 才通过融合入口附带组装荷载；质量矩阵和 LOR
+  荷载不会被隐式构造；
+- `lor_pc` 的完整名称同时编码方向、外层方法、来源矩阵和逆近似，避免不相容的独立组合；
 - `left_cg_lu` 与 `right_gmres_lu` 使用精确 LU 应用 LOR 逆；
 - `left_gmres_cg` 与 `right_gmres_cg` 保留标准 GMRES+容差控制内层 CG 对照；
 - `right_fgmres_cg`（方案 A1）用右预条件 FGMRES 匹配变化的内层 CG；
 - `left_gmres_k_jacobi` 直接应用 `diag(K)^{-1}`，作为不使用 LOR 的左预条件参考组；
+- `left_gmres_k_gamg` 与 `right_gmres_k_gamg` 直接从 K 构造 PETSc GAMG 层次，
+  分别采用左、右 GMRES，并跳过 K_LOR 矩阵组装；
 - `left_gmres_fixed_jacobi`（方案 B，默认）固定执行 `m=4, omega=2/3` 的 weighted
   Jacobi，从零初值生成固定线性多项式近似逆，再应用标准左 GMRES；
 - 参数所有权按完整方案严格区分：LU 与 K-Jacobi 不接收 inner/fixed 参数，三个

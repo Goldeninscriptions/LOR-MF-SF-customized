@@ -11,8 +11,8 @@ namespace lor
 {
 
 // Complete solver/preconditioner configurations exposed to users. Each stable
-// name records the preconditioning side, outer Krylov method, and method used
-// to apply the LOR inverse, so incompatible combinations cannot be requested.
+// name records the preconditioning side, outer Krylov method, source matrix,
+// and inverse approximation, so incompatible combinations cannot be requested.
 enum class LORPCMode
 {
     left_cg_lu,
@@ -21,6 +21,8 @@ enum class LORPCMode
     right_gmres_cg,
     right_fgmres_cg,
     left_gmres_k_jacobi,
+    left_gmres_k_gamg,
+    right_gmres_k_gamg,
     left_gmres_fixed_jacobi
 };
 
@@ -69,7 +71,7 @@ struct LinearSolveResult
     PetscInt iterations = 0;
 
     // PCSHELL application count and accumulated inner-CG iterations or fixed
-    // Jacobi steps. Both remain zero for unpreconditioned and LU solves.
+    // Jacobi steps. Both remain zero for every non-shell preconditioner.
     PetscInt pc_applications = 0;
     PetscInt inner_iterations = 0;
 
@@ -81,7 +83,7 @@ struct LinearSolveResult
 
     // Maximum-rank sum of time spent inside all inner CG solves or fixed
     // Jacobi applications. It is nested within outer_solve_time_seconds, not
-    // additional elapsed time, and remains zero for LU or no preconditioner.
+    // additional elapsed time, and remains zero for non-shell preconditioners.
     PetscLogDouble inner_solve_time_seconds = 0.0;
 
     // Common physical residual ||F-Ku||_2 recomputed after convergence.
@@ -98,6 +100,10 @@ struct LinearSolveResult
 LORPCMode parse_lor_pc_mode(const std::string &name);
 const char *lor_pc_mode_name(LORPCMode mode) noexcept;
 PreconditionerSide lor_pc_mode_side(LORPCMode mode) noexcept;
+
+// Report whether the selected configuration needs an assembled K_LOR. The
+// direct K-Jacobi and K-GAMG reference modes operate only on stiffness.
+bool lor_pc_mode_uses_lor_matrix(LORPCMode mode) noexcept;
 
 // Parse and print the stable inner-preconditioner spellings shared by command
 // line options, result metadata, and batch scripts.
@@ -117,8 +123,8 @@ PetscErrorCode solve_unpreconditioned(Mat stiffness, Vec load,
 
 // Solve K u = F with the complete configuration selected by mode. The mode
 // fixes the side and outer method; inner_pc_mode affects only schemes ending
-// in _cg, fixed_jacobi affects only left_gmres_fixed_jacobi, and
-// left_gmres_k_jacobi applies PETSc Jacobi directly to stiffness.
+// in _cg, fixed_jacobi affects only left_gmres_fixed_jacobi, and the K-only
+// reference modes accept a null lor_stiffness.
 PetscErrorCode solve_with_lor(Mat stiffness, Mat lor_stiffness, Vec load,
     LORPCMode mode, InnerPCMode inner_pc_mode,
     const SolverTolerances &tolerances,

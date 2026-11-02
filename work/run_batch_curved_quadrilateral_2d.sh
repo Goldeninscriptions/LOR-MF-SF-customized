@@ -77,6 +77,13 @@ lor_points="greville"
 # outer_dtol="1.0e4"
 # outer_max_it="10000"
 
+# Direct K-GAMG reference. Choose left_gmres_k_gamg or right_gmres_k_gamg.
+# lor_pc="left_gmres_k_gamg"
+# outer_rtol="1.0e-10"
+# outer_atol="1.0e-10"
+# outer_dtol="1.0e4"
+# outer_max_it="10000"
+
 # Scheme B (active/default): standard left GMRES with one fixed linear map.
 lor_pc="left_gmres_fixed_jacobi"
 outer_rtol="1.0e-10"

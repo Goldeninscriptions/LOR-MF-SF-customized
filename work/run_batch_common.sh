@@ -113,6 +113,15 @@ case "$lor_pc" in
     scheme_settings="outer_rtol=$outer_rtol,outer_atol=$outer_atol,outer_dtol=$outer_dtol,outer_max_it=$outer_max_it,k_jacobi"
     setting_tag="k_jacobi"
     ;;
+  left_gmres_k_gamg|right_gmres_k_gamg)
+    [[ "$lor_pc" == left_* ]] && preconditioner_side="left" || preconditioner_side="right"
+    outer_rtol=${outer_rtol:-${OUTER_RTOL:-1.0e-10}}
+    outer_atol=${outer_atol:-${OUTER_ATOL:-1.0e-10}}
+    outer_dtol=${outer_dtol:-${OUTER_DTOL:-1.0e4}}
+    outer_max_it=${outer_max_it:-${OUTER_MAX_IT:-10000}}
+    scheme_settings="outer_rtol=$outer_rtol,outer_atol=$outer_atol,outer_dtol=$outer_dtol,outer_max_it=$outer_max_it,k_gamg"
+    setting_tag="k_gamg"
+    ;;
   left_gmres_fixed_jacobi)
     preconditioner_side="left"
     outer_rtol=${outer_rtol:-${OUTER_RTOL:-1.0e-10}}
@@ -127,6 +136,10 @@ case "$lor_pc" in
     exit 2
     ;;
 esac
+if [[ "$compute_condition_number" == "true" && "$lor_pc" == *_k_gamg ]]; then
+  echo "compute_condition_number=true is not supported for K-GAMG modes" >&2
+  exit 2
+fi
 
 # Reuse the production refinement and ID path in the serial planner, retaining
 # one exact free-DOF-based MPI recommendation for every case in traversal order.

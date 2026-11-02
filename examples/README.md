@@ -80,7 +80,7 @@ mpirun -n 4 ./build/assembled_driver \
 - `-lor_points greville|demko`；
 - `-lor_pc` 选择完整求解方案：`left_cg_lu|right_gmres_lu|left_gmres_cg|`
   `right_gmres_cg|right_fgmres_cg|left_gmres_k_jacobi|`
-  `left_gmres_fixed_jacobi`；默认最后一项；
+  `left_gmres_k_gamg|right_gmres_k_gamg|left_gmres_fixed_jacobi`；默认最后一项；
 - 预条件方向由方案名称唯一确定；`preconditioner_side` 只作为结果元数据；
 - `-inner_pc jacobi|gamg` 及 `-inner_*` 仅属于三个 `*_cg` 方案；
 - `-fixed_jacobi_steps` 和 `-fixed_jacobi_omega` 仅属于固定线性方案，默认 `4` 和
@@ -90,6 +90,8 @@ mpirun -n 4 ./build/assembled_driver \
 - `left_gmres_cg`/`right_gmres_cg` 是原标准 GMRES 对照；
 - `right_fgmres_cg` 是方案 A1，允许变化的容差控制内层 CG；
 - `left_gmres_k_jacobi` 直接以 `diag(K)` 作为左预条件子，是不使用 LOR 的参考组；
+- `left_gmres_k_gamg`/`right_gmres_k_gamg` 直接在 K 上构造 PETSc GAMG，分别作为
+  左、右预条件参考组，并跳过 K_LOR 组装；
 - `left_gmres_fixed_jacobi` 是方案 B，对固定线性近似逆应用标准左 GMRES；
 - 三个 `*_cg` 方案的外层/内层默认容差均参考 Parallel-Computing 实际生效的
   `rtol=1e-10, atol=1e-10`，也可用命令行逐次覆盖。
@@ -99,6 +101,7 @@ mpirun -n 4 ./build/assembled_driver \
 - `-compute_solution true|false`：是否组装荷载并执行无预条件/LOR 两次求解；
 - `-compute_l2_error true|false`：是否对两个解做 L2 积分，启用时要求 solution 为 true；
 - `-compute_condition_number true|false`：是否调用四次 SLEPc 极端奇异值求解；
+- K-GAMG 模式暂不支持条件数分析，选择这两个模式时该开关必须为 `false`；
 - 三者默认分别为 `true`、`true`、`false`。
 
 ## 结果格式

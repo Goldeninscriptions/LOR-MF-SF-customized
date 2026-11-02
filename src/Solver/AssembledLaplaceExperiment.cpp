@@ -210,14 +210,20 @@ PetscErrorCode run_assembled_laplace_experiment(
         PetscCall(assemble_global_stiffness<Dim>(patch, high_IEN,
             ID_map, assembly_quad, assembly_basis, &high_stiffness));
 
-    // Assemble only the Q1 LOR stiffness matrix used by the preconditioner.
-    const QuadratureRule1D lor_quad = gauss_legendre_rule(2);
+    // Assemble K_LOR only for configurations whose preconditioner or spectral
+    // diagnostic actually consumes it. Direct K reference modes avoid this
+    // setup cost while retaining the common partition and error-analysis path.
+    const bool uses_lor_matrix = lor_pc_mode_uses_lor_matrix(options.lor_pc);
     GlobalMatrixAssemblyResult lor_stiffness;
-    PetscCall(assemble_global_stiffness<Dim>(
-        lor_mesh, lor_IEN, ID_map, lor_quad, &lor_stiffness));
+    if (uses_lor_matrix)
+    {
+        const QuadratureRule1D lor_quad = gauss_legendre_rule(2);
+        PetscCall(assemble_global_stiffness<Dim>(
+            lor_mesh, lor_IEN, ID_map, lor_quad, &lor_stiffness));
+    }
 
-    // Optionally solve the identical high-order system without and with LOR.
-    // Iteration counts are a direct byproduct of these two solves.
+    // Optionally solve the identical high-order system without and with the
+    // selected LOR-based or direct-K preconditioner.
     LinearSolveResult original_solve;
     LinearSolveResult preconditioned_solve;
     if (options.compute_solution)
@@ -288,6 +294,7 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.inner_pc = options.inner_pc;
     results.tolerances = options.tolerances;
     results.fixed_jacobi = options.fixed_jacobi;
+    results.assembled_lor_matrix = uses_lor_matrix;
     results.predicted_nonzeros_K = high_stiffness.predicted_nonzeros;
     results.allocated_nonzeros_K = high_stiffness.allocated_nonzeros;
     results.used_nonzeros_K = high_stiffness.used_nonzeros;
@@ -295,13 +302,16 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.memory_bytes_K = high_stiffness.memory_bytes;
     results.estimated_minimum_bytes_K =
         high_stiffness.estimated_minimum_bytes;
-    results.predicted_nonzeros_lor = lor_stiffness.predicted_nonzeros;
-    results.allocated_nonzeros_lor = lor_stiffness.allocated_nonzeros;
-    results.used_nonzeros_lor = lor_stiffness.used_nonzeros;
-    results.allocation_calls_lor = lor_stiffness.allocation_calls;
-    results.memory_bytes_lor = lor_stiffness.memory_bytes;
-    results.estimated_minimum_bytes_lor =
-        lor_stiffness.estimated_minimum_bytes;
+    if (uses_lor_matrix)
+    {
+        results.predicted_nonzeros_lor = lor_stiffness.predicted_nonzeros;
+        results.allocated_nonzeros_lor = lor_stiffness.allocated_nonzeros;
+        results.used_nonzeros_lor = lor_stiffness.used_nonzeros;
+        results.allocation_calls_lor = lor_stiffness.allocation_calls;
+        results.memory_bytes_lor = lor_stiffness.memory_bytes;
+        results.estimated_minimum_bytes_lor =
+            lor_stiffness.estimated_minimum_bytes;
+    }
     if (options.compute_condition_number)
     {
         results.condition_K = original_condition.condition_number;
@@ -383,18 +393,24 @@ PetscErrorCode run_assembled_laplace_experiment(
         PetscCall(PetscPrintf(comm,
             "  K storage: predicted_nnz=%" PetscInt_FMT
             ", used_nnz=%.0f, allocated_nnz=%.0f, mallocs=%.0f, "
-            "minimum=%.3f MiB, PETSc_reported=%.3f MiB\n"
-            "  K_LOR storage: predicted_nnz=%" PetscInt_FMT
-            ", used_nnz=%.0f, allocated_nnz=%.0f, mallocs=%.0f, "
             "minimum=%.3f MiB, PETSc_reported=%.3f MiB\n",
             results.predicted_nonzeros_K, results.used_nonzeros_K,
             results.allocated_nonzeros_K, results.allocation_calls_K,
             results.estimated_minimum_bytes_K / (1024.0 * 1024.0),
-            results.memory_bytes_K / (1024.0 * 1024.0),
-            results.predicted_nonzeros_lor, results.used_nonzeros_lor,
-            results.allocated_nonzeros_lor, results.allocation_calls_lor,
-            results.estimated_minimum_bytes_lor / (1024.0 * 1024.0),
-            results.memory_bytes_lor / (1024.0 * 1024.0)));
+            results.memory_bytes_K / (1024.0 * 1024.0)));
+        if (uses_lor_matrix)
+            PetscCall(PetscPrintf(comm,
+                "  K_LOR storage: predicted_nnz=%" PetscInt_FMT
+                ", used_nnz=%.0f, allocated_nnz=%.0f, mallocs=%.0f, "
+                "minimum=%.3f MiB, PETSc_reported=%.3f MiB\n",
+                results.predicted_nonzeros_lor, results.used_nonzeros_lor,
+                results.allocated_nonzeros_lor,
+                results.allocation_calls_lor,
+                results.estimated_minimum_bytes_lor / (1024.0 * 1024.0),
+                results.memory_bytes_lor / (1024.0 * 1024.0)));
+        else
+            PetscCall(PetscPrintf(comm,
+                "  K_LOR storage: not assembled for direct-K mode\n"));
         // Distinguish the ideal exact-LOR spectral operator from the actual
         // algorithm applying an exact, variable, or fixed approximate inverse.
         const char *ideal_operator =
