@@ -64,7 +64,7 @@ mpirun -n 4 ./build/assembled_driver \
   -compute_solution true \
   -compute_l2_error true \
   -compute_condition_number false \
-  -outer_rtol 1e-12 -outer_atol 1e-14 \
+  -outer_rtol 1e-10 -outer_atol 1e-10 \
   -output work/results/example.log
 ```
 
@@ -82,8 +82,8 @@ mpirun -n 4 ./build/assembled_driver \
 - `-svd_tol`、`-svd_max_it`、`-svd_ncv` 控制四个 SLEPc 极端奇异值求解；
 - `cg_lu` 使用精确 LOR LU；左侧使用外层 CG，右侧使用 GMRES；
 - `gmres_shell` 使用 restarted GMRES 和 PCSHELL 内层 CG/Jacobi，并按用户选择实现
-  左或右预条件；外层/内层默认容差均为
-  `rtol=1e-12, atol=1e-14`，也可用命令行逐次覆盖。
+  左或右预条件；外层/内层默认容差均参考 Parallel-Computing 实际生效的
+  `rtol=1e-10, atol=1e-10`，也可用命令行逐次覆盖。
 
 ### Independent feature options
 
@@ -98,6 +98,7 @@ mpirun -n 4 ./build/assembled_driver \
 
 ```text
 mpi_ranks
+lor_pc
 preconditioner_side
 compute_solution
 compute_l2_error
@@ -108,6 +109,11 @@ predicted_nnz(K_LOR), used_nnz(K_LOR), allocated_nnz(K_LOR)
 allocation_calls(K_LOR), estimated_minimum_bytes(K_LOR), memory_bytes(K_LOR)
 [cond_2(K), cond_2(K_LOR^{-1}K)]
 [iterations(K), iterations(K_LOR^{-1}K)]
+[setup_time_seconds(K), outer_solve_time_seconds(K)]
+[setup_time_seconds(K_LOR^{-1}K), outer_solve_time_seconds(K_LOR^{-1}K)]
+[pc_applications(K_LOR^{-1}K)]
+[inner_iterations_total(K_LOR^{-1}K), inner_iterations_average(K_LOR^{-1}K)]
+[inner_solve_time_seconds(K_LOR^{-1}K), inner_solve_time_average_seconds(K_LOR^{-1}K)]
 [residual(K), relative_residual(K)]
 [residual(K_LOR^{-1}K), relative_residual(K_LOR^{-1}K)]
 [L2_error(K), L2_error(K_LOR^{-1}K)]
@@ -115,6 +121,10 @@ allocation_calls(K_LOR), estimated_minimum_bytes(K_LOR), memory_bytes(K_LOR)
 
 上面的预条件字段展示默认 `left` 标签；选择 `right` 时相应字段使用
 `KK_LOR^{-1}`，从而不会把右预条件结果误记为论文的左预条件算子。
+
+未预条件和预条件求解都记录 setup 与完整外层时间。`gmres_shell` 额外输出内层 CG
+调用成本；内层累计时间已经包含在预条件外层时间中，不能二者相加。所有并行时间均
+取最大 rank 的 wall time。内层字段只在 `lor_pc=gmres_shell` 时出现。
 
 矩阵存储字段始终输出；`estimated_minimum_bytes` 是 values、column indices 和 MPIAIJ
 row pointers 的可移植下界，`memory_bytes` 是当前 PETSc 实现的报告值，某些版本可能

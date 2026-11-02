@@ -207,6 +207,7 @@ void write_experiment_results(const std::string &filename,
     // Preserve the feature selection in every result file, then omit all
     // numerical fields belonging to computations that did not run.
     output << std::boolalpha
+           << "lor_pc = " << lor_pc_mode_name(results.lor_pc) << '\n'
            << "preconditioner_side = "
            << preconditioner_side_name(results.preconditioner_side) << '\n'
            << "compute_solution = " << results.computed_solution << '\n'
@@ -245,9 +246,18 @@ void write_experiment_results(const std::string &filename,
                << "cond_2(" << preconditioned_operator << ") = "
                << results.condition_lor_K << '\n';
     if (results.computed_solution)
+    {
         output << "iterations(K) = " << results.iterations_K << '\n'
                << "iterations(" << preconditioned_operator << ") = "
                << results.iterations_lor_K << '\n'
+               << "setup_time_seconds(K) = "
+               << results.setup_time_K << '\n'
+               << "outer_solve_time_seconds(K) = "
+               << results.outer_solve_time_K << '\n'
+               << "setup_time_seconds(" << preconditioned_operator << ") = "
+               << results.setup_time_lor_K << '\n'
+               << "outer_solve_time_seconds(" << preconditioned_operator
+               << ") = " << results.outer_solve_time_lor_K << '\n'
                << "residual(K) = " << results.residual_K << '\n'
                << "relative_residual(K) = "
                << results.relative_residual_K << '\n'
@@ -255,6 +265,30 @@ void write_experiment_results(const std::string &filename,
                << results.residual_lor_K << '\n'
                << "relative_residual(" << preconditioned_operator << ") = "
                << results.relative_residual_lor_K << '\n';
+        if (results.lor_pc == LORPCMode::gmres_shell)
+        {
+            // Report both cumulative nested work and the per-application
+            // averages needed to interpret an outer-iteration reduction.
+            const double applications =
+                static_cast<double>(results.pc_applications_lor_K);
+            const double average_iterations = applications > 0.0 ?
+                static_cast<double>(results.inner_iterations_lor_K) /
+                    applications : 0.0;
+            const double average_time = applications > 0.0 ?
+                results.inner_solve_time_lor_K / applications : 0.0;
+            output << "pc_applications(" << preconditioned_operator << ") = "
+                   << results.pc_applications_lor_K << '\n'
+                   << "inner_iterations_total(" << preconditioned_operator
+                   << ") = " << results.inner_iterations_lor_K << '\n'
+                   << "inner_iterations_average(" << preconditioned_operator
+                   << ") = " << average_iterations << '\n'
+                   << "inner_solve_time_seconds(" << preconditioned_operator
+                   << ") = " << results.inner_solve_time_lor_K << '\n'
+                   << "inner_solve_time_average_seconds("
+                   << preconditioned_operator << ") = "
+                   << average_time << '\n';
+        }
+    }
     if (results.computed_l2_error)
         output << "L2_error(K) = " << results.l2_error_K << '\n'
                << "L2_error(" << preconditioned_operator << ") = "

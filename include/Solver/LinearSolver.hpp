@@ -26,14 +26,16 @@ enum class LORPCMode
 struct SolverTolerances
 {
     // Stopping thresholds and iteration limit for the outer K or PC(K) solve.
-    PetscReal outer_rtol = 1.0e-12;
-    PetscReal outer_atol = 1.0e-14;
-    PetscReal outer_dtol = 1.0e8;
+    // Defaults reproduce the effective Parallel-Computing GMRES settings.
+    PetscReal outer_rtol = 1.0e-10;
+    PetscReal outer_atol = 1.0e-10;
+    PetscReal outer_dtol = 1.0e4;
     PetscInt outer_max_it = 10000;
 
-    // Stopping thresholds and limit for each inner K_LOR CG application.
-    PetscReal inner_rtol = 1.0e-12;
-    PetscReal inner_atol = 1.0e-14;
+    // Each inner K_LOR CG application uses the same legacy thresholds by
+    // default; cg_lu ignores these values because its LOR solve is direct.
+    PetscReal inner_rtol = 1.0e-10;
+    PetscReal inner_atol = 1.0e-10;
     PetscReal inner_dtol = 1.0e4;
     PetscInt inner_max_it = 10000;
 };
@@ -50,6 +52,17 @@ struct LinearSolveResult
     // Both remain zero in an unpreconditioned or cg_lu solve.
     PetscInt pc_applications = 0;
     PetscInt inner_iterations = 0;
+
+    // Maximum-rank wall times in seconds. setup_time_seconds measures explicit
+    // KSP/PC setup; outer_solve_time_seconds measures the complete outer
+    // KSPSolve and therefore includes every nested preconditioner application.
+    PetscLogDouble setup_time_seconds = 0.0;
+    PetscLogDouble outer_solve_time_seconds = 0.0;
+
+    // Maximum-rank sum of the wall times spent inside all inner CG KSPSolve
+    // calls. This is nested within outer_solve_time_seconds, not additional
+    // elapsed time. It remains zero without the gmres_shell preconditioner.
+    PetscLogDouble inner_solve_time_seconds = 0.0;
 
     // Common physical residual ||F-Ku||_2 recomputed after convergence.
     PetscReal residual_norm = 0.0;

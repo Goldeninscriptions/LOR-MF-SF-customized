@@ -10,7 +10,7 @@
 | `input/square_2d.txt` | 最小二维轴对齐矩形几何 | 初始 `p=1, n=(1,1)`，物理域 `[0,2] x [0,1]` |
 | `input/cube_3d.txt` | 最小三维轴对齐长方体几何 | 初始 `p=1, n=(1,1,1)`，物理域 `[0,2] x [0,1.5] x [0,1]` |
 | `input/curved_quadrilateral_2d.txt` | 精确多项式双三次曲边 Patch | 初始 `p=3, n=(1,1)`；使用非零仿射迹与曲边多项式 bubble 完成求解、L2 和条件数分析 |
-| `run_case.sh` | 验证参数并以 `mpirun -n MPI_RANKS` 运行一个 case | 传入 rank 数、refinement、p/n、point set、LOR 模式、结果路径和可选容差；环境变量控制三个独立功能 |
+| `run_case.sh` | 验证参数、拒绝过期 executable，并以 `mpirun -n MPI_RANKS` 运行一个 case | 传入 rank 数、refinement、p/n、point set、LOR 模式、结果路径和可选容差；环境变量控制三个独立功能 |
 | `run_batch_square_2d.sh` | 二维矩形批处理入口 | `p={3,...,7}`，`n={(4,4),(16,16),(128,128)}`；默认求解并计算 L2 |
 | `run_batch_cube_3d.sh` | 三维长方体批处理入口 | `p={3,...,7}`，`n={(4,4,4),(8,8,8),(16,16,16)}`；限制三维默认规模的立方增长 |
 | `run_batch_curved_quadrilateral_2d.sh` | 双三次曲边 Patch 批处理入口 | 与二维矩形采用相同 p/n sweep 和功能默认值；默认完成求解与 L2 |
@@ -19,6 +19,10 @@
 
 几何文件中的 p/n 注释供用户阅读；解析器只从 knot vectors 推断实际初始值。控制点
 带显式 tensor index，文本书写顺序不影响几何。
+
+`run_case.sh` 会比较 C++/CMake 输入和 `build/assembled_driver` 的修改时间。如果源码
+更新后尚未重新构建，它会在启动 MPI 前停止并给出构建命令，避免新脚本向旧程序传入
+其尚不认识的 PETSc 选项。
 
 ## 单算例
 
@@ -88,6 +92,10 @@ SVD_MAX_IT=200000 SVD_NCV=160 \
 
 `COMPUTE_L2_ERROR=true` 要求 `COMPUTE_SOLUTION=true`。条件数分析与求解、L2
 误差相互独立；默认关闭，以免普通批处理中隐式启动四次昂贵的 SLEPc 奇异值求解。
+
+批处理 summary 的 `elapsed_s` 是包括几何、组装、求解和误差分析在内的整例时间。
+求解器的 setup、外层时间与 `gmres_shell` 内层 CG 成本保存在每个 case 的结果文件
+和控制台日志中，适合用于论文中的求解阶段对比。
 
 分别预览三个批处理而不启动计算：
 

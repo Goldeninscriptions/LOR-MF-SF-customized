@@ -128,8 +128,13 @@ geometry txt
   `K K_LOR^{-1}y=F` 并恢复 `u=K_LOR^{-1}y`；
 - `cg_lu`：LOR 矩阵用 LU 精确应用；左侧使用外层 CG，右侧自动使用 GMRES；
 - `gmres_shell`：外层 restarted GMRES，`PCSHELL` 内部使用 CG+Jacobi 近似应用
-  LOR 逆；左侧监测预条件残差，右侧监测原方程残差；外层/内层默认容差均为
-  `rtol=1e-12, atol=1e-14`，求解后统一重算原方程真实残差；
+  LOR 逆；左侧监测预条件残差，右侧监测原方程残差；外层/内层默认容差均参考
+  Parallel-Computing 实际生效值，采用 `rtol=1e-10, atol=1e-10, dtol=1e4,
+  max_it=10000`，求解后统一重算原方程真实残差；
+- 两次求解分别记录显式 KSP/PC setup 和完整外层 `KSPSolve` wall time；
+  `gmres_shell` 还记录内层 CG 的调用数、累计/平均迭代数与累计/平均时间；
+- 内层 CG 时间嵌套在预条件外层时间中，不能与外层时间相加；MPI 时间统一取所有
+  ranks 的最大值，作为同步并行阶段的关键路径成本；
 - `compute_solution`、`compute_l2_error`、`compute_condition_number` 独立控制求解、
   误差和谱分析；L2 依赖 solution，条件数不依赖二者；
 - 默认使用 `gmres_shell`；外层、内层 KSP、SLEPc 和矩阵 shell 均使用矩阵的 MPI

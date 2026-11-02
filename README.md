@@ -18,7 +18,9 @@ KSP 应用方式、SLEPc 条件数和 L2 误差分析。Matrix-free 与 sum fact
 - 几何文件与 p/h/k refinement 仅在 rank 0 执行，refined Patch 广播重建；
 - 默认论文一致的高精度左预条件；可独立选择 `left|right`，并可选择
   `gmres_shell|cg_lu` 两种 LOR 逆应用方式；
-- 求解/迭代数、L2 误差和 SLEPc 条件数可独立启用，禁用项不计算也不输出；
+- 求解输出同时记录 setup、完整外层时间，以及 `gmres_shell` 的内层 CG 调用数、
+  总/平均迭代数和总/平均时间；
+- 求解、L2 误差和 SLEPc 条件数可独立启用，禁用项不计算也不输出；
 - 串行 case planner 自动计算细化后自由度，并在 macOS/Linux 上按逻辑 CPU 数推荐 MPI ranks；
 - 单算例与自动选择 MPI ranks 的顺序批处理脚本。
 
@@ -102,9 +104,14 @@ PRECONDITIONER_SIDE=left \
 默认关闭以避免普通批次隐式执行昂贵的四次 SVD。
 
 `PRECONDITIONER_SIDE=left|right` 可覆盖论文一致的默认左预条件。`gmres_shell` 默认
-让外层和内层分别使用 `rtol=1e-12, atol=1e-14`；左侧监测预条件残差，右侧监测
+参考 Parallel-Computing 的实际生效设置，让外层和内层均使用
+`rtol=1e-10, atol=1e-10`；左侧监测预条件残差，右侧监测
 原方程残差，二者都会在结束后重算绝对和相对真实残差；
 `run_case.sh` 末尾四个可选位置参数仍可覆盖两层容差。
+
+结果中的 `outer_solve_time_seconds` 是完整外层 `KSPSolve` 时间，已经包含其间所有
+内层 CG 调用；`inner_solve_time_seconds` 是这段时间内内层求解的累计子成本，二者
+不能相加。MPI 计时采用所有 ranks 中的最大 wall time，代表该阶段的关键路径。
 
 ## 顶层文件和目录
 

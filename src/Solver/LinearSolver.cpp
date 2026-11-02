@@ -14,6 +14,7 @@ struct GMRESShellContext
     KSP inner_ksp = nullptr;
     PetscInt applications = 0;
     PetscInt total_inner_iterations = 0;
+    PetscLogDouble total_inner_solve_time_seconds = 0.0;
 };
 
 PetscErrorCode apply_gmres_shell(PC pc, Vec residual, Vec correction)
@@ -21,11 +22,21 @@ PetscErrorCode apply_gmres_shell(PC pc, Vec residual, Vec correction)
     PetscFunctionBeginUser;
     GMRESShellContext *context = nullptr;
     PetscCall(PCShellGetContext(pc, &context));
+
+    // Time only the already-configured inner CG solve. Its first-call setup is
+    // forced before outer timing begins, so this sum represents iterations.
+    PetscLogDouble start = 0.0;
+    PetscLogDouble end = 0.0;
+    PetscCall(PetscTime(&start));
     PetscCall(KSPSolve(context->inner_ksp, residual, correction));
+    PetscCall(PetscTime(&end));
+
+    // Accumulate the work of this approximate K_LOR inverse application.
     PetscInt iterations = 0;
     PetscCall(KSPGetIterationNumber(context->inner_ksp, &iterations));
     ++context->applications;
     context->total_inner_iterations += iterations;
+    context->total_inner_solve_time_seconds += end - start;
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -112,16 +123,47 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
         PetscCall(PCShellSetDestroy(pc, destroy_gmres_shell));
     }
 
+    // Set up all nested solvers explicitly and record the maximum-rank setup
+    // wall time separately from the iterative solve phase.
+    PetscCallMPI(MPI_Barrier(comm));
+    PetscLogDouble setup_start = 0.0;
+    PetscLogDouble setup_end = 0.0;
+    PetscCall(PetscTime(&setup_start));
+    if (shell_context != nullptr)
+        PetscCall(KSPSetUp(shell_context->inner_ksp));
+    PetscCall(KSPSetUp(ksp));
+    PetscCall(PetscTime(&setup_end));
+    const PetscLogDouble local_setup_time = setup_end - setup_start;
+    PetscCallMPI(MPI_Allreduce(&local_setup_time,
+        &result->setup_time_seconds, 1, MPI_DOUBLE, MPI_MAX, comm));
+
     // Solve from zero and retain the solution for subsequent error analysis.
+    // A preconditioned outer time includes every nested inner CG application.
     PetscCall(VecDuplicate(load, &result->solution));
     PetscCall(VecSet(result->solution, 0.0));
+    PetscCallMPI(MPI_Barrier(comm));
+    PetscLogDouble solve_start = 0.0;
+    PetscLogDouble solve_end = 0.0;
+    PetscCall(PetscTime(&solve_start));
     PetscCall(KSPSolve(ksp, load, result->solution));
+    PetscCall(PetscTime(&solve_end));
+    const PetscLogDouble local_outer_time = solve_end - solve_start;
+    PetscCallMPI(MPI_Allreduce(&local_outer_time,
+        &result->outer_solve_time_seconds, 1, MPI_DOUBLE, MPI_MAX, comm));
+
+    // Collect rank-consistent iteration counts and maximum-rank nested cost.
     PetscCall(KSPGetIterationNumber(ksp, &result->iterations));
     PetscCall(KSPGetConvergedReason(ksp, &result->reason));
     if (shell_context != nullptr)
     {
-        result->pc_applications = shell_context->applications;
-        result->inner_iterations = shell_context->total_inner_iterations;
+        PetscCallMPI(MPI_Allreduce(&shell_context->applications,
+            &result->pc_applications, 1, MPIU_INT, MPI_MAX, comm));
+        PetscCallMPI(MPI_Allreduce(&shell_context->total_inner_iterations,
+            &result->inner_iterations, 1, MPIU_INT, MPI_MAX, comm));
+        PetscCallMPI(MPI_Allreduce(
+            &shell_context->total_inner_solve_time_seconds,
+            &result->inner_solve_time_seconds, 1,
+            MPI_DOUBLE, MPI_MAX, comm));
     }
 
     // Recompute the same absolute and right-hand-side-scaled physical

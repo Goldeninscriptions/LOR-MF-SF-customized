@@ -6,7 +6,7 @@ set -euo pipefail
 #       [OUTER_RTOL OUTER_ATOL INNER_RTOL INNER_ATOL]
 # Automatic-rank example:
 #   ./run_case.sh default input/square_2d.txt k_refine 5 16,16 greville gmres_shell \
-#     results/p5_n16x16_gmres_shell.log 1e-12 1e-14 1e-12 1e-14
+#     results/p5_n16x16_gmres_shell.log 1e-10 1e-10 1e-10 1e-10
 # Alternative exact-LU research mode (uncomment to use as a command):
 # ./run_case.sh 8 input/square_2d.txt k_refine 5 16,16 greville cg_lu \
 #     results/p5_n16x16_cg_lu.log 1e-10 1e-12 1e-10 1e-10
@@ -63,6 +63,27 @@ if [[ ! -x "$driver" ]]; then
   exit 3
 fi
 
+# Refuse to mix a newly updated launcher/source tree with an older executable.
+# This catches stale builds that silently ignore recently added PETSc options.
+newer_build_input=$(find \
+  "$project_dir/include" \
+  "$project_dir/src" \
+  "$project_dir/examples" \
+  "$project_dir/conf" \
+  -type f \
+  \( -name '*.hpp' -o -name '*.cpp' -o -name 'CMakeLists.txt' -o -name '*.cmake' \) \
+  -newer "$driver" -print -quit)
+if [[ -n "$newer_build_input" || "$project_dir/CMakeLists.txt" -nt "$driver" ]]; then
+  echo "Stale executable: $driver" >&2
+  if [[ -n "$newer_build_input" ]]; then
+    echo "Newer build input: $newer_build_input" >&2
+  else
+    echo "Newer build input: $project_dir/CMakeLists.txt" >&2
+  fi
+  echo "Rebuild with: cmake --build $project_dir/build -j" >&2
+  exit 3
+fi
+
 # Automatic mode computes this case's exact post-refinement free-DOF count.
 # MAX_MPI_RANKS optionally imposes a resource limit below detected hardware.
 if [[ "$mpi_rank_setting" == "default" ]]; then
@@ -103,16 +124,18 @@ if [[ "$lor_pc" == "cg_lu" ]]; then
   outer_atol="1.0e-14"
   outer_dtol="1.0e8"
 elif [[ "$lor_pc" == "gmres_shell" ]]; then
-  outer_rtol="1.0e-12"
-  outer_atol="1.0e-14"
+  # Parallel-Computing calls KSPSetTolerances after KSPSetFromOptions, so its
+  # effective outer and inner values are 1e-10 rather than the scripted 1e-6.
+  outer_rtol="1.0e-10"
+  outer_atol="1.0e-10"
   outer_dtol="1.0e4"
 else
   echo "LOR_PC must be cg_lu or gmres_shell" >&2
   exit 2
 fi
 outer_max_it="10000"
-inner_rtol="1.0e-12"
-inner_atol="1.0e-14"
+inner_rtol="1.0e-10"
+inner_atol="1.0e-10"
 inner_dtol="1.0e4"
 inner_max_it="10000"
 

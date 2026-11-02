@@ -66,8 +66,9 @@ struct ExperimentResults
     bool computed_l2_error = false;
     bool computed_condition_number = false;
 
-    // Side used consistently by the solve, spectral analysis, labels, and
-    // result metadata. Left remains the paper-compatible default.
+    // LOR inverse application and side used consistently by the solve,
+    // spectral analysis, labels, and result metadata.
+    LORPCMode lor_pc = LORPCMode::gmres_shell;
     PreconditionerSide preconditioner_side = PreconditionerSide::left;
 
     // Global PETSc storage diagnostics for the assembled high-order and LOR
@@ -93,6 +94,8 @@ struct ExperimentResults
     PetscReal residual_K = 0.0;
     PetscReal relative_residual_K = 0.0;
     PetscReal l2_error_K = 0.0;
+    PetscLogDouble setup_time_K = 0.0;
+    PetscLogDouble outer_solve_time_K = 0.0;
 
     // Selected-side LOR-preconditioned diagnostics for the same high-order
     // equation; LOR remains a preconditioner rather than a second PDE system.
@@ -101,6 +104,14 @@ struct ExperimentResults
     PetscReal residual_lor_K = 0.0;
     PetscReal relative_residual_lor_K = 0.0;
     PetscReal l2_error_lor_K = 0.0;
+    PetscLogDouble setup_time_lor_K = 0.0;
+    PetscLogDouble outer_solve_time_lor_K = 0.0;
+
+    // Nested preconditioner work for gmres_shell. Counts and time are totals
+    // over all PC applications on the maximum-cost MPI rank.
+    PetscInt pc_applications_lor_K = 0;
+    PetscInt inner_iterations_lor_K = 0;
+    PetscLogDouble inner_solve_time_lor_K = 0.0;
 };
 
 // Read the experiment command line after PETSc/SLEPc initialization.

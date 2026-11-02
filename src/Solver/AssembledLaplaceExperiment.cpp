@@ -275,6 +275,7 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.computed_solution = options.compute_solution;
     results.computed_l2_error = options.compute_l2_error;
     results.computed_condition_number = options.compute_condition_number;
+    results.lor_pc = options.lor_pc;
     results.preconditioner_side = options.preconditioner_side;
     results.predicted_nonzeros_K = high_stiffness.predicted_nonzeros;
     results.allocated_nonzeros_K = high_stiffness.allocated_nonzeros;
@@ -304,6 +305,18 @@ PetscErrorCode run_assembled_laplace_experiment(
         results.residual_lor_K = preconditioned_solve.residual_norm;
         results.relative_residual_lor_K =
             preconditioned_solve.relative_residual_norm;
+        results.setup_time_K = original_solve.setup_time_seconds;
+        results.outer_solve_time_K =
+            original_solve.outer_solve_time_seconds;
+        results.setup_time_lor_K = preconditioned_solve.setup_time_seconds;
+        results.outer_solve_time_lor_K =
+            preconditioned_solve.outer_solve_time_seconds;
+        results.pc_applications_lor_K =
+            preconditioned_solve.pc_applications;
+        results.inner_iterations_lor_K =
+            preconditioned_solve.inner_iterations;
+        results.inner_solve_time_lor_K =
+            preconditioned_solve.inner_solve_time_seconds;
     }
     if (options.compute_l2_error)
     {
@@ -371,11 +384,40 @@ PetscErrorCode run_assembled_laplace_experiment(
                 preconditioned_operator,
                 static_cast<double>(results.condition_lor_K)));
         if (options.compute_solution)
+        {
             PetscCall(PetscPrintf(comm,
-                "  iterations(K) = %" PetscInt_FMT "\n"
-                "  iterations(%s) = %" PetscInt_FMT "\n",
-                results.iterations_K, preconditioned_operator,
-                results.iterations_lor_K));
+                "  solve(K): outer_iterations=%" PetscInt_FMT
+                ", setup=%.6e s, outer_total=%.6e s\n"
+                "  solve(%s): outer_iterations=%" PetscInt_FMT
+                ", setup=%.6e s, outer_total=%.6e s\n",
+                results.iterations_K,
+                static_cast<double>(results.setup_time_K),
+                static_cast<double>(results.outer_solve_time_K),
+                preconditioned_operator, results.iterations_lor_K,
+                static_cast<double>(results.setup_time_lor_K),
+                static_cast<double>(results.outer_solve_time_lor_K)));
+            if (options.lor_pc == LORPCMode::gmres_shell)
+            {
+                // Summarize the approximate LOR inverse cost alongside the
+                // complete outer solve without adding the nested times.
+                const double applications = static_cast<double>(
+                    results.pc_applications_lor_K);
+                const double average_iterations = applications > 0.0 ?
+                    static_cast<double>(results.inner_iterations_lor_K) /
+                        applications : 0.0;
+                const double average_time = applications > 0.0 ?
+                    results.inner_solve_time_lor_K / applications : 0.0;
+                PetscCall(PetscPrintf(comm,
+                    "  inner CG: applications=%" PetscInt_FMT
+                    ", iterations_total=%" PetscInt_FMT
+                    ", iterations_average=%.6e, time_total=%.6e s, "
+                    "time_average=%.6e s\n",
+                    results.pc_applications_lor_K,
+                    results.inner_iterations_lor_K, average_iterations,
+                    static_cast<double>(results.inner_solve_time_lor_K),
+                    average_time));
+            }
+        }
         if (options.compute_l2_error)
             PetscCall(PetscPrintf(comm,
                 "  L2_error(K) = %.12e\n"
