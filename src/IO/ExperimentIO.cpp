@@ -42,13 +42,14 @@ ExperimentOptions read_experiment_options(const int dimension)
     char output[PETSC_MAX_PATH_LEN] = "results.log";
     char elements[256] = "";
     char refinement[32] = "k_refine";
-    char mode[32] = "gmres_shell";
+    char mode[32] = "left_gmres_fixed_jacobi";
     char side[16] = "left";
     char inner_pc[16] = "jacobi";
     char point_set[32] = "greville";
     PetscBool geometry_set = PETSC_FALSE;
     PetscBool degree_set = PETSC_FALSE;
     PetscBool elements_set = PETSC_FALSE;
+    PetscBool side_set = PETSC_FALSE;
     PetscBool compute_solution = PETSC_TRUE;
     PetscBool compute_l2_error = PETSC_TRUE;
     PetscBool compute_condition_number = PETSC_FALSE;
@@ -66,7 +67,7 @@ ExperimentOptions read_experiment_options(const int dimension)
     PetscOptionsGetString(nullptr, nullptr, "-lor_pc", mode,
         sizeof(mode), nullptr);
     PetscOptionsGetString(nullptr, nullptr, "-preconditioner_side", side,
-        sizeof(side), nullptr);
+        sizeof(side), &side_set);
     PetscOptionsGetString(nullptr, nullptr, "-inner_pc", inner_pc,
         sizeof(inner_pc), nullptr);
     PetscOptionsGetString(nullptr, nullptr, "-lor_points", point_set,
@@ -97,7 +98,12 @@ ExperimentOptions read_experiment_options(const int dimension)
         throw std::invalid_argument(
             "-refinement must be p_refine, h_refine, or k_refine");
     options.lor_pc = parse_lor_pc_mode(mode);
-    options.preconditioner_side = parse_preconditioner_side(side);
+    options.preconditioner_side = lor_pc_mode_side(options.lor_pc);
+    if (side_set && parse_preconditioner_side(side) !=
+        options.preconditioner_side)
+        throw std::invalid_argument(
+            "-preconditioner_side conflicts with the direction encoded by "
+            "-lor_pc");
     options.inner_pc = parse_inner_pc_mode(inner_pc);
     options.lor_points = point_set;
     if (options.lor_points != "greville" && options.lor_points != "demko")
@@ -127,8 +133,25 @@ ExperimentOptions read_experiment_options(const int dimension)
         &options.tolerances.inner_dtol, nullptr);
     PetscOptionsGetInt(nullptr, nullptr, "-inner_max_it",
         &options.tolerances.inner_max_it, nullptr);
+    PetscOptionsGetInt(nullptr, nullptr, "-fixed_jacobi_steps",
+        &options.fixed_jacobi.steps, nullptr);
+    PetscOptionsGetReal(nullptr, nullptr, "-fixed_jacobi_omega",
+        &options.fixed_jacobi.omega, nullptr);
     PetscOptionsGetReal(nullptr, nullptr, "-svd_tol",
         &options.svd_tolerance, nullptr);
+
+    // Scheme B must remain one fixed polynomial for every right-hand side;
+    // reject nonpositive work or an unstable endpoint relaxation parameter.
+    if (options.lor_pc == LORPCMode::left_gmres_fixed_jacobi)
+    {
+        if (options.fixed_jacobi.steps < 1)
+            throw std::invalid_argument(
+                "-fixed_jacobi_steps must be positive");
+        if (!(options.fixed_jacobi.omega > 0.0 &&
+              options.fixed_jacobi.omega < 1.0))
+            throw std::invalid_argument(
+                "-fixed_jacobi_omega must lie between zero and one");
+    }
 
     // Read generous but user-adjustable SLEPc iteration and search-subspace
     // limits for the difficult smallest-singular-value calculations.
@@ -230,7 +253,9 @@ void write_experiment_results(const std::string &filename,
                << "outer_dtol = " << results.tolerances.outer_dtol << '\n'
                << "outer_max_it = "
                << results.tolerances.outer_max_it << '\n';
-        if (results.lor_pc == LORPCMode::gmres_shell)
+        if (results.lor_pc == LORPCMode::left_gmres_cg ||
+            results.lor_pc == LORPCMode::right_gmres_cg ||
+            results.lor_pc == LORPCMode::right_fgmres_cg)
             output << "inner_rtol = "
                    << results.tolerances.inner_rtol << '\n'
                    << "inner_atol = "
@@ -239,6 +264,11 @@ void write_experiment_results(const std::string &filename,
                    << results.tolerances.inner_dtol << '\n'
                    << "inner_max_it = "
                    << results.tolerances.inner_max_it << '\n';
+        else if (results.lor_pc == LORPCMode::left_gmres_fixed_jacobi)
+            output << "fixed_jacobi_steps = "
+                   << results.fixed_jacobi.steps << '\n'
+                   << "fixed_jacobi_omega = "
+                   << results.fixed_jacobi.omega << '\n';
     }
 
     // Record predicted tensor structure and PETSc's post-assembly storage so
@@ -260,37 +290,40 @@ void write_experiment_results(const std::string &filename,
            << "memory_bytes(K_LOR) = " << results.memory_bytes_lor << '\n';
     output << "estimated_minimum_bytes(K_LOR) = "
            << results.estimated_minimum_bytes_lor << '\n';
-    // Select one algebraically accurate operator label for every optional
-    // diagnostic emitted below.
+    // Keep the ideal exact-LOR spectral operator separate from the actual
+    // algorithm label used by iterative solve and error diagnostics.
     const bool left =
         results.preconditioner_side == PreconditionerSide::left;
-    const char *preconditioned_operator = left ?
+    const char *ideal_operator = left ?
         "K_LOR^{-1}K" : "KK_LOR^{-1}";
+    const char *solve_label = lor_pc_mode_name(results.lor_pc);
     if (results.computed_condition_number)
         output << "cond_2(K) = " << results.condition_K << '\n'
-               << "cond_2(" << preconditioned_operator << ") = "
+               << "cond_2(" << ideal_operator << ") = "
                << results.condition_lor_K << '\n';
     if (results.computed_solution)
     {
         output << "iterations(K) = " << results.iterations_K << '\n'
-               << "iterations(" << preconditioned_operator << ") = "
+               << "iterations(" << solve_label << ") = "
                << results.iterations_lor_K << '\n'
                << "setup_time_seconds(K) = "
                << results.setup_time_K << '\n'
                << "outer_solve_time_seconds(K) = "
                << results.outer_solve_time_K << '\n'
-               << "setup_time_seconds(" << preconditioned_operator << ") = "
+               << "setup_time_seconds(" << solve_label << ") = "
                << results.setup_time_lor_K << '\n'
-               << "outer_solve_time_seconds(" << preconditioned_operator
+               << "outer_solve_time_seconds(" << solve_label
                << ") = " << results.outer_solve_time_lor_K << '\n'
                << "residual(K) = " << results.residual_K << '\n'
                << "relative_residual(K) = "
                << results.relative_residual_K << '\n'
-               << "residual(" << preconditioned_operator << ") = "
+               << "residual(" << solve_label << ") = "
                << results.residual_lor_K << '\n'
-               << "relative_residual(" << preconditioned_operator << ") = "
+               << "relative_residual(" << solve_label << ") = "
                << results.relative_residual_lor_K << '\n';
-        if (results.lor_pc == LORPCMode::gmres_shell)
+        if (results.lor_pc == LORPCMode::left_gmres_cg ||
+            results.lor_pc == LORPCMode::right_gmres_cg ||
+            results.lor_pc == LORPCMode::right_fgmres_cg)
         {
             // Report both cumulative nested work and the per-application
             // averages needed to interpret an outer-iteration reduction.
@@ -301,22 +334,33 @@ void write_experiment_results(const std::string &filename,
                     applications : 0.0;
             const double average_time = applications > 0.0 ?
                 results.inner_solve_time_lor_K / applications : 0.0;
-            output << "pc_applications(" << preconditioned_operator << ") = "
+            output << "pc_applications(" << solve_label << ") = "
                    << results.pc_applications_lor_K << '\n'
-                   << "inner_iterations_total(" << preconditioned_operator
+                   << "inner_iterations_total(" << solve_label
                    << ") = " << results.inner_iterations_lor_K << '\n'
-                   << "inner_iterations_average(" << preconditioned_operator
+                   << "inner_iterations_average(" << solve_label
                    << ") = " << average_iterations << '\n'
-                   << "inner_solve_time_seconds(" << preconditioned_operator
+                   << "inner_solve_time_seconds(" << solve_label
                    << ") = " << results.inner_solve_time_lor_K << '\n'
                    << "inner_solve_time_average_seconds("
-                   << preconditioned_operator << ") = "
+                   << solve_label << ") = "
                    << average_time << '\n';
+        }
+        else if (results.lor_pc == LORPCMode::left_gmres_fixed_jacobi)
+        {
+            // Scheme B reports deterministic polynomial work separately from
+            // Krylov iterations while reusing the common timing counters.
+            output << "pc_applications(" << solve_label << ") = "
+                   << results.pc_applications_lor_K << '\n'
+                   << "fixed_jacobi_steps_total(" << solve_label
+                   << ") = " << results.inner_iterations_lor_K << '\n'
+                   << "fixed_jacobi_time_seconds(" << solve_label
+                   << ") = " << results.inner_solve_time_lor_K << '\n';
         }
     }
     if (results.computed_l2_error)
         output << "L2_error(K) = " << results.l2_error_K << '\n'
-               << "L2_error(" << preconditioned_operator << ") = "
+               << "L2_error(" << solve_label << ") = "
                << results.l2_error_lor_K << '\n';
 }
 

@@ -5,11 +5,11 @@ set -euo pipefail
 #   ./run_case.sh MPI_RANK GEOMETRY_FILE REFINEMENT P N_TUPLE LOR_POINTS LOR_PC OUTPUT_FILE \
 #       [OUTER_RTOL OUTER_ATOL INNER_RTOL INNER_ATOL]
 # Automatic-rank example:
-#   ./run_case.sh default input/square_2d.txt k_refine 5 16,16 greville gmres_shell \
-#     results/p5_n16x16_gmres_shell.log 1e-10 1e-10 1e-10 1e-10
+#   ./run_case.sh default input/square_2d.txt k_refine 5 16,16 greville right_fgmres_cg \
+#     results/p5_n16x16_right_fgmres_cg.log 1e-10 1e-10 1e-4 1e-50
 # Alternative exact-LU research mode (uncomment to use as a command):
-# ./run_case.sh 8 input/square_2d.txt k_refine 5 16,16 greville cg_lu \
-#     results/p5_n16x16_cg_lu.log 1e-10 1e-12 1e-10 1e-10
+# ./run_case.sh 8 input/square_2d.txt k_refine 5 16,16 greville left_cg_lu \
+#     results/p5_n16x16_left_cg_lu.log 1e-10 1e-12 1e-10 1e-10
 
 if [[ $# -ne 8 && $# -ne 12 ]]; then
   echo "Usage: $0 MPI_RANK GEOMETRY_FILE REFINEMENT P N_TUPLE LOR_POINTS LOR_PC OUTPUT_FILE [OUTER_RTOL OUTER_ATOL INNER_RTOL INNER_ATOL]" >&2
@@ -25,8 +25,9 @@ element_tuple=$5
 lor_points=$6
 lor_pc=$7
 output_file=$8
-preconditioner_side=${PRECONDITIONER_SIDE:-left}
 inner_pc=${INNER_PC:-jacobi}
+fixed_jacobi_steps=${FIXED_JACOBI_STEPS:-4}
+fixed_jacobi_omega=${FIXED_JACOBI_OMEGA:-0.6666666666666667}
 
 # Accept either an explicit launch size or per-case automatic planning.
 if [[ "$mpi_rank_setting" != "default" ]] &&
@@ -111,31 +112,38 @@ fi
 
 mkdir -p "$(dirname "$output_file")"
 
-# Keep the paper-compatible left action as the default while allowing focused
-# right-preconditioning studies without changing the positional interface.
-if [[ "$preconditioner_side" != "left" &&
-      "$preconditioner_side" != "right" ]]; then
-  echo "PRECONDITIONER_SIDE must be left or right" >&2
-  exit 2
-fi
+# Every scheme name encodes its algebraic direction, outer Krylov method, and
+# approximate-inverse implementation, so no independent side can conflict.
+case "$lor_pc" in
+  left_*) preconditioner_side="left" ;;
+  right_*) preconditioner_side="right" ;;
+  *) preconditioner_side="invalid" ;;
+esac
 if [[ "$inner_pc" != "jacobi" && "$inner_pc" != "gamg" ]]; then
   echo "INNER_PC must be jacobi or gamg" >&2
   exit 2
 fi
 
 # Mode-specific default residual settings.
-if [[ "$lor_pc" == "cg_lu" ]]; then
+if [[ "$lor_pc" == "left_cg_lu" ]]; then
   outer_rtol="1.0e-12"
   outer_atol="1.0e-14"
   outer_dtol="1.0e8"
-elif [[ "$lor_pc" == "gmres_shell" ]]; then
+elif [[ "$lor_pc" == "right_gmres_lu" ||
+        "$lor_pc" == "left_gmres_cg" ||
+        "$lor_pc" == "right_gmres_cg" ]]; then
   # Parallel-Computing calls KSPSetTolerances after KSPSetFromOptions, so its
   # effective outer and inner values are 1e-10 rather than the scripted 1e-6.
   outer_rtol="1.0e-10"
   outer_atol="1.0e-10"
   outer_dtol="1.0e4"
+elif [[ "$lor_pc" == "right_fgmres_cg" ||
+        "$lor_pc" == "left_gmres_fixed_jacobi" ]]; then
+  outer_rtol="1.0e-10"
+  outer_atol="1.0e-10"
+  outer_dtol="1.0e4"
 else
-  echo "LOR_PC must be cg_lu or gmres_shell" >&2
+  echo "LOR_PC must be left_cg_lu, right_gmres_lu, left_gmres_cg, right_gmres_cg, right_fgmres_cg, or left_gmres_fixed_jacobi" >&2
   exit 2
 fi
 outer_max_it="10000"
@@ -195,6 +203,8 @@ common_options=(
   -lor_pc "$lor_pc"
   -preconditioner_side "$preconditioner_side"
   -inner_pc "$inner_pc"
+  -fixed_jacobi_steps "$fixed_jacobi_steps"
+  -fixed_jacobi_omega "$fixed_jacobi_omega"
   -compute_solution "$compute_solution"
   -compute_l2_error "$compute_l2_error"
   -compute_condition_number "$compute_condition_number"
@@ -208,7 +218,9 @@ common_options=(
   -output "$output_file"
 )
 
-if [[ "$lor_pc" == "gmres_shell" ]]; then
+if [[ "$lor_pc" == "left_gmres_cg" ||
+      "$lor_pc" == "right_gmres_cg" ||
+      "$lor_pc" == "right_fgmres_cg" ]]; then
   common_options+=(
     -inner_rtol "$inner_rtol"
     -inner_atol "$inner_atol"
@@ -221,5 +233,5 @@ fi
 # can still override MPIEXEC when their cluster exposes another launcher name.
 export OMP_NUM_THREADS=1
 mpi_launcher=${MPIEXEC:-mpirun}
-echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side inner_pc=$inner_pc solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_max_it=$outer_max_it inner_rtol=$inner_rtol inner_atol=$inner_atol inner_max_it=$inner_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side inner_pc=$inner_pc fixed_jacobi_steps=$fixed_jacobi_steps fixed_jacobi_omega=$fixed_jacobi_omega solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_max_it=$outer_max_it inner_rtol=$inner_rtol inner_atol=$inner_atol inner_max_it=$inner_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
 "$mpi_launcher" -n "$mpi_ranks" "$driver" "${common_options[@]}"

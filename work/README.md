@@ -45,10 +45,12 @@ TSV。`INNER_RTOLS` 用空格分隔自定义扫描点；`INNER_ATOL` 默认 `1e-
 掩盖相对容差实验。`SWEEP_P`、`SWEEP_N`、`OUTER_RTOL`、`OUTER_ATOL` 和
 `COMPUTE_L2_ERROR` 也可由环境变量覆盖。结果汇总写入独立 TSV，不覆盖普通批处理。
 
-当前扫描保留论文默认的左预条件标准 GMRES。PETSc 对该组合监测预条件残差，宽松且
+该容差扫描显式固定为 `left_gmres_cg`，用于保留左预条件标准 GMRES 对照。PETSc
+对该组合监测预条件残差，宽松且
 随右端项变化的内层 CG 可能导致它先于原方程真实残差收敛；因此不能只按耗时选择
 容差，必须同时检查 TSV 中的 `relative_residual_LOR` 与 `L2_error_LOR`。右预条件
-FGMRES 应作为后续独立算法配置研究，不能与本扫描的迭代数直接混为同一方法。
+FGMRES 已作为独立的 `right_fgmres_cg` 配置提供，不能与本扫描的迭代数直接混为
+同一方法。
 
 单 case 和普通批处理同样接受 `OUTER_RTOL`、`OUTER_ATOL`、`OUTER_DTOL`、
 `OUTER_MAX_IT` 以及对应的 `INNER_*` 环境变量。`run_case.sh` 的四个尾部位置参数
@@ -69,8 +71,8 @@ FGMRES 应作为后续独立算法配置研究，不能与本扫描的迭代数�
   4 \
   work/input/square_2d.txt \
   k_refine 5 16,16 \
-  greville gmres_shell \
-  work/results/k_refine_p5_n16x16_greville_gmres_shell.log
+  greville left_gmres_fixed_jacobi \
+  work/results/k_refine_p5_n16x16_left_gmres_fixed_jacobi.log
 ```
 
 合法枚举值：
@@ -78,9 +80,9 @@ FGMRES 应作为后续独立算法配置研究，不能与本扫描的迭代数�
 ```text
 REFINEMENT = p_refine | h_refine | k_refine
 LOR_POINTS = greville | demko
-LOR_PC     = cg_lu | gmres_shell
-PRECONDITIONER_SIDE = left | right  # 环境变量，默认 left
-INNER_PC   = jacobi | gamg          # 环境变量，默认 jacobi
+LOR_PC = left_cg_lu | right_gmres_lu | left_gmres_cg |
+         right_gmres_cg | right_fgmres_cg | left_gmres_fixed_jacobi
+INNER_PC = jacobi | gamg  # 仅用于三个 *_cg 方案
 ```
 
 ## 批处理
@@ -96,12 +98,11 @@ lor_points="greville"
 # lor_points="demko"
 
 mpi_rank=${MPI_RANK:-default}
-lor_pc="gmres_shell"
-# lor_pc="cg_lu"
-preconditioner_side="left"
-# preconditioner_side="right"
-inner_pc="jacobi"
-# inner_pc="gamg"
+# 其他五个完整方案及其配套参数在实际脚本中以注释块列出。
+# 当前只暴露方案 B：
+lor_pc="left_gmres_fixed_jacobi"
+fixed_jacobi_steps="4"
+fixed_jacobi_omega="0.6666666666666667"
 
 compute_solution=true
 compute_l2_error=true
@@ -112,13 +113,16 @@ svd_max_it="100000"
 svd_ncv="100"
 ```
 
+实际的三个几何入口都把六种方案写成独立配置块。切换时应先注释当前整个方案 B 块，
+再取消注释目标块中的方案名和配套参数；不要同时暴露两个 `lor_pc` 赋值。公共执行器
+会在 dry-run 中打印当前方案真正使用的参数。
+
 单算例也可以用环境变量覆盖 SVD 设置，例如：
 
 ```bash
 COMPUTE_SOLUTION=true \
 COMPUTE_L2_ERROR=false \
 COMPUTE_CONDITION_NUMBER=true \
-PRECONDITIONER_SIDE=left \
 SVD_MAX_IT=200000 SVD_NCV=160 \
 ./work/run_case.sh ...
 ```
@@ -127,7 +131,7 @@ SVD_MAX_IT=200000 SVD_NCV=160 \
 误差相互独立；默认关闭，以免普通批处理中隐式启动四次昂贵的 SLEPc 奇异值求解。
 
 批处理 summary 的 `elapsed_s` 是包括几何、组装、求解和误差分析在内的整例时间。
-求解器的 setup、外层时间与 `gmres_shell` 内层 CG 成本保存在每个 case 的结果文件
+求解器的 setup、外层时间与嵌套预条件成本保存在每个 case 的结果文件
 和控制台日志中，适合用于论文中的求解阶段对比。
 
 分别预览三个批处理而不启动计算：

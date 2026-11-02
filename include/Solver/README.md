@@ -4,7 +4,7 @@ Solver 负责可选线性系统求解、离散解误差和实验编排，不负�
 
 | 文件 | 当前职责 | 主要联系 |
 |---|---|---|
-| `LinearSolver.hpp` | 定义 `cg_lu`/`gmres_shell`、独立 `left|right` 方向、内层 `jacobi|gamg`、两层容差、内外迭代与分阶段计时统计和求解入口 | 输入 GlobalAssembly 产生的 K、K_LOR、F；返回 PETSc solution Vec |
+| `LinearSolver.hpp` | 定义六个方向/外层/逆应用组合方案、内层 `jacobi|gamg`、固定 Jacobi 参数、两层容差及分阶段统计 | 输入 GlobalAssembly 产生的 K、K_LOR、F；返回 PETSc solution Vec |
 | `ErrorAnalysis.hpp` | 声明高阶离散解物理域 L2 误差积分 | MPI 下读取自由系数 halo，并从 Dirichlet lift 恢复受约束系数；各 rank 只积分自己的元素，最后全局归约 |
 | `ManufacturedSolution.hpp` | header-only 的物理解 `u=1+sum(x_d)+bubble(x)`、解析源项和精确仿射边界系数 | 轴对齐几何使用张量正弦 bubble，曲边基准使用四个边界多项式因子；实验编排用其生成 source、非零 lift 和 L2 exact function |
 | `AssembledLaplaceExperiment.hpp` | 声明完整 assembled 实验编排入口 | 接受最小几何/options；root refinement 后依次调用 Mesh、Assembly 和其他 Solver 模块 |
@@ -13,11 +13,12 @@ Solver 负责可选线性系统求解、离散解误差和实验编排，不负�
 `compute_condition_number=true` 时由实验编排显式调用。制造解的仿射边界迹通常
 非零，但通过几何控制点得到的系数可被 B-spline 精确再现；零迹 bubble 只改变域内
 解和源项，不增加边界投影误差。
-`cg_lu` 与 `gmres_shell` 的外层算法不同，因此二者的迭代数不能脱离残差容差直接
-比较。默认模式为 `gmres_shell + left`，与论文和 Parallel-Computing 的
-`K_LOR^{-1}K` 定义一致；`right` 作为独立研究选项。外层和内层默认均使用
+不同方案的外层算法和实际近似逆不同，因此迭代数不能脱离方案与残差容差直接比较。
+默认 `left_gmres_fixed_jacobi` 对固定线性映射建立标准 Arnoldi 关系；
+`right_fgmres_cg` 处理变化的内层 CG。三个 `*_cg` 方案的外层和内层默认均使用
 Parallel-Computing 实际生效的 `rtol=1e-10, atol=1e-10`。两层 KSP 继承输入矩阵的 MPI
 communicator，结果文件同时记录求解后重算的绝对和相对真实残差。
 其中外层时间是完整 `KSPSolve`，已经包含所有内层 CG 调用；内层累计时间用于解释
 预条件器成本，不能再次加到外层时间上。并行计时取最大 rank 的 wall time。
 GAMG 层次构造归入 setup 时间，并在同一次外层求解的所有内层调用中复用。
+固定 Jacobi 默认执行 `m=4, omega=2/3`，其总步数和应用时间使用独立字段输出。

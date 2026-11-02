@@ -68,13 +68,13 @@ for inner_rtol in "${inner_rtols[@]}"; do
   fi
 
   start_time=$(date +%s)
-  if PRECONDITIONER_SIDE=left INNER_PC="$inner_pc" \
+  if INNER_PC="$inner_pc" \
      COMPUTE_SOLUTION=true \
      COMPUTE_L2_ERROR="$compute_l2_error" \
      COMPUTE_CONDITION_NUMBER=false \
      "$script_dir/run_case.sh" \
        "$mpi_rank" "$geometry_file" k_refine "$degree" "$element_tuple" \
-       greville gmres_shell "$result_file" \
+       greville left_gmres_cg "$result_file" \
        "$outer_rtol" "$outer_atol" "$inner_rtol" "$inner_atol" \
        2>&1 | tee "$console_file"; then
     status=success
@@ -89,19 +89,19 @@ for inner_rtol in "${inner_rtols[@]}"; do
       "$inner_pc" "$inner_rtol" "$status" \
       "$(result_value mpi_ranks "$result_file")" "$elapsed" \
       "$(result_value 'iterations(K)' "$result_file")" \
-      "$(result_value 'iterations(K_LOR^{-1}K)' "$result_file")" \
-      "$(result_value 'pc_applications(K_LOR^{-1}K)' "$result_file")" \
-      "$(result_value 'inner_iterations_total(K_LOR^{-1}K)' "$result_file")" \
-      "$(result_value 'inner_iterations_average(K_LOR^{-1}K)' "$result_file")" \
+      "$(result_value 'iterations(left_gmres_cg)' "$result_file")" \
+      "$(result_value 'pc_applications(left_gmres_cg)' "$result_file")" \
+      "$(result_value 'inner_iterations_total(left_gmres_cg)' "$result_file")" \
+      "$(result_value 'inner_iterations_average(left_gmres_cg)' "$result_file")" \
       "$(result_value 'setup_time_seconds(K)' "$result_file")" \
-      "$(result_value 'setup_time_seconds(K_LOR^{-1}K)' "$result_file")" \
+      "$(result_value 'setup_time_seconds(left_gmres_cg)' "$result_file")" \
       "$(result_value 'outer_solve_time_seconds(K)' "$result_file")" \
-      "$(result_value 'outer_solve_time_seconds(K_LOR^{-1}K)' "$result_file")" \
-      "$(result_value 'inner_solve_time_seconds(K_LOR^{-1}K)' "$result_file")" \
+      "$(result_value 'outer_solve_time_seconds(left_gmres_cg)' "$result_file")" \
+      "$(result_value 'inner_solve_time_seconds(left_gmres_cg)' "$result_file")" \
       "$(result_value 'relative_residual(K)' "$result_file")" \
-      "$(result_value 'relative_residual(K_LOR^{-1}K)' "$result_file")" \
+      "$(result_value 'relative_residual(left_gmres_cg)' "$result_file")" \
       "$(result_value 'L2_error(K)' "$result_file")" \
-      "$(result_value 'L2_error(K_LOR^{-1}K)' "$result_file")" \
+      "$(result_value 'L2_error(left_gmres_cg)' "$result_file")" \
       "$result_file" "$console_file" >> "$summary_file"
   else
     printf '%s\t%s\t%s\tNA\t%d\tNA\tNA\tNA\tNA\tNA\tNA\tNA\tNA\tNA\tNA\tNA\tNA\tNA\tNA\t%s\t%s\n' \

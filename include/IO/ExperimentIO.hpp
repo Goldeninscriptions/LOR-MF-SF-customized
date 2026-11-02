@@ -27,10 +27,10 @@ struct ExperimentOptions
     std::vector<int> elements;
 
     // LOR point strategy, inverse-application hierarchy, algebraic side, and
-    // inner low-order preconditioner. The paper's K_LOR^{-1}K formulation and
-    // legacy Jacobi-preconditioned CG are the default selections.
+    // complete LOR solver configuration and any nested algebraic PC. The
+    // default is left GMRES with a fixed weighted-Jacobi polynomial inverse.
     std::string lor_points = "greville";
-    LORPCMode lor_pc = LORPCMode::gmres_shell;
+    LORPCMode lor_pc = LORPCMode::left_gmres_fixed_jacobi;
     PreconditionerSide preconditioner_side = PreconditionerSide::left;
     InnerPCMode inner_pc = InnerPCMode::jacobi;
 
@@ -45,6 +45,7 @@ struct ExperimentOptions
     // The larger defaults are intended for very ill-conditioned high-order
     // stiffness matrices; command-line options may reduce or enlarge them.
     SolverTolerances tolerances;
+    FixedJacobiParameters fixed_jacobi;
     PetscReal svd_tolerance = 1.0e-8;
     PetscInt svd_max_iterations = 100000;
     PetscInt svd_subspace_dimension = 100;
@@ -70,13 +71,14 @@ struct ExperimentResults
 
     // LOR inverse application, side, and inner algebraic preconditioner used
     // consistently by the solve, labels, and result metadata.
-    LORPCMode lor_pc = LORPCMode::gmres_shell;
+    LORPCMode lor_pc = LORPCMode::left_gmres_fixed_jacobi;
     PreconditionerSide preconditioner_side = PreconditionerSide::left;
     InnerPCMode inner_pc = InnerPCMode::jacobi;
 
     // Actual outer and inner KSP stopping controls used by this run. Keeping
     // them in the result record makes tolerance-sweep files self-describing.
     SolverTolerances tolerances;
+    FixedJacobiParameters fixed_jacobi;
 
     // Global PETSc storage diagnostics for the assembled high-order and LOR
     // stiffness matrices. These are always available because both matrices
@@ -114,8 +116,9 @@ struct ExperimentResults
     PetscLogDouble setup_time_lor_K = 0.0;
     PetscLogDouble outer_solve_time_lor_K = 0.0;
 
-    // Nested preconditioner work for gmres_shell. Counts and time are totals
-    // over all PC applications on the maximum-cost MPI rank.
+    // Nested preconditioner work. The work counter means CG iterations for
+    // *_cg schemes and deterministic Jacobi steps for the fixed-linear scheme;
+    // counts and time are maximum-cost-rank totals.
     PetscInt pc_applications_lor_K = 0;
     PetscInt inner_iterations_lor_K = 0;
     PetscLogDouble inner_solve_time_lor_K = 0.0;

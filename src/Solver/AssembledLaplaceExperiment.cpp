@@ -227,8 +227,8 @@ PetscErrorCode run_assembled_laplace_experiment(
             &original_solve));
         PetscCall(solve_with_lor(high_stiffness.matrix,
             lor_stiffness.matrix, high_load.vector, options.lor_pc,
-            options.preconditioner_side, options.inner_pc,
-            options.tolerances,
+            options.inner_pc,
+            options.tolerances, options.fixed_jacobi,
             &preconditioned_solve));
     }
 
@@ -280,6 +280,7 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.preconditioner_side = options.preconditioner_side;
     results.inner_pc = options.inner_pc;
     results.tolerances = options.tolerances;
+    results.fixed_jacobi = options.fixed_jacobi;
     results.predicted_nonzeros_K = high_stiffness.predicted_nonzeros;
     results.allocated_nonzeros_K = high_stiffness.allocated_nonzeros;
     results.used_nonzeros_K = high_stiffness.used_nonzeros;
@@ -376,17 +377,18 @@ PetscErrorCode run_assembled_laplace_experiment(
             results.allocated_nonzeros_lor, results.allocation_calls_lor,
             results.estimated_minimum_bytes_lor / (1024.0 * 1024.0),
             results.memory_bytes_lor / (1024.0 * 1024.0)));
-        // Keep console labels consistent with the operator selected for both
-        // the solve and optional condition-number analysis.
-        const char *preconditioned_operator =
+        // Distinguish the ideal exact-LOR spectral operator from the actual
+        // algorithm applying an exact, variable, or fixed approximate inverse.
+        const char *ideal_operator =
             options.preconditioner_side == PreconditionerSide::left ?
             "K_LOR^{-1}K" : "KK_LOR^{-1}";
+        const char *solve_label = lor_pc_mode_name(options.lor_pc);
         if (options.compute_condition_number)
             PetscCall(PetscPrintf(comm,
                 "  cond_2(K) = %.12e\n"
                 "  cond_2(%s) = %.12e\n",
                 static_cast<double>(results.condition_K),
-                preconditioned_operator,
+                ideal_operator,
                 static_cast<double>(results.condition_lor_K)));
         if (options.compute_solution)
         {
@@ -398,10 +400,12 @@ PetscErrorCode run_assembled_laplace_experiment(
                 results.iterations_K,
                 static_cast<double>(results.setup_time_K),
                 static_cast<double>(results.outer_solve_time_K),
-                preconditioned_operator, results.iterations_lor_K,
+                solve_label, results.iterations_lor_K,
                 static_cast<double>(results.setup_time_lor_K),
                 static_cast<double>(results.outer_solve_time_lor_K)));
-            if (options.lor_pc == LORPCMode::gmres_shell)
+            if (options.lor_pc == LORPCMode::left_gmres_cg ||
+                options.lor_pc == LORPCMode::right_gmres_cg ||
+                options.lor_pc == LORPCMode::right_fgmres_cg)
             {
                 // Summarize the approximate LOR inverse cost alongside the
                 // complete outer solve without adding the nested times.
@@ -422,13 +426,24 @@ PetscErrorCode run_assembled_laplace_experiment(
                     static_cast<double>(results.inner_solve_time_lor_K),
                     average_time));
             }
+            else if (options.lor_pc ==
+                     LORPCMode::left_gmres_fixed_jacobi)
+                PetscCall(PetscPrintf(comm,
+                    "  fixed Jacobi: applications=%" PetscInt_FMT
+                    ", steps_per_application=%" PetscInt_FMT
+                    ", steps_total=%" PetscInt_FMT
+                    ", time_total=%.6e s\n",
+                    results.pc_applications_lor_K,
+                    options.fixed_jacobi.steps,
+                    results.inner_iterations_lor_K,
+                    static_cast<double>(results.inner_solve_time_lor_K)));
         }
         if (options.compute_l2_error)
             PetscCall(PetscPrintf(comm,
                 "  L2_error(K) = %.12e\n"
                 "  L2_error(%s) = %.12e\n",
                 static_cast<double>(results.l2_error_K),
-                preconditioned_operator,
+                solve_label,
                 static_cast<double>(results.l2_error_lor_K)));
         PetscCall(PetscPrintf(comm, "  result file: %s\n",
             options.output_file.c_str()));

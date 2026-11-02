@@ -59,9 +59,9 @@ mpirun -n 4 ./build/assembled_driver \
   -refinement k_refine \
   -p 5 -n 16,16 \
   -lor_points greville \
-  -lor_pc gmres_shell \
-  -preconditioner_side left \
-  -inner_pc gamg \
+  -lor_pc left_gmres_fixed_jacobi \
+  -fixed_jacobi_steps 4 \
+  -fixed_jacobi_omega 0.6666666666666667 \
   -compute_solution true \
   -compute_l2_error true \
   -compute_condition_number false \
@@ -78,13 +78,17 @@ mpirun -n 4 ./build/assembled_driver \
 ### LOR options
 
 - `-lor_points greville|demko`；
-- `-lor_pc gmres_shell|cg_lu`，省略时默认为 `gmres_shell`；
-- `-preconditioner_side left|right`，默认 `left`，与论文和 Parallel-Computing 一致；
-- `-inner_pc jacobi|gamg`，选择内层 CG 的代数预条件器，默认 `jacobi`；
+- `-lor_pc` 选择完整求解方案：`left_cg_lu|right_gmres_lu|left_gmres_cg|`
+  `right_gmres_cg|right_fgmres_cg|left_gmres_fixed_jacobi`；默认最后一项；
+- 预条件方向由方案名称唯一确定；`preconditioner_side` 只作为结果元数据；
+- `-inner_pc jacobi|gamg` 选择三个 `*_cg` 方案的内层代数预条件器；
+- `-fixed_jacobi_steps` 和 `-fixed_jacobi_omega` 定义固定线性方案，默认 `4` 和 `2/3`；
 - `-svd_tol`、`-svd_max_it`、`-svd_ncv` 控制四个 SLEPc 极端奇异值求解；
-- `cg_lu` 使用精确 LOR LU；左侧使用外层 CG，右侧使用 GMRES；
-- `gmres_shell` 使用 restarted GMRES 和 PCSHELL 内层 CG，并可选择 Jacobi 或
-  PETSc GAMG；按用户选择实现左或右预条件；外层/内层默认容差均参考 Parallel-Computing 实际生效的
+- `left_cg_lu`/`right_gmres_lu` 使用精确 LOR LU；
+- `left_gmres_cg`/`right_gmres_cg` 是原标准 GMRES 对照；
+- `right_fgmres_cg` 是方案 A1，允许变化的容差控制内层 CG；
+- `left_gmres_fixed_jacobi` 是方案 B，对固定线性近似逆应用标准左 GMRES；
+- 三个 `*_cg` 方案的外层/内层默认容差均参考 Parallel-Computing 实际生效的
   `rtol=1e-10, atol=1e-10`，也可用命令行逐次覆盖。
 
 ### Independent feature options
@@ -108,29 +112,30 @@ compute_l2_error
 compute_condition_number
 [outer_rtol, outer_atol, outer_dtol, outer_max_it]
 [inner_rtol, inner_atol, inner_dtol, inner_max_it]
+[fixed_jacobi_steps, fixed_jacobi_omega]
 predicted_nnz(K), used_nnz(K), allocated_nnz(K), allocation_calls(K)
 estimated_minimum_bytes(K), memory_bytes(K)
 predicted_nnz(K_LOR), used_nnz(K_LOR), allocated_nnz(K_LOR)
 allocation_calls(K_LOR), estimated_minimum_bytes(K_LOR), memory_bytes(K_LOR)
 [cond_2(K), cond_2(K_LOR^{-1}K)]
-[iterations(K), iterations(K_LOR^{-1}K)]
+[iterations(K), iterations(<scheme>)]
 [setup_time_seconds(K), outer_solve_time_seconds(K)]
-[setup_time_seconds(K_LOR^{-1}K), outer_solve_time_seconds(K_LOR^{-1}K)]
-[pc_applications(K_LOR^{-1}K)]
-[inner_iterations_total(K_LOR^{-1}K), inner_iterations_average(K_LOR^{-1}K)]
-[inner_solve_time_seconds(K_LOR^{-1}K), inner_solve_time_average_seconds(K_LOR^{-1}K)]
+[setup_time_seconds(<scheme>), outer_solve_time_seconds(<scheme>)]
+[pc_applications(<scheme>)]
+[inner_iterations_total(<scheme>), inner_iterations_average(<scheme>)]
+[inner_solve_time_seconds(<scheme>), inner_solve_time_average_seconds(<scheme>)]
+[fixed_jacobi_steps_total(<scheme>), fixed_jacobi_time_seconds(<scheme>)]
 [residual(K), relative_residual(K)]
-[residual(K_LOR^{-1}K), relative_residual(K_LOR^{-1}K)]
-[L2_error(K), L2_error(K_LOR^{-1}K)]
+[residual(<scheme>), relative_residual(<scheme>)]
+[L2_error(K), L2_error(<scheme>)]
 ```
 
-上面的预条件字段展示默认 `left` 标签；选择 `right` 时相应字段使用
-`KK_LOR^{-1}`，从而不会把右预条件结果误记为论文的左预条件算子。
+条件数仍以理想精确 LOR 算子 `K_LOR^{-1}K` 或 `KK_LOR^{-1}` 标记；求解、时间、
+真实残差与 L2 字段使用完整 `<scheme>` 名称，避免把实际近似逆误记成精确逆。
 
-未预条件和预条件求解都记录 setup 与完整外层时间。`gmres_shell` 额外输出内层 CG
-调用成本；内层累计时间已经包含在预条件外层时间中，不能二者相加。所有并行时间均
-取最大 rank 的 wall time。内层容差和成本字段只在 `lor_pc=gmres_shell` 时出现；
-停止参数随结果保存，便于比较不同近似逆精度。
+未预条件和预条件求解都记录 setup 与完整外层时间。`*_cg` 方案输出内层 CG 成本，
+固定 Jacobi 方案输出应用次数、总步数和时间；这些子成本已经包含在预条件外层时间中，
+不能二者相加。所有并行时间均取最大 rank 的 wall time。
 
 矩阵存储字段始终输出；`estimated_minimum_bytes` 是 values、column indices 和 MPIAIJ
 row pointers 的可移植下界，`memory_bytes` 是当前 PETSc 实现的报告值，某些版本可能

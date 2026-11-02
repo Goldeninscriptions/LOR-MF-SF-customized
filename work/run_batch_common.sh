@@ -12,7 +12,7 @@ planner="$project_dir/build/case_planner"
 # or a geometry-specific entry point omits part of its public configuration.
 required_scalars=(
   batch_name geometry_file refinement result_dir console_dir summary_file
-  lor_points mpi_rank maximum_mpi_ranks lor_pc preconditioner_side inner_pc compute_solution
+  lor_points mpi_rank maximum_mpi_ranks lor_pc compute_solution
   compute_l2_error compute_condition_number svd_tol svd_max_it svd_ncv
 )
 for required_name in "${required_scalars[@]}"; do
@@ -30,6 +30,15 @@ if [[ ${#degrees[@]} -eq 0 || ${#element_cases[@]} -eq 0 ]]; then
   echo "degrees and element_cases must not be empty" >&2
   exit 2
 fi
+
+# Supply stable fallbacks only for parameters absent from the selected block.
+# An uncommented scheme block in the caller always takes precedence.
+inner_pc=${inner_pc:-${INNER_PC:-jacobi}}
+inner_rtol=${inner_rtol:-${INNER_RTOL:-1.0e-10}}
+inner_atol=${inner_atol:-${INNER_ATOL:-1.0e-10}}
+inner_max_it=${inner_max_it:-${INNER_MAX_IT:-10000}}
+fixed_jacobi_steps=${fixed_jacobi_steps:-${FIXED_JACOBI_STEPS:-4}}
+fixed_jacobi_omega=${fixed_jacobi_omega:-${FIXED_JACOBI_OMEGA:-0.6666666666666667}}
 
 mkdir -p "$result_dir" "$console_dir"
 
@@ -62,11 +71,29 @@ if [[ "$compute_l2_error" == "true" && "$compute_solution" != "true" ]]; then
   echo "compute_l2_error=true requires compute_solution=true" >&2
   exit 2
 fi
-if [[ "$preconditioner_side" != "left" &&
-      "$preconditioner_side" != "right" ]]; then
-  echo "preconditioner_side must be left or right" >&2
-  exit 2
-fi
+# Validate the complete scheme and describe only the settings it actually uses.
+case "$lor_pc" in
+  left_cg_lu)
+    preconditioner_side="left"
+    scheme_settings="exact_lor_lu"
+    ;;
+  right_gmres_lu)
+    preconditioner_side="right"
+    scheme_settings="exact_lor_lu"
+    ;;
+  left_gmres_cg|right_gmres_cg|right_fgmres_cg)
+    [[ "$lor_pc" == left_* ]] && preconditioner_side="left" || preconditioner_side="right"
+    scheme_settings="inner_pc=$inner_pc,inner_rtol=$inner_rtol,inner_atol=$inner_atol,inner_max_it=$inner_max_it"
+    ;;
+  left_gmres_fixed_jacobi)
+    preconditioner_side="left"
+    scheme_settings="fixed_steps=$fixed_jacobi_steps,fixed_omega=$fixed_jacobi_omega"
+    ;;
+  *)
+    echo "unsupported lor_pc: $lor_pc" >&2
+    exit 2
+    ;;
+esac
 if [[ "$inner_pc" != "jacobi" && "$inner_pc" != "gamg" ]]; then
   echo "inner_pc must be jacobi or gamg" >&2
   exit 2
@@ -103,7 +130,7 @@ for degree in "${degrees[@]}"; do
   for element_tuple in "${element_cases[@]}"; do
     mpi_ranks=${planned_ranks[$plan_index]}
     plan_index=$((plan_index + 1))
-    echo "  mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side inner_pc=$inner_pc solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+    echo "  mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side settings=[$scheme_settings] solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
   done
 done
 
@@ -127,8 +154,12 @@ for degree in "${degrees[@]}"; do
     console_file="$console_dir/${stem}.console.log"
     case_start=$(date +%s)
 
-    echo "[$case_number/$total] starting mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side inner_pc=$inner_pc solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number"
-    if PRECONDITIONER_SIDE="$preconditioner_side" INNER_PC="$inner_pc" \
+    echo "[$case_number/$total] starting mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side settings=[$scheme_settings] solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number"
+    if INNER_PC="$inner_pc" \
+      INNER_RTOL="$inner_rtol" INNER_ATOL="$inner_atol" \
+      INNER_MAX_IT="$inner_max_it" \
+      FIXED_JACOBI_STEPS="$fixed_jacobi_steps" \
+      FIXED_JACOBI_OMEGA="$fixed_jacobi_omega" \
       COMPUTE_SOLUTION="$compute_solution" COMPUTE_L2_ERROR="$compute_l2_error" \
       COMPUTE_CONDITION_NUMBER="$compute_condition_number" \
       SVD_TOL="$svd_tol" SVD_MAX_IT="$svd_max_it" SVD_NCV="$svd_ncv" \

@@ -10,15 +10,17 @@
 namespace lor
 {
 
+// Complete solver/preconditioner configurations exposed to users. Each stable
+// name records the preconditioning side, outer Krylov method, and method used
+// to apply the LOR inverse, so incompatible combinations cannot be requested.
 enum class LORPCMode
 {
-    // Exact LU application of the SPD LOR matrix; the outer method is CG for
-    // left preconditioning and GMRES for the optional right configuration.
-    cg_lu,
-
-    // Outer restarted GMRES with a selectable left/right PCSHELL and inner
-    // CG solves preconditioned by Jacobi or GAMG.
-    gmres_shell
+    left_cg_lu,
+    right_gmres_lu,
+    left_gmres_cg,
+    right_gmres_cg,
+    right_fgmres_cg,
+    left_gmres_fixed_jacobi
 };
 
 // Algebraic preconditioner used inside each approximate K_LOR CG solve.
@@ -30,7 +32,7 @@ enum class InnerPCMode
 };
 
 // Relative, absolute, divergence, and iteration limits for the two nested KSP
-// levels. Inner values are ignored by cg_lu because its LOR solve is direct.
+// levels. Inner values apply only to the three schemes ending in _cg.
 struct SolverTolerances
 {
     // Stopping thresholds and iteration limit for the outer K or PC(K) solve.
@@ -41,11 +43,20 @@ struct SolverTolerances
     PetscInt outer_max_it = 10000;
 
     // Each inner K_LOR CG application uses the same legacy thresholds by
-    // default; cg_lu ignores these values because its LOR solve is direct.
+    // default; LU and fixed-Jacobi schemes ignore these values.
     PetscReal inner_rtol = 1.0e-10;
     PetscReal inner_atol = 1.0e-10;
     PetscReal inner_dtol = 1.0e4;
     PetscInt inner_max_it = 10000;
+};
+
+// Fixed coefficients defining scheme B's linear weighted-Jacobi polynomial.
+// Starting from zero, every preconditioner application executes exactly steps
+// updates with the same dimensionless relaxation factor omega.
+struct FixedJacobiParameters
+{
+    PetscInt steps = 4;
+    PetscReal omega = 2.0 / 3.0;
 };
 
 struct LinearSolveResult
@@ -56,8 +67,8 @@ struct LinearSolveResult
     // Number of iterations taken by the outer CG or GMRES method.
     PetscInt iterations = 0;
 
-    // PCSHELL application count and accumulated inner-CG iteration count.
-    // Both remain zero in an unpreconditioned or cg_lu solve.
+    // PCSHELL application count and accumulated inner-CG iterations or fixed
+    // Jacobi steps. Both remain zero for unpreconditioned and LU solves.
     PetscInt pc_applications = 0;
     PetscInt inner_iterations = 0;
 
@@ -67,9 +78,9 @@ struct LinearSolveResult
     PetscLogDouble setup_time_seconds = 0.0;
     PetscLogDouble outer_solve_time_seconds = 0.0;
 
-    // Maximum-rank sum of the wall times spent inside all inner CG KSPSolve
-    // calls. This is nested within outer_solve_time_seconds, not additional
-    // elapsed time. It remains zero without the gmres_shell preconditioner.
+    // Maximum-rank sum of time spent inside all inner CG solves or fixed
+    // Jacobi applications. It is nested within outer_solve_time_seconds, not
+    // additional elapsed time, and remains zero for LU or no preconditioner.
     PetscLogDouble inner_solve_time_seconds = 0.0;
 
     // Common physical residual ||F-Ku||_2 recomputed after convergence.
@@ -85,6 +96,7 @@ struct LinearSolveResult
 
 LORPCMode parse_lor_pc_mode(const std::string &name);
 const char *lor_pc_mode_name(LORPCMode mode) noexcept;
+PreconditionerSide lor_pc_mode_side(LORPCMode mode) noexcept;
 
 // Parse and print the stable inner-preconditioner spellings shared by command
 // line options, result metadata, and batch scripts.
@@ -102,12 +114,13 @@ PetscErrorCode solve_unpreconditioned(Mat stiffness, Vec load,
     LORPCMode mode, const SolverTolerances &tolerances,
     LinearSolveResult *result);
 
-// Solve K u = F with either LU(K_LOR) or GMRES+PCSHELL+inner-CG LOR
-// application. The independently selected side and inner algebraic PC control
-// whether PETSc realizes K_LOR^{-1}K or K K_LOR^{-1} and how cheaply it does so.
+// Solve K u = F with the complete configuration selected by mode. The mode
+// fixes the side and outer method; inner_pc_mode affects only schemes ending
+// in _cg, while fixed_jacobi affects only left_gmres_fixed_jacobi.
 PetscErrorCode solve_with_lor(Mat stiffness, Mat lor_stiffness, Vec load,
-    LORPCMode mode, PreconditionerSide side, InnerPCMode inner_pc_mode,
+    LORPCMode mode, InnerPCMode inner_pc_mode,
     const SolverTolerances &tolerances,
+    const FixedJacobiParameters &fixed_jacobi,
     LinearSolveResult *result);
 
 PetscErrorCode destroy_linear_solve_result(LinearSolveResult *result);

@@ -7,56 +7,115 @@ namespace lor
 namespace
 {
 
-// State owned by the GMRES PCSHELL. Each application approximately solves the
-// LOR system with an inner Jacobi-preconditioned CG iteration.
-struct GMRESShellContext
+enum class ShellApplyKind
 {
+    inner_cg,
+    fixed_jacobi
+};
+
+// State owned by the outer PCSHELL. It applies either a variable inner-CG
+// solve or scheme B's fixed linear weighted-Jacobi polynomial.
+struct LORShellContext
+{
+    ShellApplyKind kind = ShellApplyKind::inner_cg;
+    Mat lor_stiffness = nullptr; // Non-owning; outlives the outer KSP.
     KSP inner_ksp = nullptr;
+    Vec diagonal_inverse = nullptr;
+    Vec work = nullptr;
+    PetscInt fixed_jacobi_steps = 0;
+    PetscReal fixed_jacobi_omega = 0.0;
     PetscInt applications = 0;
     PetscInt total_inner_iterations = 0;
     PetscLogDouble total_inner_solve_time_seconds = 0.0;
 };
 
-PetscErrorCode apply_gmres_shell(PC pc, Vec residual, Vec correction)
+PetscErrorCode initialize_fixed_jacobi(LORShellContext *context)
 {
     PetscFunctionBeginUser;
-    GMRESShellContext *context = nullptr;
+    PetscCheck(context != nullptr, PETSC_COMM_SELF, PETSC_ERR_ARG_NULL,
+        "LOR shell context must not be null");
+
+    // Cache D^{-1} once. Positivity follows from the assembled SPD LOR
+    // stiffness matrix and prevents an undefined pointwise reciprocal.
+    PetscCall(MatCreateVecs(context->lor_stiffness,
+        &context->diagonal_inverse, nullptr));
+    PetscCall(MatGetDiagonal(context->lor_stiffness,
+        context->diagonal_inverse));
+    PetscReal minimum_diagonal = 0.0;
+    PetscCall(VecMin(context->diagonal_inverse, nullptr,
+        &minimum_diagonal));
+    PetscCheck(minimum_diagonal > 0.0,
+        PetscObjectComm(reinterpret_cast<PetscObject>(context->lor_stiffness)),
+        PETSC_ERR_ARG_WRONG, "LOR diagonal must be strictly positive");
+    PetscCall(VecReciprocal(context->diagonal_inverse));
+    PetscCall(VecDuplicate(context->diagonal_inverse, &context->work));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+PetscErrorCode apply_lor_shell(PC pc, Vec residual, Vec correction)
+{
+    PetscFunctionBeginUser;
+    LORShellContext *context = nullptr;
     PetscCall(PCShellGetContext(pc, &context));
 
-    // Time only the already-configured inner CG solve. Its first-call setup is
-    // forced before outer timing begins, so this sum represents iterations.
+    // Time only the repeated approximate-inverse application; inner KSP or
+    // diagonal setup has already been charged to the setup phase.
     PetscLogDouble start = 0.0;
     PetscLogDouble end = 0.0;
     PetscCall(PetscTime(&start));
-    PetscCall(KSPSolve(context->inner_ksp, residual, correction));
+    PetscInt iterations = 0;
+    if (context->kind == ShellApplyKind::inner_cg)
+    {
+        PetscCall(KSPSolve(context->inner_ksp, residual, correction));
+        PetscCall(KSPGetIterationNumber(context->inner_ksp, &iterations));
+    }
+    else
+    {
+        // Apply the same degree-(m-1) linear polynomial B_m to every input:
+        // z <- z + omega D^{-1}(r-Pz), starting from z=0 for exactly m steps.
+        PetscCall(VecSet(correction, 0.0));
+        for (PetscInt step = 0;
+             step < context->fixed_jacobi_steps; ++step)
+        {
+            PetscCall(MatMult(context->lor_stiffness, correction,
+                context->work));
+            PetscCall(VecAYPX(context->work, -1.0, residual));
+            PetscCall(VecPointwiseMult(context->work,
+                context->diagonal_inverse, context->work));
+            PetscCall(VecAXPY(correction, context->fixed_jacobi_omega,
+                context->work));
+        }
+        iterations = context->fixed_jacobi_steps;
+    }
     PetscCall(PetscTime(&end));
 
-    // Accumulate the work of this approximate K_LOR inverse application.
-    PetscInt iterations = 0;
-    PetscCall(KSPGetIterationNumber(context->inner_ksp, &iterations));
+    // Accumulate comparable application, work-step, and nested-time totals.
     ++context->applications;
     context->total_inner_iterations += iterations;
     context->total_inner_solve_time_seconds += end - start;
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-PetscErrorCode destroy_gmres_shell(PC pc)
+PetscErrorCode destroy_lor_shell(PC pc)
 {
     PetscFunctionBeginUser;
-    GMRESShellContext *context = nullptr;
+    LORShellContext *context = nullptr;
     PetscCall(PCShellGetContext(pc, &context));
     if (context != nullptr)
     {
         PetscCall(KSPDestroy(&context->inner_ksp));
+        PetscCall(VecDestroy(&context->diagonal_inverse));
+        PetscCall(VecDestroy(&context->work));
         PetscCall(PetscFree(context));
     }
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
-    const LORPCMode mode, const PreconditionerSide side,
+    const LORPCMode mode,
     const InnerPCMode inner_pc_mode,
     const SolverTolerances &tolerances,
+    const FixedJacobiParameters &fixed_jacobi,
     LinearSolveResult *result)
 {
     PetscFunctionBeginUser;
@@ -67,17 +126,33 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     PetscCheck(result->solution == nullptr, comm,
         PETSC_ERR_ARG_WRONGSTATE, "LinearSolveResult already owns a solution");
 
-    // Configure the outer method independently of the LOR side. A right-sided
-    // exact-LU case uses GMRES because PETSc CG does not support PC_RIGHT.
-    const bool use_shell = mode == LORPCMode::gmres_shell;
     const bool has_lor = lor_stiffness != nullptr;
-    const bool use_gmres = use_shell ||
-        (has_lor && side == PreconditionerSide::right);
+    const bool use_exact_lu = mode == LORPCMode::left_cg_lu ||
+        mode == LORPCMode::right_gmres_lu;
+    const bool use_inner_cg = mode == LORPCMode::left_gmres_cg ||
+        mode == LORPCMode::right_gmres_cg ||
+        mode == LORPCMode::right_fgmres_cg;
+    const bool use_fixed_jacobi =
+        mode == LORPCMode::left_gmres_fixed_jacobi;
+    const bool use_shell = use_inner_cg || use_fixed_jacobi;
+    const bool use_fgmres = has_lor &&
+        mode == LORPCMode::right_fgmres_cg;
+    const bool use_gmres = mode != LORPCMode::left_cg_lu;
+    const PreconditionerSide side = lor_pc_mode_side(mode);
+    PetscCheck(fixed_jacobi.steps > 0, comm, PETSC_ERR_ARG_OUTOFRANGE,
+        "fixed_jacobi_steps must be positive");
+    PetscCheck(fixed_jacobi.omega > 0.0 && fixed_jacobi.omega < 1.0,
+        comm, PETSC_ERR_ARG_OUTOFRANGE,
+        "fixed_jacobi_omega must lie strictly between zero and one");
+
+    // Use standard GMRES for the fixed linear map and FGMRES only for A1's
+    // variable inner solve. The unpreconditioned baseline remains GMRES.
     KSP ksp = nullptr;
     PetscCall(KSPCreate(comm, &ksp));
     PetscCall(KSPSetOperators(ksp, stiffness,
-        lor_stiffness != nullptr && !use_shell ? lor_stiffness : stiffness));
-    PetscCall(KSPSetType(ksp, use_gmres ? KSPGMRES : KSPCG));
+        has_lor && use_exact_lu ? lor_stiffness : stiffness));
+    PetscCall(KSPSetType(ksp, use_fgmres ? KSPFGMRES :
+        (use_gmres ? KSPGMRES : KSPCG)));
     if (use_gmres)
         PetscCall(KSPGMRESSetRestart(ksp, 200));
 
@@ -98,7 +173,7 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     // Attach no PC, an exact LOR LU, or the nested shell preconditioner.
     PC pc = nullptr;
     PetscCall(KSPGetPC(ksp, &pc));
-    GMRESShellContext *shell_context = nullptr;
+    LORShellContext *shell_context = nullptr;
     if (lor_stiffness == nullptr)
         PetscCall(PCSetType(pc, PCNONE));
     else if (!use_shell)
@@ -107,24 +182,37 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     {
         PetscCall(PCSetType(pc, PCSHELL));
         PetscCall(PetscNew(&shell_context));
-        PetscCall(KSPCreate(comm, &shell_context->inner_ksp));
-        PetscCall(KSPSetOperators(shell_context->inner_ksp,
-            lor_stiffness, lor_stiffness));
-        PetscCall(KSPSetType(shell_context->inner_ksp, KSPCG));
-        PetscCall(KSPSetInitialGuessNonzero(
-            shell_context->inner_ksp, PETSC_FALSE));
-        PetscCall(KSPSetTolerances(shell_context->inner_ksp,
-            tolerances.inner_rtol, tolerances.inner_atol,
-            tolerances.inner_dtol, tolerances.inner_max_it));
-        // Select either the legacy diagonal scaling or a reusable algebraic
-        // multigrid hierarchy for the low-order Laplace operator.
-        PC inner_pc = nullptr;
-        PetscCall(KSPGetPC(shell_context->inner_ksp, &inner_pc));
-        PetscCall(PCSetType(inner_pc,
-            inner_pc_mode == InnerPCMode::jacobi ? PCJACOBI : PCGAMG));
+        shell_context->lor_stiffness = lor_stiffness;
+        if (use_inner_cg)
+        {
+            // Configure A1/legacy variable inner CG and its reusable algebraic
+            // Jacobi or GAMG preconditioner.
+            shell_context->kind = ShellApplyKind::inner_cg;
+            PetscCall(KSPCreate(comm, &shell_context->inner_ksp));
+            PetscCall(KSPSetOperators(shell_context->inner_ksp,
+                lor_stiffness, lor_stiffness));
+            PetscCall(KSPSetType(shell_context->inner_ksp, KSPCG));
+            PetscCall(KSPSetInitialGuessNonzero(
+                shell_context->inner_ksp, PETSC_FALSE));
+            PetscCall(KSPSetTolerances(shell_context->inner_ksp,
+                tolerances.inner_rtol, tolerances.inner_atol,
+                tolerances.inner_dtol, tolerances.inner_max_it));
+            PC inner_pc = nullptr;
+            PetscCall(KSPGetPC(shell_context->inner_ksp, &inner_pc));
+            PetscCall(PCSetType(inner_pc,
+                inner_pc_mode == InnerPCMode::jacobi ? PCJACOBI : PCGAMG));
+        }
+        else
+        {
+            // Store fixed scheme-B coefficients; D^{-1} is created inside the
+            // explicitly timed setup phase below.
+            shell_context->kind = ShellApplyKind::fixed_jacobi;
+            shell_context->fixed_jacobi_steps = fixed_jacobi.steps;
+            shell_context->fixed_jacobi_omega = fixed_jacobi.omega;
+        }
         PetscCall(PCShellSetContext(pc, shell_context));
-        PetscCall(PCShellSetApply(pc, apply_gmres_shell));
-        PetscCall(PCShellSetDestroy(pc, destroy_gmres_shell));
+        PetscCall(PCShellSetApply(pc, apply_lor_shell));
+        PetscCall(PCShellSetDestroy(pc, destroy_lor_shell));
     }
 
     // Set up all nested solvers explicitly and record the maximum-rank setup
@@ -133,8 +221,10 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     PetscLogDouble setup_start = 0.0;
     PetscLogDouble setup_end = 0.0;
     PetscCall(PetscTime(&setup_start));
-    if (shell_context != nullptr)
+    if (shell_context != nullptr && shell_context->inner_ksp != nullptr)
         PetscCall(KSPSetUp(shell_context->inner_ksp));
+    else if (shell_context != nullptr)
+        PetscCall(initialize_fixed_jacobi(shell_context));
     PetscCall(KSPSetUp(ksp));
     PetscCall(PetscTime(&setup_end));
     const PetscLogDouble local_setup_time = setup_end - setup_start;
@@ -188,18 +278,55 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
 
 } // namespace
 
+// Translate one complete user-facing solver configuration into a typed mode.
 LORPCMode parse_lor_pc_mode(const std::string &name)
 {
-    if (name == "cg_lu")
-        return LORPCMode::cg_lu;
-    if (name == "gmres_shell")
-        return LORPCMode::gmres_shell;
-    throw std::invalid_argument("lor_pc must be cg_lu or gmres_shell");
+    if (name == "left_cg_lu")
+        return LORPCMode::left_cg_lu;
+    if (name == "right_gmres_lu")
+        return LORPCMode::right_gmres_lu;
+    if (name == "left_gmres_cg")
+        return LORPCMode::left_gmres_cg;
+    if (name == "right_gmres_cg")
+        return LORPCMode::right_gmres_cg;
+    if (name == "right_fgmres_cg")
+        return LORPCMode::right_fgmres_cg;
+    if (name == "left_gmres_fixed_jacobi")
+        return LORPCMode::left_gmres_fixed_jacobi;
+    throw std::invalid_argument(
+        "lor_pc must be left_cg_lu, right_gmres_lu, left_gmres_cg, "
+        "right_gmres_cg, right_fgmres_cg, or left_gmres_fixed_jacobi");
 }
 
+// Preserve a stable complete configuration name in logs and result files.
 const char *lor_pc_mode_name(const LORPCMode mode) noexcept
 {
-    return mode == LORPCMode::cg_lu ? "cg_lu" : "gmres_shell";
+    switch (mode)
+    {
+        case LORPCMode::left_cg_lu:
+            return "left_cg_lu";
+        case LORPCMode::right_gmres_lu:
+            return "right_gmres_lu";
+        case LORPCMode::left_gmres_cg:
+            return "left_gmres_cg";
+        case LORPCMode::right_gmres_cg:
+            return "right_gmres_cg";
+        case LORPCMode::right_fgmres_cg:
+            return "right_fgmres_cg";
+        case LORPCMode::left_gmres_fixed_jacobi:
+            return "left_gmres_fixed_jacobi";
+    }
+    return "unknown";
+}
+
+// Derive the algebraic side from the configuration rather than accepting a
+// second option that could contradict its name.
+PreconditionerSide lor_pc_mode_side(const LORPCMode mode) noexcept
+{
+    return mode == LORPCMode::right_gmres_lu ||
+        mode == LORPCMode::right_gmres_cg ||
+        mode == LORPCMode::right_fgmres_cg ?
+        PreconditionerSide::right : PreconditionerSide::left;
 }
 
 // Translate the user-facing low-order solver choice into a typed mode.
@@ -240,18 +367,20 @@ PetscErrorCode solve_unpreconditioned(Mat stiffness, Vec load,
     const LORPCMode mode, const SolverTolerances &tolerances,
     LinearSolveResult *result)
 {
+    const FixedJacobiParameters unused_fixed_jacobi;
     return solve(stiffness, nullptr, load, mode,
-        PreconditionerSide::left, InnerPCMode::jacobi, tolerances, result);
+        InnerPCMode::jacobi, tolerances,
+        unused_fixed_jacobi, result);
 }
 
 PetscErrorCode solve_with_lor(Mat stiffness, Mat lor_stiffness, Vec load,
-    const LORPCMode mode, const PreconditionerSide side,
-    const InnerPCMode inner_pc_mode,
+    const LORPCMode mode, const InnerPCMode inner_pc_mode,
     const SolverTolerances &tolerances,
+    const FixedJacobiParameters &fixed_jacobi,
     LinearSolveResult *result)
 {
-    return solve(stiffness, lor_stiffness, load, mode, side, inner_pc_mode,
-        tolerances, result);
+    return solve(stiffness, lor_stiffness, load, mode, inner_pc_mode,
+        tolerances, fixed_jacobi, result);
 }
 
 PetscErrorCode destroy_linear_solve_result(LinearSolveResult *result)

@@ -47,10 +47,53 @@ mpi_rank=${MPI_RANK:-default}
 # environment value may impose a smaller resource or scheduler limit.
 maximum_mpi_ranks=${MAX_MPI_RANKS:-}
 
-lor_pc="gmres_shell"
-# lor_pc="cg_lu"
-preconditioner_side=${PRECONDITIONER_SIDE:-left}
-# preconditioner_side="right"
+# Select exactly one complete solver block. Keep the active block uncommented
+# and leave every unused block commented.
+
+# Exact left LOR inverse; no inner iterative settings are used.
+# lor_pc="left_cg_lu"
+
+# Exact right LOR inverse; no inner iterative settings are used.
+# lor_pc="right_gmres_lu"
+
+# Standard left GMRES with tolerance-controlled inner CG.
+# lor_pc="left_gmres_cg"
+# inner_pc="jacobi"       # Alternative: "gamg"
+# inner_rtol="1.0e-10"
+# inner_atol="1.0e-10"
+# inner_max_it="10000"
+
+# Standard right GMRES with tolerance-controlled inner CG.
+# lor_pc="right_gmres_cg"
+# inner_pc="jacobi"       # Alternative: "gamg"
+# inner_rtol="1.0e-10"
+# inner_atol="1.0e-10"
+# inner_max_it="10000"
+
+# Scheme A1: flexible right GMRES permits an inexact, varying inner CG map.
+# lor_pc="right_fgmres_cg"
+# inner_pc="jacobi"       # Alternative: "gamg"
+# inner_rtol="1.0e-4"
+# inner_atol="1.0e-50"
+# inner_max_it="10000"
+
+# Scheme B (active/default): standard left GMRES with one fixed linear map.
+lor_pc="left_gmres_fixed_jacobi"
+fixed_jacobi_steps="4"
+fixed_jacobi_omega="0.6666666666666667"
+
+# Stable fallbacks are ignored when the selected block defines the variable.
+inner_pc=${inner_pc:-jacobi}
+inner_rtol=${inner_rtol:-1.0e-10}
+inner_atol=${inner_atol:-1.0e-10}
+inner_max_it=${inner_max_it:-10000}
+fixed_jacobi_steps=${fixed_jacobi_steps:-4}
+fixed_jacobi_omega=${fixed_jacobi_omega:-0.6666666666666667}
+case "$lor_pc" in
+  left_*) preconditioner_side="left" ;;
+  right_*) preconditioner_side="right" ;;
+  *) echo "lor_pc must begin with left_ or right_" >&2; exit 2 ;;
+esac
 
 # SLEPc controls for the potentially difficult smallest singular values.
 svd_tol="1.0e-8"
@@ -133,7 +176,10 @@ for degree in "${degrees[@]}"; do
     case_start=$(date +%s)
 
     echo "[$case_number/$total] starting mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side"
-    if PRECONDITIONER_SIDE="$preconditioner_side" \
+    if INNER_PC="$inner_pc" INNER_RTOL="$inner_rtol" \
+      INNER_ATOL="$inner_atol" INNER_MAX_IT="$inner_max_it" \
+      FIXED_JACOBI_STEPS="$fixed_jacobi_steps" \
+      FIXED_JACOBI_OMEGA="$fixed_jacobi_omega" \
       SVD_TOL="$svd_tol" SVD_MAX_IT="$svd_max_it" SVD_NCV="$svd_ncv" \
       "$script_dir/run_case.sh" "$mpi_ranks" "$geometry_file" "$refinement" "$degree" \
       "$element_tuple" "$lor_points" "$lor_pc" "$result_file" \

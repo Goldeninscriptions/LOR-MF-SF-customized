@@ -16,10 +16,10 @@ KSP 应用方式、SLEPc 条件数和 L2 误差分析。Matrix-free 与 sum fact
 - MPI 方向切片并行组装、分布式 PETSc 矩阵/向量和并行 KSP；
 - 张量支撑驱动的精确 MPIAIJ 逐行预分配、owned-row halo 组装和矩阵存储日志；
 - 几何文件与 p/h/k refinement 仅在 rank 0 执行，refined Patch 广播重建；
-- 默认论文一致的高精度左预条件；可独立选择 `left|right`，并可选择
-  `gmres_shell|cg_lu` 两种 LOR 逆应用方式；
-- `gmres_shell` 内层 CG 可选择 legacy `jacobi` 或 PETSc `gamg`；
-- 求解输出同时记录 setup、完整外层时间，以及 `gmres_shell` 的内层 CG 调用数、
+- 六个完整求解方案的名称同时编码预条件方向、外层方法和 LOR 逆应用；默认
+  `left_gmres_fixed_jacobi` 是固定线性映射；
+- 三个 `*_cg` 方案的内层 CG 可选择 legacy `jacobi` 或 PETSc `gamg`；
+- 求解输出同时记录 setup、完整外层时间，以及嵌套预条件操作的调用数、
   总/平均迭代数和总/平均时间；
 - 求解、L2 误差和 SLEPc 条件数可独立启用，禁用项不计算也不输出；
 - 串行 case planner 自动计算细化后自由度，并在 macOS/Linux 上按逻辑 CPU 数推荐 MPI ranks；
@@ -47,7 +47,7 @@ make -j
   default \
   work/input/square_2d.txt \
   k_refine 5 16,16 \
-  greville gmres_shell \
+  greville left_gmres_fixed_jacobi \
   work/results/example.log
 ```
 
@@ -55,7 +55,7 @@ make -j
 
 ```bash
 ./work/run_case.sh 8 work/input/square_2d.txt \
-  k_refine 5 16,16 greville gmres_shell work/results/example_mpi8.log
+  k_refine 5 16,16 greville left_gmres_fixed_jacobi work/results/example_mpi8.log
 ```
 
 批处理预览和正式运行：
@@ -65,11 +65,8 @@ BATCH_DRY_RUN=1 ./work/run_batch_square_2d.sh
 ./work/run_batch_square_2d.sh
 ```
 
-默认使用左预条件；右预条件研究可显式覆盖：
-
-```bash
-PRECONDITIONER_SIDE=right ./work/run_batch_square_2d.sh
-```
+每个几何批处理脚本都列出了六个完整求解方案。需要方案 A1 时，在脚本配置区注释
+当前 `left_gmres_fixed_jacobi` 块，并取消注释 `right_fgmres_cg` 块及其内层参数。
 
 另外两个几何分别使用 `run_batch_cube_3d.sh` 和
 `run_batch_curved_quadrilateral_2d.sh`；三个入口共享参数验证与日志执行器，但结果、
@@ -97,25 +94,24 @@ PRECONDITIONER_SIDE=right ./work/run_batch_square_2d.sh
 COMPUTE_SOLUTION=true \
 COMPUTE_L2_ERROR=true \
 COMPUTE_CONDITION_NUMBER=false \
-PRECONDITIONER_SIDE=left \
 ./work/run_case.sh default work/input/square_2d.txt \
-  k_refine 5 16,16 greville gmres_shell work/results/example.log
+  k_refine 5 16,16 greville left_gmres_fixed_jacobi work/results/example.log
 ```
 
 批处理在配置区直接设置同名小写变量。L2 要求先启用 solution；条件数与二者独立，
 默认关闭以避免普通批次隐式执行昂贵的四次 SVD。
 
-`PRECONDITIONER_SIDE=left|right` 可覆盖论文一致的默认左预条件。`gmres_shell` 默认
-参考 Parallel-Computing 的实际生效设置，让外层和内层均使用
-`rtol=1e-10, atol=1e-10`；左侧监测预条件残差，右侧监测
-原方程残差，二者都会在结束后重算绝对和相对真实残差；
-`run_case.sh` 末尾四个可选位置参数仍可覆盖两层容差。
+位置参数 `LOR_PC` 接受 `left_cg_lu`、`right_gmres_lu`、`left_gmres_cg`、
+`right_gmres_cg`、`right_fgmres_cg` 和默认的
+`left_gmres_fixed_jacobi`。方向由名称唯一确定；结果仍会记录
+`preconditioner_side` 便于筛选。所有模式结束后都重算原方程真实残差；
+`run_case.sh` 末尾四个可选位置参数用于三个 `*_cg` 方案。
 
-内层预条件器默认为 `jacobi`；使用 PETSc GAMG：
+方案 B 默认固定执行 `m=4, omega=2/3` 的 weighted Jacobi。单算例可用
+`FIXED_JACOBI_STEPS` 和 `FIXED_JACOBI_OMEGA` 覆盖；批处理直接编辑已暴露的方案块。
 
-```bash
-INNER_PC=gamg ./work/run_batch_square_2d.sh
-```
+三个 `*_cg` 方案的样例默认写为 `inner_pc="jacobi"`；要使用 PETSc GAMG，将所选
+方案块中的值改成 `inner_pc="gamg"`。
 
 GAMG 层次在 setup 阶段构造一次并在所有内层调用中复用。性能比较应使用
 `setup_time_seconds + outer_solve_time_seconds`，不能只看内层迭代数。

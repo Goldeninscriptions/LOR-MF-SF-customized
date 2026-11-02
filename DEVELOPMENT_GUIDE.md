@@ -34,7 +34,7 @@ geometry txt
   -> LocalAssembly -> 分布式组装 PETSc K / M / F
   -> GrevillePointSet / DemkoPointSet
   -> LORMesh -> LORIEN -> FEMQuad4/FEMHex8 -> 分布式组装 K_LOR / M_LOR / F_LOR
-  -> [compute_solution] gmres_shell 或 cg_lu
+  -> [compute_solution] 六个显式 LOR/Krylov 组合方案之一
   -> [compute_l2_error] L2 error
   -> [compute_condition_number] GlobalAssembly SLEPc condition numbers
   -> 只含启用项的 result log
@@ -123,27 +123,29 @@ geometry txt
 - 当前 `AssembledLaplaceExperiment` 始终请求高阶/LOR 刚度；只有
   `compute_solution=true` 才通过融合入口附带组装荷载；质量矩阵和 LOR 荷载不会
   被隐式构造；
-- `preconditioner_side=left|right` 与 LOR 逆应用方式相互独立；默认 `left` 与论文及
-  Parallel-Computing 的 `K_LOR^{-1}K u=K_LOR^{-1}F` 一致，`right` 实现
-  `K K_LOR^{-1}y=F` 并恢复 `u=K_LOR^{-1}y`；
-- `cg_lu`：LOR 矩阵用 LU 精确应用；左侧使用外层 CG，右侧自动使用 GMRES；
-- `gmres_shell`：外层 restarted GMRES，`PCSHELL` 内部使用 CG，并可选择 Jacobi
-  或 PETSc GAMG 近似应用 LOR 逆；GAMG 层次在 setup 中构造一次后复用；左侧监测
-  预条件残差，右侧监测原方程残差；外层/内层默认容差均参考
+- `lor_pc` 的完整名称同时编码方向、外层方法和 LOR 逆应用，避免不相容的独立组合；
+- `left_cg_lu` 与 `right_gmres_lu` 使用精确 LU 应用 LOR 逆；
+- `left_gmres_cg` 与 `right_gmres_cg` 保留标准 GMRES+容差控制内层 CG 对照；
+- `right_fgmres_cg`（方案 A1）用右预条件 FGMRES 匹配变化的内层 CG；
+- `left_gmres_fixed_jacobi`（方案 B，默认）固定执行 `m=4, omega=2/3` 的 weighted
+  Jacobi，从零初值生成固定线性多项式近似逆，再应用标准左 GMRES；
+- 三个 `*_cg` 方案可选择 Jacobi 或 PETSc GAMG；GAMG 层次在 setup 中构造一次后
+  复用；外层/内层默认容差均参考
   Parallel-Computing 实际生效值，采用 `rtol=1e-10, atol=1e-10, dtol=1e4,
   max_it=10000`，求解后统一重算原方程真实残差；
 - 两次求解分别记录显式 KSP/PC setup 和完整外层 `KSPSolve` wall time；
-  `gmres_shell` 还记录内层 CG 的调用数、累计/平均迭代数与累计/平均时间；
+  `*_cg` 记录内层 CG 的调用数、累计/平均迭代数与累计/平均时间，固定 Jacobi
+  记录调用数、固定总步数和时间；
 - 内层 CG 时间嵌套在预条件外层时间中，不能与外层时间相加；MPI 时间统一取所有
   ranks 的最大值，作为同步并行阶段的关键路径成本；
 - `run_inner_tolerance_sweep_square_2d.sh` 固定外层设置并扫描内层 CG `rtol`；接受
   `INNER_PC=jacobi|gamg`，配置必须同时降低 setup+solve 总时间并保持原方程真实
   相对残差与 L2 误差；
-- 宽松内层 CG 构成随右端项变化的近似逆，左预条件标准 GMRES 仍作为论文对照；
-  数学上更合适的右预条件 FGMRES 将作为独立求解器配置，而不静默替换当前算法；
+- 宽松内层 CG 构成随右端项变化的近似逆；`left_gmres_cg` 保留论文对照，
+  `right_fgmres_cg` 作为数学匹配的独立方案而不静默替换原算法；
 - `compute_solution`、`compute_l2_error`、`compute_condition_number` 独立控制求解、
   误差和谱分析；L2 依赖 solution，条件数不依赖二者；
-- 默认使用 `gmres_shell`；外层、内层 KSP、SLEPc 和矩阵 shell 均使用矩阵的 MPI
+- 默认使用 `left_gmres_fixed_jacobi`；外层、内层 KSP、SLEPc 和矩阵 shell 均使用矩阵的 MPI
   communicator；
 - GlobalAssembly 的显式 SLEPc 入口分别计算 `cond_2(K)` 与用户所选方向的
   `cond_2(K_LOR^{-1}K)` 或 `cond_2(KK_LOR^{-1})`；
@@ -223,7 +225,7 @@ n = {(4,4),(16,16),(128,128)}
 refinement = k_refine
 ```
 
-point set 可选 `greville|demko`，LOR 求解默认 `gmres_shell`。单算例第一个参数和
+point set 可选 `greville|demko`，LOR 求解默认 `left_gmres_fixed_jacobi`。单算例第一个参数和
 批处理的 `mpi_rank` 配置均接受正整数或 `default`：正整数直接成为 `mpirun -n`
 的进程数，`default` 则逐 case 使用 planner 推荐值。脚本为每个 case 保存数值
 结果、控制台日志和批处理汇总；`BATCH_DRY_RUN=1` 只打印计划。
