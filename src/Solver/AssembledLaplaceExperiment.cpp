@@ -352,12 +352,23 @@ PetscErrorCode run_assembled_laplace_experiment(
         for (int direction = 0; direction < Dim; ++direction)
             PetscCall(PetscPrintf(comm, "%s%d", direction == 0 ? "" : ",",
                 patch.num_elements(direction)));
-        PetscCall(PetscPrintf(comm,
-            "), mode=%s, side=%s, inner_pc=%s, point_set=%s, solve=%s, "
-            "L2=%s, condition=%s\n",
+        PetscCall(PetscPrintf(comm, "), mode=%s, side=%s",
             lor_pc_mode_name(options.lor_pc),
-            preconditioner_side_name(options.preconditioner_side),
-            inner_pc_mode_name(options.inner_pc),
+            preconditioner_side_name(options.preconditioner_side)));
+        if (options.lor_pc == LORPCMode::left_gmres_cg ||
+            options.lor_pc == LORPCMode::right_gmres_cg ||
+            options.lor_pc == LORPCMode::right_fgmres_cg)
+            PetscCall(PetscPrintf(comm, ", inner_pc=%s",
+                inner_pc_mode_name(options.inner_pc)));
+        else if (options.lor_pc ==
+                 LORPCMode::left_gmres_fixed_jacobi)
+            PetscCall(PetscPrintf(comm,
+                ", fixed_jacobi_steps=%" PetscInt_FMT
+                ", fixed_jacobi_omega=%.6f",
+                options.fixed_jacobi.steps,
+                static_cast<double>(options.fixed_jacobi.omega)));
+        PetscCall(PetscPrintf(comm,
+            ", point_set=%s, solve=%s, L2=%s, condition=%s\n",
             options.lor_points.c_str(),
             options.compute_solution ? "true" : "false",
             options.compute_l2_error ? "true" : "false",

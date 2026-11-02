@@ -50,6 +50,13 @@ ExperimentOptions read_experiment_options(const int dimension)
     PetscBool degree_set = PETSC_FALSE;
     PetscBool elements_set = PETSC_FALSE;
     PetscBool side_set = PETSC_FALSE;
+    PetscBool inner_pc_set = PETSC_FALSE;
+    PetscBool inner_rtol_set = PETSC_FALSE;
+    PetscBool inner_atol_set = PETSC_FALSE;
+    PetscBool inner_dtol_set = PETSC_FALSE;
+    PetscBool inner_max_it_set = PETSC_FALSE;
+    PetscBool fixed_steps_set = PETSC_FALSE;
+    PetscBool fixed_omega_set = PETSC_FALSE;
     PetscBool compute_solution = PETSC_TRUE;
     PetscBool compute_l2_error = PETSC_TRUE;
     PetscBool compute_condition_number = PETSC_FALSE;
@@ -69,7 +76,7 @@ ExperimentOptions read_experiment_options(const int dimension)
     PetscOptionsGetString(nullptr, nullptr, "-preconditioner_side", side,
         sizeof(side), &side_set);
     PetscOptionsGetString(nullptr, nullptr, "-inner_pc", inner_pc,
-        sizeof(inner_pc), nullptr);
+        sizeof(inner_pc), &inner_pc_set);
     PetscOptionsGetString(nullptr, nullptr, "-lor_points", point_set,
         sizeof(point_set), nullptr);
     PetscOptionsGetBool(nullptr, nullptr, "-compute_solution",
@@ -98,13 +105,20 @@ ExperimentOptions read_experiment_options(const int dimension)
         throw std::invalid_argument(
             "-refinement must be p_refine, h_refine, or k_refine");
     options.lor_pc = parse_lor_pc_mode(mode);
+    const bool uses_inner_cg =
+        options.lor_pc == LORPCMode::left_gmres_cg ||
+        options.lor_pc == LORPCMode::right_gmres_cg ||
+        options.lor_pc == LORPCMode::right_fgmres_cg;
+    const bool uses_fixed_jacobi =
+        options.lor_pc == LORPCMode::left_gmres_fixed_jacobi;
     options.preconditioner_side = lor_pc_mode_side(options.lor_pc);
     if (side_set && parse_preconditioner_side(side) !=
         options.preconditioner_side)
         throw std::invalid_argument(
             "-preconditioner_side conflicts with the direction encoded by "
             "-lor_pc");
-    options.inner_pc = parse_inner_pc_mode(inner_pc);
+    if (uses_inner_cg)
+        options.inner_pc = parse_inner_pc_mode(inner_pc);
     options.lor_points = point_set;
     if (options.lor_points != "greville" && options.lor_points != "demko")
         throw std::invalid_argument("-lor_points must be greville or demko");
@@ -126,23 +140,36 @@ ExperimentOptions read_experiment_options(const int dimension)
     PetscOptionsGetInt(nullptr, nullptr, "-outer_max_it",
         &options.tolerances.outer_max_it, nullptr);
     PetscOptionsGetReal(nullptr, nullptr, "-inner_rtol",
-        &options.tolerances.inner_rtol, nullptr);
+        &options.tolerances.inner_rtol, &inner_rtol_set);
     PetscOptionsGetReal(nullptr, nullptr, "-inner_atol",
-        &options.tolerances.inner_atol, nullptr);
+        &options.tolerances.inner_atol, &inner_atol_set);
     PetscOptionsGetReal(nullptr, nullptr, "-inner_dtol",
-        &options.tolerances.inner_dtol, nullptr);
+        &options.tolerances.inner_dtol, &inner_dtol_set);
     PetscOptionsGetInt(nullptr, nullptr, "-inner_max_it",
-        &options.tolerances.inner_max_it, nullptr);
+        &options.tolerances.inner_max_it, &inner_max_it_set);
     PetscOptionsGetInt(nullptr, nullptr, "-fixed_jacobi_steps",
-        &options.fixed_jacobi.steps, nullptr);
+        &options.fixed_jacobi.steps, &fixed_steps_set);
     PetscOptionsGetReal(nullptr, nullptr, "-fixed_jacobi_omega",
-        &options.fixed_jacobi.omega, nullptr);
+        &options.fixed_jacobi.omega, &fixed_omega_set);
     PetscOptionsGetReal(nullptr, nullptr, "-svd_tol",
         &options.svd_tolerance, nullptr);
 
+    // Reject parameters that do not belong to the selected complete scheme;
+    // this prevents result metadata from implying inactive nested algorithms.
+    const bool any_inner_option = inner_pc_set || inner_rtol_set ||
+        inner_atol_set || inner_dtol_set || inner_max_it_set;
+    const bool any_fixed_option = fixed_steps_set || fixed_omega_set;
+    if (!uses_inner_cg && any_inner_option)
+        throw std::invalid_argument(
+            "inner CG options are valid only for a *_cg lor_pc mode");
+    if (!uses_fixed_jacobi && any_fixed_option)
+        throw std::invalid_argument(
+            "fixed Jacobi options are valid only for "
+            "left_gmres_fixed_jacobi");
+
     // Scheme B must remain one fixed polynomial for every right-hand side;
     // reject nonpositive work or an unstable endpoint relaxation parameter.
-    if (options.lor_pc == LORPCMode::left_gmres_fixed_jacobi)
+    if (uses_fixed_jacobi)
     {
         if (options.fixed_jacobi.steps < 1)
             throw std::invalid_argument(
@@ -236,9 +263,15 @@ void write_experiment_results(const std::string &filename,
     output << std::boolalpha
            << "lor_pc = " << lor_pc_mode_name(results.lor_pc) << '\n'
            << "preconditioner_side = "
-           << preconditioner_side_name(results.preconditioner_side) << '\n'
-           << "inner_pc = " << inner_pc_mode_name(results.inner_pc) << '\n'
-           << "compute_solution = " << results.computed_solution << '\n'
+           << preconditioner_side_name(results.preconditioner_side) << '\n';
+    const bool uses_inner_cg =
+        results.lor_pc == LORPCMode::left_gmres_cg ||
+        results.lor_pc == LORPCMode::right_gmres_cg ||
+        results.lor_pc == LORPCMode::right_fgmres_cg;
+    if (uses_inner_cg)
+        output << "inner_pc = " << inner_pc_mode_name(results.inner_pc)
+               << '\n';
+    output << "compute_solution = " << results.computed_solution << '\n'
            << "compute_l2_error = " << results.computed_l2_error << '\n'
            << "compute_condition_number = "
            << results.computed_condition_number << '\n'

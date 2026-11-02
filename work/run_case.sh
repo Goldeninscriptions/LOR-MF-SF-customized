@@ -114,38 +114,41 @@ mkdir -p "$(dirname "$output_file")"
 
 # Every scheme name encodes its algebraic direction, outer Krylov method, and
 # approximate-inverse implementation, so no independent side can conflict.
+# Set only mode flags here; mode-specific options are appended later.
+uses_inner_cg=false
+uses_fixed_jacobi=false
 case "$lor_pc" in
-  left_*) preconditioner_side="left" ;;
-  right_*) preconditioner_side="right" ;;
-  *) preconditioner_side="invalid" ;;
+  left_cg_lu)
+    preconditioner_side="left"
+    outer_rtol="1.0e-12"
+    outer_atol="1.0e-14"
+    outer_dtol="1.0e8"
+    ;;
+  right_gmres_lu)
+    preconditioner_side="right"
+    outer_rtol="1.0e-10"
+    outer_atol="1.0e-10"
+    outer_dtol="1.0e4"
+    ;;
+  left_gmres_cg|right_gmres_cg|right_fgmres_cg)
+    [[ "$lor_pc" == left_* ]] && preconditioner_side="left" || preconditioner_side="right"
+    uses_inner_cg=true
+    outer_rtol="1.0e-10"
+    outer_atol="1.0e-10"
+    outer_dtol="1.0e4"
+    ;;
+  left_gmres_fixed_jacobi)
+    preconditioner_side="left"
+    uses_fixed_jacobi=true
+    outer_rtol="1.0e-10"
+    outer_atol="1.0e-10"
+    outer_dtol="1.0e4"
+    ;;
+  *)
+    echo "LOR_PC must be left_cg_lu, right_gmres_lu, left_gmres_cg, right_gmres_cg, right_fgmres_cg, or left_gmres_fixed_jacobi" >&2
+    exit 2
+    ;;
 esac
-if [[ "$inner_pc" != "jacobi" && "$inner_pc" != "gamg" ]]; then
-  echo "INNER_PC must be jacobi or gamg" >&2
-  exit 2
-fi
-
-# Mode-specific default residual settings.
-if [[ "$lor_pc" == "left_cg_lu" ]]; then
-  outer_rtol="1.0e-12"
-  outer_atol="1.0e-14"
-  outer_dtol="1.0e8"
-elif [[ "$lor_pc" == "right_gmres_lu" ||
-        "$lor_pc" == "left_gmres_cg" ||
-        "$lor_pc" == "right_gmres_cg" ]]; then
-  # Parallel-Computing calls KSPSetTolerances after KSPSetFromOptions, so its
-  # effective outer and inner values are 1e-10 rather than the scripted 1e-6.
-  outer_rtol="1.0e-10"
-  outer_atol="1.0e-10"
-  outer_dtol="1.0e4"
-elif [[ "$lor_pc" == "right_fgmres_cg" ||
-        "$lor_pc" == "left_gmres_fixed_jacobi" ]]; then
-  outer_rtol="1.0e-10"
-  outer_atol="1.0e-10"
-  outer_dtol="1.0e4"
-else
-  echo "LOR_PC must be left_cg_lu, right_gmres_lu, left_gmres_cg, right_gmres_cg, right_fgmres_cg, or left_gmres_fixed_jacobi" >&2
-  exit 2
-fi
 outer_max_it="10000"
 inner_rtol="1.0e-10"
 inner_atol="1.0e-10"
@@ -186,8 +189,12 @@ if [[ "$compute_l2_error" == "true" && "$compute_solution" != "true" ]]; then
   exit 2
 fi
 
-# Explicit command-line residuals override the mode defaults.
+# Explicit command-line residuals belong only to nested-CG configurations.
 if [[ $# -eq 12 ]]; then
+  if [[ "$uses_inner_cg" != true ]]; then
+    echo "Trailing INNER_RTOL/INNER_ATOL arguments require a *_cg LOR_PC" >&2
+    exit 2
+  fi
   outer_rtol=$9
   outer_atol=${10}
   inner_rtol=${11}
@@ -202,9 +209,6 @@ common_options=(
   -lor_points "$lor_points"
   -lor_pc "$lor_pc"
   -preconditioner_side "$preconditioner_side"
-  -inner_pc "$inner_pc"
-  -fixed_jacobi_steps "$fixed_jacobi_steps"
-  -fixed_jacobi_omega "$fixed_jacobi_omega"
   -compute_solution "$compute_solution"
   -compute_l2_error "$compute_l2_error"
   -compute_condition_number "$compute_condition_number"
@@ -218,14 +222,22 @@ common_options=(
   -output "$output_file"
 )
 
-if [[ "$lor_pc" == "left_gmres_cg" ||
-      "$lor_pc" == "right_gmres_cg" ||
-      "$lor_pc" == "right_fgmres_cg" ]]; then
+if [[ "$uses_inner_cg" == true ]]; then
+  if [[ "$inner_pc" != "jacobi" && "$inner_pc" != "gamg" ]]; then
+    echo "INNER_PC must be jacobi or gamg for a *_cg LOR_PC" >&2
+    exit 2
+  fi
   common_options+=(
+    -inner_pc "$inner_pc"
     -inner_rtol "$inner_rtol"
     -inner_atol "$inner_atol"
     -inner_dtol "$inner_dtol"
     -inner_max_it "$inner_max_it"
+  )
+elif [[ "$uses_fixed_jacobi" == true ]]; then
+  common_options+=(
+    -fixed_jacobi_steps "$fixed_jacobi_steps"
+    -fixed_jacobi_omega "$fixed_jacobi_omega"
   )
 fi
 
@@ -233,5 +245,11 @@ fi
 # can still override MPIEXEC when their cluster exposes another launcher name.
 export OMP_NUM_THREADS=1
 mpi_launcher=${MPIEXEC:-mpirun}
-echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side inner_pc=$inner_pc fixed_jacobi_steps=$fixed_jacobi_steps fixed_jacobi_omega=$fixed_jacobi_omega solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_max_it=$outer_max_it inner_rtol=$inner_rtol inner_atol=$inner_atol inner_max_it=$inner_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+scheme_log=""
+if [[ "$uses_inner_cg" == true ]]; then
+  scheme_log=" inner_pc=$inner_pc inner_rtol=$inner_rtol inner_atol=$inner_atol inner_max_it=$inner_max_it"
+elif [[ "$uses_fixed_jacobi" == true ]]; then
+  scheme_log=" fixed_jacobi_steps=$fixed_jacobi_steps fixed_jacobi_omega=$fixed_jacobi_omega"
+fi
+echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side${scheme_log} solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_max_it=$outer_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
 "$mpi_launcher" -n "$mpi_ranks" "$driver" "${common_options[@]}"

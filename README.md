@@ -106,6 +106,8 @@ COMPUTE_CONDITION_NUMBER=false \
 `left_gmres_fixed_jacobi`。方向由名称唯一确定；结果仍会记录
 `preconditioner_side` 便于筛选。所有模式结束后都重算原方程真实残差；
 `run_case.sh` 末尾四个可选位置参数用于三个 `*_cg` 方案。
+每个方案只接收并记录自身有效的参数：LU 结果中没有 inner/fixed 字段，`*_cg` 没有
+fixed 字段，固定 Jacobi 也没有 inner CG 字段。
 
 方案 B 默认固定执行 `m=4, omega=2/3` 的 weighted Jacobi。单算例可用
 `FIXED_JACOBI_STEPS` 和 `FIXED_JACOBI_OMEGA` 覆盖；批处理直接编辑已暴露的方案块。

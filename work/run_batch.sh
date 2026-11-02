@@ -90,9 +90,35 @@ inner_max_it=${inner_max_it:-10000}
 fixed_jacobi_steps=${fixed_jacobi_steps:-4}
 fixed_jacobi_omega=${fixed_jacobi_omega:-0.6666666666666667}
 case "$lor_pc" in
-  left_*) preconditioner_side="left" ;;
-  right_*) preconditioner_side="right" ;;
-  *) echo "lor_pc must begin with left_ or right_" >&2; exit 2 ;;
+  left_cg_lu)
+    preconditioner_side="left"
+    scheme_settings="exact_lor_lu"
+    scheme_environment=()
+    ;;
+  right_gmres_lu)
+    preconditioner_side="right"
+    scheme_settings="exact_lor_lu"
+    scheme_environment=()
+    ;;
+  left_gmres_cg|right_gmres_cg|right_fgmres_cg)
+    [[ "$lor_pc" == left_* ]] && preconditioner_side="left" || preconditioner_side="right"
+    scheme_settings="inner_pc=$inner_pc,inner_rtol=$inner_rtol,inner_atol=$inner_atol,inner_max_it=$inner_max_it"
+    scheme_environment=(
+      "INNER_PC=$inner_pc"
+      "INNER_RTOL=$inner_rtol"
+      "INNER_ATOL=$inner_atol"
+      "INNER_MAX_IT=$inner_max_it"
+    )
+    ;;
+  left_gmres_fixed_jacobi)
+    preconditioner_side="left"
+    scheme_settings="fixed_steps=$fixed_jacobi_steps,fixed_omega=$fixed_jacobi_omega"
+    scheme_environment=(
+      "FIXED_JACOBI_STEPS=$fixed_jacobi_steps"
+      "FIXED_JACOBI_OMEGA=$fixed_jacobi_omega"
+    )
+    ;;
+  *) echo "unsupported lor_pc: $lor_pc" >&2; exit 2 ;;
 esac
 
 # SLEPc controls for the potentially difficult smallest singular values.
@@ -151,7 +177,7 @@ for degree in "${degrees[@]}"; do
   for element_tuple in "${element_cases[@]}"; do
     mpi_ranks=${planned_ranks[$plan_index]}
     plan_index=$((plan_index + 1))
-    echo "  mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+    echo "  mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side settings=[$scheme_settings] svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
   done
 done
 
@@ -175,11 +201,8 @@ for degree in "${degrees[@]}"; do
     console_file="$console_dir/${stem}.console.log"
     case_start=$(date +%s)
 
-    echo "[$case_number/$total] starting mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side"
-    if INNER_PC="$inner_pc" INNER_RTOL="$inner_rtol" \
-      INNER_ATOL="$inner_atol" INNER_MAX_IT="$inner_max_it" \
-      FIXED_JACOBI_STEPS="$fixed_jacobi_steps" \
-      FIXED_JACOBI_OMEGA="$fixed_jacobi_omega" \
+    echo "[$case_number/$total] starting mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side settings=[$scheme_settings]"
+    if env "${scheme_environment[@]}" \
       SVD_TOL="$svd_tol" SVD_MAX_IT="$svd_max_it" SVD_NCV="$svd_ncv" \
       "$script_dir/run_case.sh" "$mpi_ranks" "$geometry_file" "$refinement" "$degree" \
       "$element_tuple" "$lor_points" "$lor_pc" "$result_file" \

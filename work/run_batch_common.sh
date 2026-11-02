@@ -76,28 +76,32 @@ case "$lor_pc" in
   left_cg_lu)
     preconditioner_side="left"
     scheme_settings="exact_lor_lu"
+    setting_tag="lu"
     ;;
   right_gmres_lu)
     preconditioner_side="right"
     scheme_settings="exact_lor_lu"
+    setting_tag="lu"
     ;;
   left_gmres_cg|right_gmres_cg|right_fgmres_cg)
     [[ "$lor_pc" == left_* ]] && preconditioner_side="left" || preconditioner_side="right"
+    if [[ "$inner_pc" != "jacobi" && "$inner_pc" != "gamg" ]]; then
+      echo "inner_pc must be jacobi or gamg for a *_cg lor_pc" >&2
+      exit 2
+    fi
     scheme_settings="inner_pc=$inner_pc,inner_rtol=$inner_rtol,inner_atol=$inner_atol,inner_max_it=$inner_max_it"
+    setting_tag="inner_${inner_pc}"
     ;;
   left_gmres_fixed_jacobi)
     preconditioner_side="left"
     scheme_settings="fixed_steps=$fixed_jacobi_steps,fixed_omega=$fixed_jacobi_omega"
+    setting_tag="fixed_m${fixed_jacobi_steps}"
     ;;
   *)
     echo "unsupported lor_pc: $lor_pc" >&2
     exit 2
     ;;
 esac
-if [[ "$inner_pc" != "jacobi" && "$inner_pc" != "gamg" ]]; then
-  echo "inner_pc must be jacobi or gamg" >&2
-  exit 2
-fi
 
 # Reuse the production refinement and ID path in the serial planner, retaining
 # one exact free-DOF-based MPI recommendation for every case in traversal order.
@@ -140,7 +144,7 @@ if [[ ${BATCH_DRY_RUN:-0} == 1 ]]; then
   exit 0
 fi
 
-printf 'case\tstatus\tmpi_ranks\trefinement\tp\tn\tpoint_set\tlor_pc\tpreconditioner_side\tinner_pc\tcompute_solution\tcompute_l2_error\tcompute_condition_number\tsvd_tol\tsvd_max_it\tsvd_ncv\telapsed_s\tresult\tconsole\n' > "$summary_file"
+printf 'case\tstatus\tmpi_ranks\trefinement\tp\tn\tpoint_set\tlor_pc\tpreconditioner_side\tscheme_settings\tcompute_solution\tcompute_l2_error\tcompute_condition_number\tsvd_tol\tsvd_max_it\tsvd_ncv\telapsed_s\tresult\tconsole\n' > "$summary_file"
 
 plan_index=0
 for degree in "${degrees[@]}"; do
@@ -149,17 +153,30 @@ for degree in "${degrees[@]}"; do
     plan_index=$((plan_index + 1))
     case_number=$((case_number + 1))
     element_tag=${element_tuple//,/x}
-    stem="mpi${mpi_ranks}_${refinement}_p${degree}_n${element_tag}_${lor_points}_${lor_pc}_${preconditioner_side}_${inner_pc}_solve${compute_solution}_l2${compute_l2_error}_cond${compute_condition_number}"
+    stem="mpi${mpi_ranks}_${refinement}_p${degree}_n${element_tag}_${lor_points}_${lor_pc}_${preconditioner_side}_${setting_tag}_solve${compute_solution}_l2${compute_l2_error}_cond${compute_condition_number}"
     result_file="$result_dir/${stem}.log"
     console_file="$console_dir/${stem}.console.log"
     case_start=$(date +%s)
 
     echo "[$case_number/$total] starting mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side settings=[$scheme_settings] solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number"
-    if INNER_PC="$inner_pc" \
-      INNER_RTOL="$inner_rtol" INNER_ATOL="$inner_atol" \
-      INNER_MAX_IT="$inner_max_it" \
-      FIXED_JACOBI_STEPS="$fixed_jacobi_steps" \
-      FIXED_JACOBI_OMEGA="$fixed_jacobi_omega" \
+    scheme_environment=()
+    case "$lor_pc" in
+      left_gmres_cg|right_gmres_cg|right_fgmres_cg)
+        scheme_environment+=(
+          "INNER_PC=$inner_pc"
+          "INNER_RTOL=$inner_rtol"
+          "INNER_ATOL=$inner_atol"
+          "INNER_MAX_IT=$inner_max_it"
+        )
+        ;;
+      left_gmres_fixed_jacobi)
+        scheme_environment+=(
+          "FIXED_JACOBI_STEPS=$fixed_jacobi_steps"
+          "FIXED_JACOBI_OMEGA=$fixed_jacobi_omega"
+        )
+        ;;
+    esac
+    if env "${scheme_environment[@]}" \
       COMPUTE_SOLUTION="$compute_solution" COMPUTE_L2_ERROR="$compute_l2_error" \
       COMPUTE_CONDITION_NUMBER="$compute_condition_number" \
       SVD_TOL="$svd_tol" SVD_MAX_IT="$svd_max_it" SVD_NCV="$svd_ncv" \
@@ -176,7 +193,7 @@ for degree in "${degrees[@]}"; do
     elapsed=$((case_end-case_start))
     printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n' \
       "$case_number" "$status" "$mpi_ranks" "$refinement" "$degree" "$element_tuple" \
-      "$lor_points" "$lor_pc" "$preconditioner_side" "$inner_pc" "$compute_solution" "$compute_l2_error" \
+      "$lor_points" "$lor_pc" "$preconditioner_side" "$scheme_settings" "$compute_solution" "$compute_l2_error" \
       "$compute_condition_number" "$svd_tol" "$svd_max_it" "$svd_ncv" \
       "$elapsed" "$result_file" "$console_file" \
       >> "$summary_file"

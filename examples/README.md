@@ -81,8 +81,9 @@ mpirun -n 4 ./build/assembled_driver \
 - `-lor_pc` 选择完整求解方案：`left_cg_lu|right_gmres_lu|left_gmres_cg|`
   `right_gmres_cg|right_fgmres_cg|left_gmres_fixed_jacobi`；默认最后一项；
 - 预条件方向由方案名称唯一确定；`preconditioner_side` 只作为结果元数据；
-- `-inner_pc jacobi|gamg` 选择三个 `*_cg` 方案的内层代数预条件器；
-- `-fixed_jacobi_steps` 和 `-fixed_jacobi_omega` 定义固定线性方案，默认 `4` 和 `2/3`；
+- `-inner_pc jacobi|gamg` 及 `-inner_*` 仅属于三个 `*_cg` 方案；
+- `-fixed_jacobi_steps` 和 `-fixed_jacobi_omega` 仅属于固定线性方案，默认 `4` 和
+  `2/3`；向其他模式传入这些不相容参数会直接报错；
 - `-svd_tol`、`-svd_max_it`、`-svd_ncv` 控制四个 SLEPc 极端奇异值求解；
 - `left_cg_lu`/`right_gmres_lu` 使用精确 LOR LU；
 - `left_gmres_cg`/`right_gmres_cg` 是原标准 GMRES 对照；
@@ -106,13 +107,13 @@ mpirun -n 4 ./build/assembled_driver \
 mpi_ranks
 lor_pc
 preconditioner_side
-inner_pc
+[inner_pc]                                      # 仅 *_cg
 compute_solution
 compute_l2_error
 compute_condition_number
 [outer_rtol, outer_atol, outer_dtol, outer_max_it]
-[inner_rtol, inner_atol, inner_dtol, inner_max_it]
-[fixed_jacobi_steps, fixed_jacobi_omega]
+[inner_rtol, inner_atol, inner_dtol, inner_max_it] # 仅 *_cg
+[fixed_jacobi_steps, fixed_jacobi_omega]           # 仅固定 Jacobi
 predicted_nnz(K), used_nnz(K), allocated_nnz(K), allocation_calls(K)
 estimated_minimum_bytes(K), memory_bytes(K)
 predicted_nnz(K_LOR), used_nnz(K_LOR), allocated_nnz(K_LOR)

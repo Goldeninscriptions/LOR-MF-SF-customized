@@ -27,8 +27,9 @@ struct ExperimentOptions
     std::vector<int> elements;
 
     // LOR point strategy, inverse-application hierarchy, algebraic side, and
-    // complete LOR solver configuration and any nested algebraic PC. The
-    // default is left GMRES with a fixed weighted-Jacobi polynomial inverse.
+    // complete LOR solver configuration and optional nested algebraic PC.
+    // inner_pc is meaningful only for the three modes ending in _cg; the
+    // default mode instead uses a fixed weighted-Jacobi polynomial inverse.
     std::string lor_points = "greville";
     LORPCMode lor_pc = LORPCMode::left_gmres_fixed_jacobi;
     PreconditionerSide preconditioner_side = PreconditionerSide::left;
@@ -42,8 +43,8 @@ struct ExperimentOptions
     bool compute_condition_number = false;
 
     // KSP stopping controls and independent SLEPc singular-value controls.
-    // The larger defaults are intended for very ill-conditioned high-order
-    // stiffness matrices; command-line options may reduce or enlarge them.
+    // Inner tolerances apply only to *_cg, and fixed_jacobi applies only to
+    // left_gmres_fixed_jacobi.
     SolverTolerances tolerances;
     FixedJacobiParameters fixed_jacobi;
     PetscReal svd_tolerance = 1.0e-8;
@@ -69,8 +70,8 @@ struct ExperimentResults
     bool computed_l2_error = false;
     bool computed_condition_number = false;
 
-    // LOR inverse application, side, and inner algebraic preconditioner used
-    // consistently by the solve, labels, and result metadata.
+    // LOR inverse application and side used consistently by the solve and
+    // labels. inner_pc is emitted as metadata only for a *_cg configuration.
     LORPCMode lor_pc = LORPCMode::left_gmres_fixed_jacobi;
     PreconditionerSide preconditioner_side = PreconditionerSide::left;
     InnerPCMode inner_pc = InnerPCMode::jacobi;
