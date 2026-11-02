@@ -26,11 +26,13 @@ struct ExperimentOptions
     int degree = 0;
     std::vector<int> elements;
 
-    // LOR point strategy, inverse-application hierarchy, and algebraic side.
-    // The paper's K_LOR^{-1}K formulation is the default left selection.
+    // LOR point strategy, inverse-application hierarchy, algebraic side, and
+    // inner low-order preconditioner. The paper's K_LOR^{-1}K formulation and
+    // legacy Jacobi-preconditioned CG are the default selections.
     std::string lor_points = "greville";
     LORPCMode lor_pc = LORPCMode::gmres_shell;
     PreconditionerSide preconditioner_side = PreconditionerSide::left;
+    InnerPCMode inner_pc = InnerPCMode::jacobi;
 
     // Independent experiment features. Error analysis consumes solution
     // vectors and therefore requires compute_solution; condition numbers use
@@ -66,10 +68,15 @@ struct ExperimentResults
     bool computed_l2_error = false;
     bool computed_condition_number = false;
 
-    // LOR inverse application and side used consistently by the solve,
-    // spectral analysis, labels, and result metadata.
+    // LOR inverse application, side, and inner algebraic preconditioner used
+    // consistently by the solve, labels, and result metadata.
     LORPCMode lor_pc = LORPCMode::gmres_shell;
     PreconditionerSide preconditioner_side = PreconditionerSide::left;
+    InnerPCMode inner_pc = InnerPCMode::jacobi;
+
+    // Actual outer and inner KSP stopping controls used by this run. Keeping
+    // them in the result record makes tolerance-sweep files self-describing.
+    SolverTolerances tolerances;
 
     // Global PETSc storage diagnostics for the assembled high-order and LOR
     // stiffness matrices. These are always available because both matrices

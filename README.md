@@ -18,11 +18,13 @@ KSP 应用方式、SLEPc 条件数和 L2 误差分析。Matrix-free 与 sum fact
 - 几何文件与 p/h/k refinement 仅在 rank 0 执行，refined Patch 广播重建；
 - 默认论文一致的高精度左预条件；可独立选择 `left|right`，并可选择
   `gmres_shell|cg_lu` 两种 LOR 逆应用方式；
+- `gmres_shell` 内层 CG 可选择 legacy `jacobi` 或 PETSc `gamg`；
 - 求解输出同时记录 setup、完整外层时间，以及 `gmres_shell` 的内层 CG 调用数、
   总/平均迭代数和总/平均时间；
 - 求解、L2 误差和 SLEPc 条件数可独立启用，禁用项不计算也不输出；
 - 串行 case planner 自动计算细化后自由度，并在 macOS/Linux 上按逻辑 CPU 数推荐 MPI ranks；
 - 单算例与自动选择 MPI ranks 的顺序批处理脚本。
+- 固定 case 的内层 CG 容差扫描及迭代、时间、真实残差、L2 误差 TSV 汇总。
 
 当前不支持 NURBS、周期边界、多 patch、MF/SF 算子或从输入文件指定任意边界函数。
 
@@ -108,6 +110,15 @@ PRECONDITIONER_SIDE=left \
 `rtol=1e-10, atol=1e-10`；左侧监测预条件残差，右侧监测
 原方程残差，二者都会在结束后重算绝对和相对真实残差；
 `run_case.sh` 末尾四个可选位置参数仍可覆盖两层容差。
+
+内层预条件器默认为 `jacobi`；使用 PETSc GAMG：
+
+```bash
+INNER_PC=gamg ./work/run_batch_square_2d.sh
+```
+
+GAMG 层次在 setup 阶段构造一次并在所有内层调用中复用。性能比较应使用
+`setup_time_seconds + outer_solve_time_seconds`，不能只看内层迭代数。
 
 结果中的 `outer_solve_time_seconds` 是完整外层 `KSPSolve` 时间，已经包含其间所有
 内层 CG 调用；`inner_solve_time_seconds` 是这段时间内内层求解的累计子成本，二者

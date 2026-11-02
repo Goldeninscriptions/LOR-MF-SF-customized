@@ -23,6 +23,8 @@ lor_pc="gmres_shell"
 # lor_pc="cg_lu"
 preconditioner_side=${PRECONDITIONER_SIDE:-left}
 # preconditioner_side="right"
+inner_pc=${INNER_PC:-jacobi}
+# inner_pc="gamg"
 
 mpi_rank=${MPI_RANK:-default}
 maximum_mpi_ranks=${MAX_MPI_RANKS:-}

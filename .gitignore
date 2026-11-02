@@ -2,4 +2,5 @@
 build/
 conf/system_lib_loading.cmake
 *.log
+work/inner_tolerance_*.tsv
 

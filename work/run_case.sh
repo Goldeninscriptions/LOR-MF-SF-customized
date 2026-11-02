@@ -26,6 +26,7 @@ lor_points=$6
 lor_pc=$7
 output_file=$8
 preconditioner_side=${PRECONDITIONER_SIDE:-left}
+inner_pc=${INNER_PC:-jacobi}
 
 # Accept either an explicit launch size or per-case automatic planning.
 if [[ "$mpi_rank_setting" != "default" ]] &&
@@ -117,6 +118,10 @@ if [[ "$preconditioner_side" != "left" &&
   echo "PRECONDITIONER_SIDE must be left or right" >&2
   exit 2
 fi
+if [[ "$inner_pc" != "jacobi" && "$inner_pc" != "gamg" ]]; then
+  echo "INNER_PC must be jacobi or gamg" >&2
+  exit 2
+fi
 
 # Mode-specific default residual settings.
 if [[ "$lor_pc" == "cg_lu" ]]; then
@@ -138,6 +143,17 @@ inner_rtol="1.0e-10"
 inner_atol="1.0e-10"
 inner_dtol="1.0e4"
 inner_max_it="10000"
+
+# Environment overrides support batch sweeps without lengthening the stable
+# positional interface; explicit trailing arguments still take precedence.
+outer_rtol=${OUTER_RTOL:-$outer_rtol}
+outer_atol=${OUTER_ATOL:-$outer_atol}
+outer_dtol=${OUTER_DTOL:-$outer_dtol}
+outer_max_it=${OUTER_MAX_IT:-$outer_max_it}
+inner_rtol=${INNER_RTOL:-$inner_rtol}
+inner_atol=${INNER_ATOL:-$inner_atol}
+inner_dtol=${INNER_DTOL:-$inner_dtol}
+inner_max_it=${INNER_MAX_IT:-$inner_max_it}
 
 # SLEPc defaults may be overridden through environment variables without
 # lengthening the positional single-case interface.
@@ -178,6 +194,7 @@ common_options=(
   -lor_points "$lor_points"
   -lor_pc "$lor_pc"
   -preconditioner_side "$preconditioner_side"
+  -inner_pc "$inner_pc"
   -compute_solution "$compute_solution"
   -compute_l2_error "$compute_l2_error"
   -compute_condition_number "$compute_condition_number"
@@ -204,5 +221,5 @@ fi
 # can still override MPIEXEC when their cluster exposes another launcher name.
 export OMP_NUM_THREADS=1
 mpi_launcher=${MPIEXEC:-mpirun}
-echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol inner_rtol=$inner_rtol inner_atol=$inner_atol svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side inner_pc=$inner_pc solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_max_it=$outer_max_it inner_rtol=$inner_rtol inner_atol=$inner_atol inner_max_it=$inner_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
 "$mpi_launcher" -n "$mpi_ranks" "$driver" "${common_options[@]}"

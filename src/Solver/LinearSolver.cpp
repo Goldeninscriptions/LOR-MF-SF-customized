@@ -55,6 +55,7 @@ PetscErrorCode destroy_gmres_shell(PC pc)
 
 PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     const LORPCMode mode, const PreconditionerSide side,
+    const InnerPCMode inner_pc_mode,
     const SolverTolerances &tolerances,
     LinearSolveResult *result)
 {
@@ -115,9 +116,12 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
         PetscCall(KSPSetTolerances(shell_context->inner_ksp,
             tolerances.inner_rtol, tolerances.inner_atol,
             tolerances.inner_dtol, tolerances.inner_max_it));
+        // Select either the legacy diagonal scaling or a reusable algebraic
+        // multigrid hierarchy for the low-order Laplace operator.
         PC inner_pc = nullptr;
         PetscCall(KSPGetPC(shell_context->inner_ksp, &inner_pc));
-        PetscCall(PCSetType(inner_pc, PCJACOBI));
+        PetscCall(PCSetType(inner_pc,
+            inner_pc_mode == InnerPCMode::jacobi ? PCJACOBI : PCGAMG));
         PetscCall(PCShellSetContext(pc, shell_context));
         PetscCall(PCShellSetApply(pc, apply_gmres_shell));
         PetscCall(PCShellSetDestroy(pc, destroy_gmres_shell));
@@ -198,6 +202,22 @@ const char *lor_pc_mode_name(const LORPCMode mode) noexcept
     return mode == LORPCMode::cg_lu ? "cg_lu" : "gmres_shell";
 }
 
+// Translate the user-facing low-order solver choice into a typed mode.
+InnerPCMode parse_inner_pc_mode(const std::string &name)
+{
+    if (name == "jacobi")
+        return InnerPCMode::jacobi;
+    if (name == "gamg")
+        return InnerPCMode::gamg;
+    throw std::invalid_argument("inner_pc must be jacobi or gamg");
+}
+
+// Provide one stable inner-PC spelling for logs and result files.
+const char *inner_pc_mode_name(const InnerPCMode mode) noexcept
+{
+    return mode == InnerPCMode::jacobi ? "jacobi" : "gamg";
+}
+
 // Translate the user-facing algebraic direction at the IO/Solver boundary.
 PreconditionerSide parse_preconditioner_side(const std::string &name)
 {
@@ -221,15 +241,16 @@ PetscErrorCode solve_unpreconditioned(Mat stiffness, Vec load,
     LinearSolveResult *result)
 {
     return solve(stiffness, nullptr, load, mode,
-        PreconditionerSide::left, tolerances, result);
+        PreconditionerSide::left, InnerPCMode::jacobi, tolerances, result);
 }
 
 PetscErrorCode solve_with_lor(Mat stiffness, Mat lor_stiffness, Vec load,
     const LORPCMode mode, const PreconditionerSide side,
+    const InnerPCMode inner_pc_mode,
     const SolverTolerances &tolerances,
     LinearSolveResult *result)
 {
-    return solve(stiffness, lor_stiffness, load, mode, side,
+    return solve(stiffness, lor_stiffness, load, mode, side, inner_pc_mode,
         tolerances, result);
 }
 

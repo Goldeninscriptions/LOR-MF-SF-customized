@@ -227,7 +227,8 @@ PetscErrorCode run_assembled_laplace_experiment(
             &original_solve));
         PetscCall(solve_with_lor(high_stiffness.matrix,
             lor_stiffness.matrix, high_load.vector, options.lor_pc,
-            options.preconditioner_side, options.tolerances,
+            options.preconditioner_side, options.inner_pc,
+            options.tolerances,
             &preconditioned_solve));
     }
 
@@ -277,6 +278,8 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.computed_condition_number = options.compute_condition_number;
     results.lor_pc = options.lor_pc;
     results.preconditioner_side = options.preconditioner_side;
+    results.inner_pc = options.inner_pc;
+    results.tolerances = options.tolerances;
     results.predicted_nonzeros_K = high_stiffness.predicted_nonzeros;
     results.allocated_nonzeros_K = high_stiffness.allocated_nonzeros;
     results.used_nonzeros_K = high_stiffness.used_nonzeros;
@@ -349,9 +352,11 @@ PetscErrorCode run_assembled_laplace_experiment(
             PetscCall(PetscPrintf(comm, "%s%d", direction == 0 ? "" : ",",
                 patch.num_elements(direction)));
         PetscCall(PetscPrintf(comm,
-            "), mode=%s, side=%s, point_set=%s, solve=%s, L2=%s, condition=%s\n",
+            "), mode=%s, side=%s, inner_pc=%s, point_set=%s, solve=%s, "
+            "L2=%s, condition=%s\n",
             lor_pc_mode_name(options.lor_pc),
             preconditioner_side_name(options.preconditioner_side),
+            inner_pc_mode_name(options.inner_pc),
             options.lor_points.c_str(),
             options.compute_solution ? "true" : "false",
             options.compute_l2_error ? "true" : "false",

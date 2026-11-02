@@ -15,6 +15,7 @@
 | `run_batch_cube_3d.sh` | 三维长方体批处理入口 | `p={3,...,7}`，`n={(4,4,4),(8,8,8),(16,16,16)}`；限制三维默认规模的立方增长 |
 | `run_batch_curved_quadrilateral_2d.sh` | 双三次曲边 Patch 批处理入口 | 与二维矩形采用相同 p/n sweep 和功能默认值；默认完成求解与 L2 |
 | `run_batch_common.sh` | 三个入口共享的执行器 | 统一参数验证、逐 case rank 规划、运行、日志和 TSV summary；不直接运行 |
+| `run_inner_tolerance_sweep_square_2d.sh` | 固定二维 case 的内层 CG 精度扫描 | 默认扫描 `inner_rtol={1e-10,1e-6,1e-4,1e-3,1e-2}`，汇总内外迭代、时间、真实残差和 L2 误差 |
 | `REMOTE_BATCH_GUIDE.md` | 远端 macOS/Linux 构建与批处理清单 | 说明 dry-run、`MPI_RANK`、`MAX_MPI_RANKS`、launcher 覆盖、输出和失败恢复 |
 
 几何文件中的 p/n 注释供用户阅读；解析器只从 knot vectors 推断实际初始值。控制点
@@ -23,6 +24,35 @@
 `run_case.sh` 会比较 C++/CMake 输入和 `build/assembled_driver` 的修改时间。如果源码
 更新后尚未重新构建，它会在启动 MPI 前停止并给出构建命令，避免新脚本向旧程序传入
 其尚不认识的 PETSc 选项。
+
+## 内层 CG 容差扫描
+
+二维 `p=3, n=(512,512)` 的默认扫描可直接运行：
+
+```bash
+MPI_RANK=27 ./work/run_inner_tolerance_sweep_square_2d.sh
+```
+
+建议先用小网格 dry-run 检查远端配置：
+
+```bash
+BATCH_DRY_RUN=1 SWEEP_N=32,32 MPI_RANK=2 \
+  ./work/run_inner_tolerance_sweep_square_2d.sh
+```
+
+扫描脚本默认使用 `INNER_PC=gamg`；设置 `INNER_PC=jacobi` 会生成独立的基线目录和
+TSV。`INNER_RTOLS` 用空格分隔自定义扫描点；`INNER_ATOL` 默认 `1e-50`，避免绝对容差
+掩盖相对容差实验。`SWEEP_P`、`SWEEP_N`、`OUTER_RTOL`、`OUTER_ATOL` 和
+`COMPUTE_L2_ERROR` 也可由环境变量覆盖。结果汇总写入独立 TSV，不覆盖普通批处理。
+
+当前扫描保留论文默认的左预条件标准 GMRES。PETSc 对该组合监测预条件残差，宽松且
+随右端项变化的内层 CG 可能导致它先于原方程真实残差收敛；因此不能只按耗时选择
+容差，必须同时检查 TSV 中的 `relative_residual_LOR` 与 `L2_error_LOR`。右预条件
+FGMRES 应作为后续独立算法配置研究，不能与本扫描的迭代数直接混为同一方法。
+
+单 case 和普通批处理同样接受 `OUTER_RTOL`、`OUTER_ATOL`、`OUTER_DTOL`、
+`OUTER_MAX_IT` 以及对应的 `INNER_*` 环境变量。`run_case.sh` 的四个尾部位置参数
+优先级最高。
 
 ## 单算例
 
@@ -50,6 +80,7 @@ REFINEMENT = p_refine | h_refine | k_refine
 LOR_POINTS = greville | demko
 LOR_PC     = cg_lu | gmres_shell
 PRECONDITIONER_SIDE = left | right  # 环境变量，默认 left
+INNER_PC   = jacobi | gamg          # 环境变量，默认 jacobi
 ```
 
 ## 批处理
@@ -69,6 +100,8 @@ lor_pc="gmres_shell"
 # lor_pc="cg_lu"
 preconditioner_side="left"
 # preconditioner_side="right"
+inner_pc="jacobi"
+# inner_pc="gamg"
 
 compute_solution=true
 compute_l2_error=true
@@ -112,8 +145,8 @@ BATCH_DRY_RUN=1 ./work/run_batch_curved_quadrilateral_2d.sh
 ```
 
 每个入口使用独立的 `work/results/<geometry>/`、`work/logs/<geometry>/` 和
-`work/batch_summary_<geometry>.log`，case 名包含预条件方向及 solve/L2/condition
-三个开关。
+`work/batch_summary_<geometry>.log`，case 名包含预条件方向、内层预条件器及
+solve/L2/condition 三个开关。
 单个 case 失败后脚本继续余下计划，最后以非零状态报告整个 batch 存在失败。
 
 三个入口统一默认执行组装、求解和 L2 误差分析，并关闭条件数分析。三者使用同一个

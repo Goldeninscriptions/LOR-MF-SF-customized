@@ -17,8 +17,16 @@ enum class LORPCMode
     cg_lu,
 
     // Outer restarted GMRES with a selectable left/right PCSHELL and inner
-    // CG/Jacobi LOR solves.
+    // CG solves preconditioned by Jacobi or GAMG.
     gmres_shell
+};
+
+// Algebraic preconditioner used inside each approximate K_LOR CG solve.
+// Jacobi is the legacy baseline; GAMG builds a reusable multigrid hierarchy.
+enum class InnerPCMode
+{
+    jacobi,
+    gamg
 };
 
 // Relative, absolute, divergence, and iteration limits for the two nested KSP
@@ -78,6 +86,11 @@ struct LinearSolveResult
 LORPCMode parse_lor_pc_mode(const std::string &name);
 const char *lor_pc_mode_name(LORPCMode mode) noexcept;
 
+// Parse and print the stable inner-preconditioner spellings shared by command
+// line options, result metadata, and batch scripts.
+InnerPCMode parse_inner_pc_mode(const std::string &name);
+const char *inner_pc_mode_name(InnerPCMode mode) noexcept;
+
 // Parse and print the stable left/right spellings shared by PETSc options,
 // batch metadata, console summaries, and result files.
 PreconditionerSide parse_preconditioner_side(const std::string &name);
@@ -89,11 +102,11 @@ PetscErrorCode solve_unpreconditioned(Mat stiffness, Vec load,
     LORPCMode mode, const SolverTolerances &tolerances,
     LinearSolveResult *result);
 
-// Solve K u = F with either LU(K_LOR) or the legacy-style
-// GMRES+PCSHELL+inner-CG/Jacobi LOR application. The independently selected
-// side determines whether PETSc realizes K_LOR^{-1}K or K K_LOR^{-1}.
+// Solve K u = F with either LU(K_LOR) or GMRES+PCSHELL+inner-CG LOR
+// application. The independently selected side and inner algebraic PC control
+// whether PETSc realizes K_LOR^{-1}K or K K_LOR^{-1} and how cheaply it does so.
 PetscErrorCode solve_with_lor(Mat stiffness, Mat lor_stiffness, Vec load,
-    LORPCMode mode, PreconditionerSide side,
+    LORPCMode mode, PreconditionerSide side, InnerPCMode inner_pc_mode,
     const SolverTolerances &tolerances,
     LinearSolveResult *result);
 

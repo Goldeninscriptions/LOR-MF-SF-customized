@@ -44,6 +44,7 @@ ExperimentOptions read_experiment_options(const int dimension)
     char refinement[32] = "k_refine";
     char mode[32] = "gmres_shell";
     char side[16] = "left";
+    char inner_pc[16] = "jacobi";
     char point_set[32] = "greville";
     PetscBool geometry_set = PETSC_FALSE;
     PetscBool degree_set = PETSC_FALSE;
@@ -66,6 +67,8 @@ ExperimentOptions read_experiment_options(const int dimension)
         sizeof(mode), nullptr);
     PetscOptionsGetString(nullptr, nullptr, "-preconditioner_side", side,
         sizeof(side), nullptr);
+    PetscOptionsGetString(nullptr, nullptr, "-inner_pc", inner_pc,
+        sizeof(inner_pc), nullptr);
     PetscOptionsGetString(nullptr, nullptr, "-lor_points", point_set,
         sizeof(point_set), nullptr);
     PetscOptionsGetBool(nullptr, nullptr, "-compute_solution",
@@ -95,6 +98,7 @@ ExperimentOptions read_experiment_options(const int dimension)
             "-refinement must be p_refine, h_refine, or k_refine");
     options.lor_pc = parse_lor_pc_mode(mode);
     options.preconditioner_side = parse_preconditioner_side(side);
+    options.inner_pc = parse_inner_pc_mode(inner_pc);
     options.lor_points = point_set;
     if (options.lor_points != "greville" && options.lor_points != "demko")
         throw std::invalid_argument("-lor_points must be greville or demko");
@@ -210,11 +214,32 @@ void write_experiment_results(const std::string &filename,
            << "lor_pc = " << lor_pc_mode_name(results.lor_pc) << '\n'
            << "preconditioner_side = "
            << preconditioner_side_name(results.preconditioner_side) << '\n'
+           << "inner_pc = " << inner_pc_mode_name(results.inner_pc) << '\n'
            << "compute_solution = " << results.computed_solution << '\n'
            << "compute_l2_error = " << results.computed_l2_error << '\n'
            << "compute_condition_number = "
            << results.computed_condition_number << '\n'
            << std::scientific << std::setprecision(16);
+
+    // Preserve the actual stopping policy beside every computed solution so
+    // performance and error changes can be attributed to the correct sweep.
+    if (results.computed_solution)
+    {
+        output << "outer_rtol = " << results.tolerances.outer_rtol << '\n'
+               << "outer_atol = " << results.tolerances.outer_atol << '\n'
+               << "outer_dtol = " << results.tolerances.outer_dtol << '\n'
+               << "outer_max_it = "
+               << results.tolerances.outer_max_it << '\n';
+        if (results.lor_pc == LORPCMode::gmres_shell)
+            output << "inner_rtol = "
+                   << results.tolerances.inner_rtol << '\n'
+                   << "inner_atol = "
+                   << results.tolerances.inner_atol << '\n'
+                   << "inner_dtol = "
+                   << results.tolerances.inner_dtol << '\n'
+                   << "inner_max_it = "
+                   << results.tolerances.inner_max_it << '\n';
+    }
 
     // Record predicted tensor structure and PETSc's post-assembly storage so
     // remote batches can detect reallocations and memory regressions.

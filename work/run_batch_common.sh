@@ -12,7 +12,7 @@ planner="$project_dir/build/case_planner"
 # or a geometry-specific entry point omits part of its public configuration.
 required_scalars=(
   batch_name geometry_file refinement result_dir console_dir summary_file
-  lor_points mpi_rank maximum_mpi_ranks lor_pc preconditioner_side compute_solution
+  lor_points mpi_rank maximum_mpi_ranks lor_pc preconditioner_side inner_pc compute_solution
   compute_l2_error compute_condition_number svd_tol svd_max_it svd_ncv
 )
 for required_name in "${required_scalars[@]}"; do
@@ -67,6 +67,10 @@ if [[ "$preconditioner_side" != "left" &&
   echo "preconditioner_side must be left or right" >&2
   exit 2
 fi
+if [[ "$inner_pc" != "jacobi" && "$inner_pc" != "gamg" ]]; then
+  echo "inner_pc must be jacobi or gamg" >&2
+  exit 2
+fi
 
 # Reuse the production refinement and ID path in the serial planner, retaining
 # one exact free-DOF-based MPI recommendation for every case in traversal order.
@@ -99,7 +103,7 @@ for degree in "${degrees[@]}"; do
   for element_tuple in "${element_cases[@]}"; do
     mpi_ranks=${planned_ranks[$plan_index]}
     plan_index=$((plan_index + 1))
-    echo "  mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+    echo "  mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side inner_pc=$inner_pc solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
   done
 done
 
@@ -109,7 +113,7 @@ if [[ ${BATCH_DRY_RUN:-0} == 1 ]]; then
   exit 0
 fi
 
-printf 'case\tstatus\tmpi_ranks\trefinement\tp\tn\tpoint_set\tlor_pc\tpreconditioner_side\tcompute_solution\tcompute_l2_error\tcompute_condition_number\tsvd_tol\tsvd_max_it\tsvd_ncv\telapsed_s\tresult\tconsole\n' > "$summary_file"
+printf 'case\tstatus\tmpi_ranks\trefinement\tp\tn\tpoint_set\tlor_pc\tpreconditioner_side\tinner_pc\tcompute_solution\tcompute_l2_error\tcompute_condition_number\tsvd_tol\tsvd_max_it\tsvd_ncv\telapsed_s\tresult\tconsole\n' > "$summary_file"
 
 plan_index=0
 for degree in "${degrees[@]}"; do
@@ -118,13 +122,13 @@ for degree in "${degrees[@]}"; do
     plan_index=$((plan_index + 1))
     case_number=$((case_number + 1))
     element_tag=${element_tuple//,/x}
-    stem="mpi${mpi_ranks}_${refinement}_p${degree}_n${element_tag}_${lor_points}_${lor_pc}_${preconditioner_side}_solve${compute_solution}_l2${compute_l2_error}_cond${compute_condition_number}"
+    stem="mpi${mpi_ranks}_${refinement}_p${degree}_n${element_tag}_${lor_points}_${lor_pc}_${preconditioner_side}_${inner_pc}_solve${compute_solution}_l2${compute_l2_error}_cond${compute_condition_number}"
     result_file="$result_dir/${stem}.log"
     console_file="$console_dir/${stem}.console.log"
     case_start=$(date +%s)
 
-    echo "[$case_number/$total] starting mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number"
-    if PRECONDITIONER_SIDE="$preconditioner_side" \
+    echo "[$case_number/$total] starting mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side inner_pc=$inner_pc solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number"
+    if PRECONDITIONER_SIDE="$preconditioner_side" INNER_PC="$inner_pc" \
       COMPUTE_SOLUTION="$compute_solution" COMPUTE_L2_ERROR="$compute_l2_error" \
       COMPUTE_CONDITION_NUMBER="$compute_condition_number" \
       SVD_TOL="$svd_tol" SVD_MAX_IT="$svd_max_it" SVD_NCV="$svd_ncv" \
@@ -139,9 +143,9 @@ for degree in "${degrees[@]}"; do
 
     case_end=$(date +%s)
     elapsed=$((case_end-case_start))
-    printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n' \
+    printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n' \
       "$case_number" "$status" "$mpi_ranks" "$refinement" "$degree" "$element_tuple" \
-      "$lor_points" "$lor_pc" "$preconditioner_side" "$compute_solution" "$compute_l2_error" \
+      "$lor_points" "$lor_pc" "$preconditioner_side" "$inner_pc" "$compute_solution" "$compute_l2_error" \
       "$compute_condition_number" "$svd_tol" "$svd_max_it" "$svd_ncv" \
       "$elapsed" "$result_file" "$console_file" \
       >> "$summary_file"
