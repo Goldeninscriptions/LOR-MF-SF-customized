@@ -8,6 +8,7 @@ Assembly 把与方程无关的 Element 数据转换为 Laplace 离散系统，�
 | `LexicographicOrdering.hpp` | 定义唯一的 `multi_index <-> global_index` 正逆映射；direction 0 最快 | Patch 边界、IEN、DirichletBC 和 refinement 中的张量排列都应调用它 |
 | `DirichletBC.hpp` | 将四条边/六个面上的 boundary `multi_index` 转成分边界及去重后的受约束 `global_index` | 只描述约束拓扑并输出给 `ID`；非零系数由独立 Dirichlet lift 保存 |
 | `LocalAssembly.hpp` | 定义独立的局部矩阵/向量结果，提供三个单项入口和三种含 load 的融合入口 | 只读取 Element 的 `N`、梯度、坐标、权重和 Jacobian determinant |
+| `PreconditionerSide.hpp` | 定义论文默认的左预条件与可选右预条件代数方向 | 被 Solver、IO 与条件数分析共同使用，避免方向标签不一致 |
 | `GlobalAssembly.hpp` | 定义分布式 PETSc 矩阵/向量结果、高阶/LOR 单项及融合入口、矩阵存储统计，以及显式调用的 SLEPc 条件数分析 | 遍历 IEN 的 assembly halo，但只插入 owned rows；条件数分析不由组装隐式触发 |
 
 `quad_weight` 和 `det_Jac` 在 Element 接口中分开，LocalAssembly 显式计算二者乘积。

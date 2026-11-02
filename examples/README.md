@@ -60,6 +60,7 @@ mpirun -n 4 ./build/assembled_driver \
   -p 5 -n 16,16 \
   -lor_points greville \
   -lor_pc gmres_shell \
+  -preconditioner_side left \
   -compute_solution true \
   -compute_l2_error true \
   -compute_condition_number false \
@@ -77,10 +78,11 @@ mpirun -n 4 ./build/assembled_driver \
 
 - `-lor_points greville|demko`；
 - `-lor_pc gmres_shell|cg_lu`，省略时默认为 `gmres_shell`；
+- `-preconditioner_side left|right`，默认 `left`，与论文和 Parallel-Computing 一致；
 - `-svd_tol`、`-svd_max_it`、`-svd_ncv` 控制四个 SLEPc 极端奇异值求解；
-- `cg_lu` 使用外层 CG 和精确 LOR LU；
-- `gmres_shell` 使用外层右预条件 restarted GMRES 和 PCSHELL 内层 CG/Jacobi；
-  默认以原方程未预条件残差停止，外层/内层默认容差均为
+- `cg_lu` 使用精确 LOR LU；左侧使用外层 CG，右侧使用 GMRES；
+- `gmres_shell` 使用 restarted GMRES 和 PCSHELL 内层 CG/Jacobi，并按用户选择实现
+  左或右预条件；外层/内层默认容差均为
   `rtol=1e-12, atol=1e-14`，也可用命令行逐次覆盖。
 
 ### Independent feature options
@@ -96,6 +98,7 @@ mpirun -n 4 ./build/assembled_driver \
 
 ```text
 mpi_ranks
+preconditioner_side
 compute_solution
 compute_l2_error
 compute_condition_number
@@ -109,6 +112,9 @@ allocation_calls(K_LOR), estimated_minimum_bytes(K_LOR), memory_bytes(K_LOR)
 [residual(K_LOR^{-1}K), relative_residual(K_LOR^{-1}K)]
 [L2_error(K), L2_error(K_LOR^{-1}K)]
 ```
+
+上面的预条件字段展示默认 `left` 标签；选择 `right` 时相应字段使用
+`KK_LOR^{-1}`，从而不会把右预条件结果误记为论文的左预条件算子。
 
 矩阵存储字段始终输出；`estimated_minimum_bytes` 是 values、column indices 和 MPIAIJ
 row pointers 的可移植下界，`memory_bytes` 是当前 PETSc 实现的报告值，某些版本可能

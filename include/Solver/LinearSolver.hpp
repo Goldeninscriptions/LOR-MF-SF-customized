@@ -1,6 +1,8 @@
 #ifndef LOR_SOLVER_LINEAR_SOLVER_HPP
 #define LOR_SOLVER_LINEAR_SOLVER_HPP
 
+#include "Assembly/PreconditionerSide.hpp"
+
 #include <petscksp.h>
 
 #include <string>
@@ -10,10 +12,11 @@ namespace lor
 
 enum class LORPCMode
 {
-    // Outer CG with an exact LU application of the SPD LOR matrix.
+    // Exact LU application of the SPD LOR matrix; the outer method is CG for
+    // left preconditioning and GMRES for the optional right configuration.
     cg_lu,
 
-    // Outer right-preconditioned restarted GMRES with PCSHELL and inner
+    // Outer restarted GMRES with a selectable left/right PCSHELL and inner
     // CG/Jacobi LOR solves.
     gmres_shell
 };
@@ -62,16 +65,23 @@ struct LinearSolveResult
 LORPCMode parse_lor_pc_mode(const std::string &name);
 const char *lor_pc_mode_name(LORPCMode mode) noexcept;
 
+// Parse and print the stable left/right spellings shared by PETSc options,
+// batch metadata, console summaries, and result files.
+PreconditionerSide parse_preconditioner_side(const std::string &name);
+const char *preconditioner_side_name(PreconditionerSide side) noexcept;
+
 // Solve K u = F without a preconditioner, using the outer method associated
 // with mode so the baseline and preconditioned runs share stopping settings.
 PetscErrorCode solve_unpreconditioned(Mat stiffness, Vec load,
     LORPCMode mode, const SolverTolerances &tolerances,
     LinearSolveResult *result);
 
-// Solve K u = F with either CG+LU(K_LOR) or the legacy-style
-// right-preconditioned GMRES+PCSHELL+inner-CG/Jacobi LOR application.
+// Solve K u = F with either LU(K_LOR) or the legacy-style
+// GMRES+PCSHELL+inner-CG/Jacobi LOR application. The independently selected
+// side determines whether PETSc realizes K_LOR^{-1}K or K K_LOR^{-1}.
 PetscErrorCode solve_with_lor(Mat stiffness, Mat lor_stiffness, Vec load,
-    LORPCMode mode, const SolverTolerances &tolerances,
+    LORPCMode mode, PreconditionerSide side,
+    const SolverTolerances &tolerances,
     LinearSolveResult *result);
 
 PetscErrorCode destroy_linear_solve_result(LinearSolveResult *result);

@@ -43,7 +43,8 @@ PetscErrorCode destroy_gmres_shell(PC pc)
 }
 
 PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
-    const LORPCMode mode, const SolverTolerances &tolerances,
+    const LORPCMode mode, const PreconditionerSide side,
+    const SolverTolerances &tolerances,
     LinearSolveResult *result)
 {
     PetscFunctionBeginUser;
@@ -54,21 +55,29 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     PetscCheck(result->solution == nullptr, comm,
         PETSC_ERR_ARG_WRONGSTATE, "LinearSolveResult already owns a solution");
 
-    // Configure the outer method and common stopping tolerances. GMRES uses
-    // right preconditioning so its monitored unpreconditioned norm measures
-    // the residual of the original equation instead of the PCSHELL-scaled one.
+    // Configure the outer method independently of the LOR side. A right-sided
+    // exact-LU case uses GMRES because PETSc CG does not support PC_RIGHT.
     const bool use_shell = mode == LORPCMode::gmres_shell;
+    const bool has_lor = lor_stiffness != nullptr;
+    const bool use_gmres = use_shell ||
+        (has_lor && side == PreconditionerSide::right);
     KSP ksp = nullptr;
     PetscCall(KSPCreate(comm, &ksp));
     PetscCall(KSPSetOperators(ksp, stiffness,
         lor_stiffness != nullptr && !use_shell ? lor_stiffness : stiffness));
-    PetscCall(KSPSetType(ksp, use_shell ? KSPGMRES : KSPCG));
-    if (use_shell)
-    {
+    PetscCall(KSPSetType(ksp, use_gmres ? KSPGMRES : KSPCG));
+    if (use_gmres)
         PetscCall(KSPGMRESSetRestart(ksp, 200));
-        PetscCall(KSPSetPCSide(ksp, PC_RIGHT));
-    }
-    PetscCall(KSPSetNormType(ksp, KSP_NORM_UNPRECONDITIONED));
+
+    // Match the paper and Parallel-Computing default with explicit PC_LEFT;
+    // retain PC_RIGHT as an independently selectable research path. PETSc
+    // GMRES monitors the compatible preconditioned or physical residual norm.
+    if (has_lor)
+        PetscCall(KSPSetPCSide(ksp,
+            side == PreconditionerSide::left ? PC_LEFT : PC_RIGHT));
+    PetscCall(KSPSetNormType(ksp,
+        has_lor && side == PreconditionerSide::left ?
+            KSP_NORM_PRECONDITIONED : KSP_NORM_UNPRECONDITIONED));
     PetscCall(KSPSetTolerances(ksp, tolerances.outer_rtol,
         tolerances.outer_atol, tolerances.outer_dtol,
         tolerances.outer_max_it));
@@ -147,18 +156,39 @@ const char *lor_pc_mode_name(const LORPCMode mode) noexcept
     return mode == LORPCMode::cg_lu ? "cg_lu" : "gmres_shell";
 }
 
+// Translate the user-facing algebraic direction at the IO/Solver boundary.
+PreconditionerSide parse_preconditioner_side(const std::string &name)
+{
+    if (name == "left")
+        return PreconditionerSide::left;
+    if (name == "right")
+        return PreconditionerSide::right;
+    throw std::invalid_argument(
+        "preconditioner_side must be left or right");
+}
+
+// Provide one stable text spelling for logs, result files, and batch metadata.
+const char *preconditioner_side_name(
+    const PreconditionerSide side) noexcept
+{
+    return side == PreconditionerSide::left ? "left" : "right";
+}
+
 PetscErrorCode solve_unpreconditioned(Mat stiffness, Vec load,
     const LORPCMode mode, const SolverTolerances &tolerances,
     LinearSolveResult *result)
 {
-    return solve(stiffness, nullptr, load, mode, tolerances, result);
+    return solve(stiffness, nullptr, load, mode,
+        PreconditionerSide::left, tolerances, result);
 }
 
 PetscErrorCode solve_with_lor(Mat stiffness, Mat lor_stiffness, Vec load,
-    const LORPCMode mode, const SolverTolerances &tolerances,
+    const LORPCMode mode, const PreconditionerSide side,
+    const SolverTolerances &tolerances,
     LinearSolveResult *result)
 {
-    return solve(stiffness, lor_stiffness, load, mode, tolerances, result);
+    return solve(stiffness, lor_stiffness, load, mode, side,
+        tolerances, result);
 }
 
 PetscErrorCode destroy_linear_solve_result(LinearSolveResult *result)

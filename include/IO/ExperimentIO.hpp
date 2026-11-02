@@ -26,9 +26,11 @@ struct ExperimentOptions
     int degree = 0;
     std::vector<int> elements;
 
-    // LOR point strategy and one of the two supported solver hierarchies.
+    // LOR point strategy, inverse-application hierarchy, and algebraic side.
+    // The paper's K_LOR^{-1}K formulation is the default left selection.
     std::string lor_points = "greville";
     LORPCMode lor_pc = LORPCMode::gmres_shell;
+    PreconditionerSide preconditioner_side = PreconditionerSide::left;
 
     // Independent experiment features. Error analysis consumes solution
     // vectors and therefore requires compute_solution; condition numbers use
@@ -64,6 +66,10 @@ struct ExperimentResults
     bool computed_l2_error = false;
     bool computed_condition_number = false;
 
+    // Side used consistently by the solve, spectral analysis, labels, and
+    // result metadata. Left remains the paper-compatible default.
+    PreconditionerSide preconditioner_side = PreconditionerSide::left;
+
     // Global PETSc storage diagnostics for the assembled high-order and LOR
     // stiffness matrices. These are always available because both matrices
     // are required by every experiment configuration.
@@ -88,7 +94,7 @@ struct ExperimentResults
     PetscReal relative_residual_K = 0.0;
     PetscReal l2_error_K = 0.0;
 
-    // Right-LOR-preconditioned solve diagnostics for the same high-order
+    // Selected-side LOR-preconditioned diagnostics for the same high-order
     // equation; LOR remains a preconditioner rather than a second PDE system.
     PetscReal condition_lor_K = 0.0;
     PetscInt iterations_lor_K = 0;

@@ -25,6 +25,7 @@ element_tuple=$5
 lor_points=$6
 lor_pc=$7
 output_file=$8
+preconditioner_side=${PRECONDITIONER_SIDE:-left}
 
 # Accept either an explicit launch size or per-case automatic planning.
 if [[ "$mpi_rank_setting" != "default" ]] &&
@@ -88,22 +89,30 @@ fi
 
 mkdir -p "$(dirname "$output_file")"
 
+# Keep the paper-compatible left action as the default while allowing focused
+# right-preconditioning studies without changing the positional interface.
+if [[ "$preconditioner_side" != "left" &&
+      "$preconditioner_side" != "right" ]]; then
+  echo "PRECONDITIONER_SIDE must be left or right" >&2
+  exit 2
+fi
+
 # Mode-specific default residual settings.
 if [[ "$lor_pc" == "cg_lu" ]]; then
-  outer_rtol="1.0e-10"
-  outer_atol="1.0e-12"
+  outer_rtol="1.0e-12"
+  outer_atol="1.0e-14"
   outer_dtol="1.0e8"
 elif [[ "$lor_pc" == "gmres_shell" ]]; then
-  outer_rtol="1.0e-6"
-  outer_atol="1.0e-8"
+  outer_rtol="1.0e-12"
+  outer_atol="1.0e-14"
   outer_dtol="1.0e4"
 else
   echo "LOR_PC must be cg_lu or gmres_shell" >&2
   exit 2
 fi
 outer_max_it="10000"
-inner_rtol="1.0e-3"
-inner_atol="1.0e-4"
+inner_rtol="1.0e-12"
+inner_atol="1.0e-14"
 inner_dtol="1.0e4"
 inner_max_it="10000"
 
@@ -145,6 +154,7 @@ common_options=(
   -n "$element_tuple"
   -lor_points "$lor_points"
   -lor_pc "$lor_pc"
+  -preconditioner_side "$preconditioner_side"
   -compute_solution "$compute_solution"
   -compute_l2_error "$compute_l2_error"
   -compute_condition_number "$compute_condition_number"
@@ -171,5 +181,5 @@ fi
 # can still override MPIEXEC when their cluster exposes another launcher name.
 export OMP_NUM_THREADS=1
 mpi_launcher=${MPIEXEC:-mpirun}
-echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol inner_rtol=$inner_rtol inner_atol=$inner_atol svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol inner_rtol=$inner_rtol inner_atol=$inner_atol svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
 "$mpi_launcher" -n "$mpi_ranks" "$driver" "${common_options[@]}"

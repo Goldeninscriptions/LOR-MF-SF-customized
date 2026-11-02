@@ -45,6 +45,7 @@
 REFINEMENT = p_refine | h_refine | k_refine
 LOR_POINTS = greville | demko
 LOR_PC     = cg_lu | gmres_shell
+PRECONDITIONER_SIDE = left | right  # 环境变量，默认 left
 ```
 
 ## 批处理
@@ -62,6 +63,8 @@ lor_points="greville"
 mpi_rank=${MPI_RANK:-default}
 lor_pc="gmres_shell"
 # lor_pc="cg_lu"
+preconditioner_side="left"
+# preconditioner_side="right"
 
 compute_solution=true
 compute_l2_error=true
@@ -78,6 +81,7 @@ svd_ncv="100"
 COMPUTE_SOLUTION=true \
 COMPUTE_L2_ERROR=false \
 COMPUTE_CONDITION_NUMBER=true \
+PRECONDITIONER_SIDE=left \
 SVD_MAX_IT=200000 SVD_NCV=160 \
 ./work/run_case.sh ...
 ```
@@ -100,7 +104,8 @@ BATCH_DRY_RUN=1 ./work/run_batch_curved_quadrilateral_2d.sh
 ```
 
 每个入口使用独立的 `work/results/<geometry>/`、`work/logs/<geometry>/` 和
-`work/batch_summary_<geometry>.log`，case 名还包含 solve/L2/condition 三个开关。
+`work/batch_summary_<geometry>.log`，case 名包含预条件方向及 solve/L2/condition
+三个开关。
 单个 case 失败后脚本继续余下计划，最后以非零状态报告整个 batch 存在失败。
 
 三个入口统一默认执行组装、求解和 L2 误差分析，并关闭条件数分析。三者使用同一个

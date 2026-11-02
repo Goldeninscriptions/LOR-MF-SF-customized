@@ -123,16 +123,19 @@ geometry txt
 - 当前 `AssembledLaplaceExperiment` 始终请求高阶/LOR 刚度；只有
   `compute_solution=true` 才通过融合入口附带组装荷载；质量矩阵和 LOR 荷载不会
   被隐式构造；
-- `cg_lu`：外层 CG，LOR 矩阵用 LU 精确应用；
-- `gmres_shell`：外层右预条件 restarted GMRES，使用原方程未预条件残差作为停止
-  判据；`PCSHELL` 内部使用 CG+Jacobi 近似应用 LOR 逆；外层/内层默认容差均为
-  `rtol=1e-12, atol=1e-14`；
+- `preconditioner_side=left|right` 与 LOR 逆应用方式相互独立；默认 `left` 与论文及
+  Parallel-Computing 的 `K_LOR^{-1}K u=K_LOR^{-1}F` 一致，`right` 实现
+  `K K_LOR^{-1}y=F` 并恢复 `u=K_LOR^{-1}y`；
+- `cg_lu`：LOR 矩阵用 LU 精确应用；左侧使用外层 CG，右侧自动使用 GMRES；
+- `gmres_shell`：外层 restarted GMRES，`PCSHELL` 内部使用 CG+Jacobi 近似应用
+  LOR 逆；左侧监测预条件残差，右侧监测原方程残差；外层/内层默认容差均为
+  `rtol=1e-12, atol=1e-14`，求解后统一重算原方程真实残差；
 - `compute_solution`、`compute_l2_error`、`compute_condition_number` 独立控制求解、
   误差和谱分析；L2 依赖 solution，条件数不依赖二者；
 - 默认使用 `gmres_shell`；外层、内层 KSP、SLEPc 和矩阵 shell 均使用矩阵的 MPI
   communicator；
-- GlobalAssembly 的显式 SLEPc 入口分别计算 `cond_2(K)` 与
-  `cond_2(K_LOR^{-1}K)`；
+- GlobalAssembly 的显式 SLEPc 入口分别计算 `cond_2(K)` 与用户所选方向的
+  `cond_2(K_LOR^{-1}K)` 或 `cond_2(KK_LOR^{-1})`；
 - SVD 默认允许 100000 次迭代，并为最小奇异值使用最多 100 维搜索子空间；
   `-svd_max_it`、`-svd_ncv` 和 `-svd_tol` 可以逐次覆盖；
 - 制造解模块和误差模块计算高阶数值解的物理域 L2 误差。

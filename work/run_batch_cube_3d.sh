@@ -21,6 +21,8 @@ lor_points="greville"
 # lor_points="demko"
 lor_pc="gmres_shell"
 # lor_pc="cg_lu"
+preconditioner_side=${PRECONDITIONER_SIDE:-left}
+# preconditioner_side="right"
 
 mpi_rank=${MPI_RANK:-default}
 maximum_mpi_ranks=${MAX_MPI_RANKS:-}

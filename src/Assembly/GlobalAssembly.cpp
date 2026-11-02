@@ -1037,9 +1037,9 @@ PetscErrorCode assemble_lor_with_load(
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-// State for the exact left-LOR-preconditioned shell used only by the optional
-// SLEPc condition-number analysis.
-struct LeftPreconditionedContext
+// State for either exact left/right LOR-preconditioned shell used only by the
+// optional SLEPc condition-number analysis.
+struct PreconditionedContext
 {
     Mat stiffness = nullptr;
     KSP lor_solver = nullptr;
@@ -1049,7 +1049,7 @@ struct LeftPreconditionedContext
 PetscErrorCode apply_left_preconditioned(Mat matrix, Vec x, Vec y)
 {
     PetscFunctionBeginUser;
-    LeftPreconditionedContext *context = nullptr;
+    PreconditionedContext *context = nullptr;
     PetscCall(MatShellGetContext(matrix, &context));
     PetscCall(MatMult(context->stiffness, x, context->work));
     PetscCall(KSPSolve(context->lor_solver, context->work, y));
@@ -1059,7 +1059,7 @@ PetscErrorCode apply_left_preconditioned(Mat matrix, Vec x, Vec y)
 PetscErrorCode apply_left_preconditioned_transpose(Mat matrix, Vec x, Vec y)
 {
     PetscFunctionBeginUser;
-    LeftPreconditionedContext *context = nullptr;
+    PreconditionedContext *context = nullptr;
     PetscCall(MatShellGetContext(matrix, &context));
     PetscCall(KSPSolve(context->lor_solver, x, context->work));
     PetscCall(MatMult(context->stiffness, context->work, y));
@@ -1145,7 +1145,8 @@ PetscErrorCode condition_number(Mat matrix, const char *largest_prefix,
 } // namespace
 
 PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
-    Mat lor_stiffness, const PetscReal svd_tolerance,
+    Mat lor_stiffness, const PreconditionerSide side,
+    const PetscReal svd_tolerance,
     const PetscInt max_iterations, const PetscInt subspace_dimension,
     ConditionNumberResult *original, ConditionNumberResult *preconditioned)
 {
@@ -1181,7 +1182,7 @@ PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
 
     // Factor K_LOR once and reuse exact inverse applications throughout the
     // preconditioned shell's two singular-value solves.
-    LeftPreconditionedContext context;
+    PreconditionedContext context;
     context.stiffness = stiffness;
     PetscCall(KSPCreate(comm, &context.lor_solver));
     PetscCall(KSPSetOperators(context.lor_solver,
@@ -1205,7 +1206,8 @@ PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
     PetscCall(KSPSetUp(context.lor_solver));
     PetscCall(MatCreateVecs(stiffness, &context.work, nullptr));
 
-    // Expose M=P^{-1}K and M^T=KP^{-1} so SLEPc computes the true 2-norm.
+    // Expose the selected M=P^{-1}K or M=KP^{-1}; the opposite ordering is
+    // its transpose because both assembled stiffness matrices are symmetric.
     Mat preconditioned_operator = nullptr;
     PetscInt high_local_rows = 0;
     PetscInt high_local_columns = 0;
@@ -1213,11 +1215,15 @@ PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
         &high_local_rows, &high_local_columns));
     PetscCall(MatCreateShell(comm, high_local_rows, high_local_columns,
         high_rows, high_columns, &context, &preconditioned_operator));
+    const auto apply = side == PreconditionerSide::left ?
+        apply_left_preconditioned : apply_left_preconditioned_transpose;
+    const auto apply_transpose = side == PreconditionerSide::left ?
+        apply_left_preconditioned_transpose : apply_left_preconditioned;
     PetscCall(MatShellSetOperation(preconditioned_operator, MATOP_MULT,
-        reinterpret_cast<void (*)(void)>(apply_left_preconditioned)));
+        reinterpret_cast<void (*)(void)>(apply)));
     PetscCall(MatShellSetOperation(preconditioned_operator,
         MATOP_MULT_TRANSPOSE,
-        reinterpret_cast<void (*)(void)>(apply_left_preconditioned_transpose)));
+        reinterpret_cast<void (*)(void)>(apply_transpose)));
     PetscCall(condition_number(preconditioned_operator,
         "cond_lor_k_max_", "cond_lor_k_min_", svd_tolerance,
         max_iterations, subspace_dimension, *preconditioned));

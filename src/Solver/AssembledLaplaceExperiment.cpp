@@ -227,7 +227,8 @@ PetscErrorCode run_assembled_laplace_experiment(
             &original_solve));
         PetscCall(solve_with_lor(high_stiffness.matrix,
             lor_stiffness.matrix, high_load.vector, options.lor_pc,
-            options.tolerances, &preconditioned_solve));
+            options.preconditioner_side, options.tolerances,
+            &preconditioned_solve));
     }
 
     // Optionally build the richer error quadrature and integrate both retained
@@ -258,6 +259,7 @@ PetscErrorCode run_assembled_laplace_experiment(
     if (options.compute_condition_number)
         PetscCall(compute_stiffness_condition_numbers(
             high_stiffness.matrix, lor_stiffness.matrix,
+            options.preconditioner_side,
             options.svd_tolerance, options.svd_max_iterations,
             options.svd_subspace_dimension, &original_condition,
             &preconditioned_condition));
@@ -273,6 +275,7 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.computed_solution = options.compute_solution;
     results.computed_l2_error = options.compute_l2_error;
     results.computed_condition_number = options.compute_condition_number;
+    results.preconditioner_side = options.preconditioner_side;
     results.predicted_nonzeros_K = high_stiffness.predicted_nonzeros;
     results.allocated_nonzeros_K = high_stiffness.allocated_nonzeros;
     results.used_nonzeros_K = high_stiffness.used_nonzeros;
@@ -333,8 +336,10 @@ PetscErrorCode run_assembled_laplace_experiment(
             PetscCall(PetscPrintf(comm, "%s%d", direction == 0 ? "" : ",",
                 patch.num_elements(direction)));
         PetscCall(PetscPrintf(comm,
-            "), mode=%s, point_set=%s, solve=%s, L2=%s, condition=%s\n",
-            lor_pc_mode_name(options.lor_pc), options.lor_points.c_str(),
+            "), mode=%s, side=%s, point_set=%s, solve=%s, L2=%s, condition=%s\n",
+            lor_pc_mode_name(options.lor_pc),
+            preconditioner_side_name(options.preconditioner_side),
+            options.lor_points.c_str(),
             options.compute_solution ? "true" : "false",
             options.compute_l2_error ? "true" : "false",
             options.compute_condition_number ? "true" : "false"));
@@ -353,22 +358,30 @@ PetscErrorCode run_assembled_laplace_experiment(
             results.allocated_nonzeros_lor, results.allocation_calls_lor,
             results.estimated_minimum_bytes_lor / (1024.0 * 1024.0),
             results.memory_bytes_lor / (1024.0 * 1024.0)));
+        // Keep console labels consistent with the operator selected for both
+        // the solve and optional condition-number analysis.
+        const char *preconditioned_operator =
+            options.preconditioner_side == PreconditionerSide::left ?
+            "K_LOR^{-1}K" : "KK_LOR^{-1}";
         if (options.compute_condition_number)
             PetscCall(PetscPrintf(comm,
                 "  cond_2(K) = %.12e\n"
-                "  cond_2(K_LOR^{-1}K) = %.12e\n",
+                "  cond_2(%s) = %.12e\n",
                 static_cast<double>(results.condition_K),
+                preconditioned_operator,
                 static_cast<double>(results.condition_lor_K)));
         if (options.compute_solution)
             PetscCall(PetscPrintf(comm,
                 "  iterations(K) = %" PetscInt_FMT "\n"
-                "  iterations(K_LOR^{-1}K) = %" PetscInt_FMT "\n",
-                results.iterations_K, results.iterations_lor_K));
+                "  iterations(%s) = %" PetscInt_FMT "\n",
+                results.iterations_K, preconditioned_operator,
+                results.iterations_lor_K));
         if (options.compute_l2_error)
             PetscCall(PetscPrintf(comm,
                 "  L2_error(K) = %.12e\n"
-                "  L2_error(K_LOR^{-1}K) = %.12e\n",
+                "  L2_error(%s) = %.12e\n",
                 static_cast<double>(results.l2_error_K),
+                preconditioned_operator,
                 static_cast<double>(results.l2_error_lor_K)));
         PetscCall(PetscPrintf(comm, "  result file: %s\n",
             options.output_file.c_str()));

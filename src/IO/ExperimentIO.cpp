@@ -43,6 +43,7 @@ ExperimentOptions read_experiment_options(const int dimension)
     char elements[256] = "";
     char refinement[32] = "k_refine";
     char mode[32] = "gmres_shell";
+    char side[16] = "left";
     char point_set[32] = "greville";
     PetscBool geometry_set = PETSC_FALSE;
     PetscBool degree_set = PETSC_FALSE;
@@ -63,6 +64,8 @@ ExperimentOptions read_experiment_options(const int dimension)
         sizeof(refinement), nullptr);
     PetscOptionsGetString(nullptr, nullptr, "-lor_pc", mode,
         sizeof(mode), nullptr);
+    PetscOptionsGetString(nullptr, nullptr, "-preconditioner_side", side,
+        sizeof(side), nullptr);
     PetscOptionsGetString(nullptr, nullptr, "-lor_points", point_set,
         sizeof(point_set), nullptr);
     PetscOptionsGetBool(nullptr, nullptr, "-compute_solution",
@@ -91,6 +94,7 @@ ExperimentOptions read_experiment_options(const int dimension)
         throw std::invalid_argument(
             "-refinement must be p_refine, h_refine, or k_refine");
     options.lor_pc = parse_lor_pc_mode(mode);
+    options.preconditioner_side = parse_preconditioner_side(side);
     options.lor_points = point_set;
     if (options.lor_points != "greville" && options.lor_points != "demko")
         throw std::invalid_argument("-lor_points must be greville or demko");
@@ -203,6 +207,8 @@ void write_experiment_results(const std::string &filename,
     // Preserve the feature selection in every result file, then omit all
     // numerical fields belonging to computations that did not run.
     output << std::boolalpha
+           << "preconditioner_side = "
+           << preconditioner_side_name(results.preconditioner_side) << '\n'
            << "compute_solution = " << results.computed_solution << '\n'
            << "compute_l2_error = " << results.computed_l2_error << '\n'
            << "compute_condition_number = "
@@ -228,24 +234,30 @@ void write_experiment_results(const std::string &filename,
            << "memory_bytes(K_LOR) = " << results.memory_bytes_lor << '\n';
     output << "estimated_minimum_bytes(K_LOR) = "
            << results.estimated_minimum_bytes_lor << '\n';
+    // Select one algebraically accurate operator label for every optional
+    // diagnostic emitted below.
+    const bool left =
+        results.preconditioner_side == PreconditionerSide::left;
+    const char *preconditioned_operator = left ?
+        "K_LOR^{-1}K" : "KK_LOR^{-1}";
     if (results.computed_condition_number)
         output << "cond_2(K) = " << results.condition_K << '\n'
-               << "cond_2(K_LOR^{-1}K) = "
+               << "cond_2(" << preconditioned_operator << ") = "
                << results.condition_lor_K << '\n';
     if (results.computed_solution)
         output << "iterations(K) = " << results.iterations_K << '\n'
-               << "iterations(K_LOR^{-1}K) = "
+               << "iterations(" << preconditioned_operator << ") = "
                << results.iterations_lor_K << '\n'
                << "residual(K) = " << results.residual_K << '\n'
                << "relative_residual(K) = "
                << results.relative_residual_K << '\n'
-               << "residual(K_LOR^{-1}K) = "
+               << "residual(" << preconditioned_operator << ") = "
                << results.residual_lor_K << '\n'
-               << "relative_residual(K_LOR^{-1}K) = "
+               << "relative_residual(" << preconditioned_operator << ") = "
                << results.relative_residual_lor_K << '\n';
     if (results.computed_l2_error)
         output << "L2_error(K) = " << results.l2_error_K << '\n'
-               << "L2_error(K_LOR^{-1}K) = "
+               << "L2_error(" << preconditioned_operator << ") = "
                << results.l2_error_lor_K << '\n';
 }
 

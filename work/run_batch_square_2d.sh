@@ -21,6 +21,8 @@ lor_points="greville"
 # lor_points="demko"
 lor_pc="gmres_shell"
 # lor_pc="cg_lu"
+preconditioner_side=${PRECONDITIONER_SIDE:-left}
+# preconditioner_side="right"
 
 # Use one explicit count such as mpi_rank=8, or choose ranks independently
 # from each case's exact free-DOF count and the detected logical CPU limit.

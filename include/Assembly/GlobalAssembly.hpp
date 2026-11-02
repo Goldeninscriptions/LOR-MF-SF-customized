@@ -2,6 +2,7 @@
 #define LOR_ASSEMBLY_GLOBAL_ASSEMBLY_HPP
 
 #include "Assembly/LocalAssembly.hpp"
+#include "Assembly/PreconditionerSide.hpp"
 #include "Element/BSplineBasis1D.hpp"
 #include "Element/GaussQuadrature.hpp"
 #include "Mesh/BSplinePatch.hpp"
@@ -83,11 +84,11 @@ struct ConditionNumberResult
 PetscErrorCode destroy_global_matrix(GlobalMatrixAssemblyResult *result);
 PetscErrorCode destroy_global_vector(GlobalVectorAssemblyResult *result);
 
-// Independently analyze cond_2(K) and cond_2(K_LOR^{-1}K). This expensive
-// SLEPc operation is never implied by matrix assembly; experiment orchestration
-// must call it explicitly when the user enables condition-number analysis.
+// Independently analyze cond_2(K) and the selected left/right exact-LOR-
+// preconditioned operator. This expensive SLEPc operation is never implied by
+// assembly; orchestration must call it explicitly.
 PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
-    Mat lor_stiffness, PetscReal svd_tolerance,
+    Mat lor_stiffness, PreconditionerSide side, PetscReal svd_tolerance,
     PetscInt max_iterations, PetscInt subspace_dimension,
     ConditionNumberResult *original,
     ConditionNumberResult *preconditioned);
