@@ -97,6 +97,13 @@ maximum_mpi_ranks=${MAX_MPI_RANKS:-}
 # inner_atol="1.0e-50"
 # inner_max_it="10000"
 
+# Reference: standard left GMRES with Jacobi formed directly from diag(K).
+# lor_pc="left_gmres_k_jacobi"
+# outer_rtol="1.0e-10"
+# outer_atol="1.0e-10"
+# outer_dtol="1.0e4"
+# outer_max_it="10000"
+
 # Scheme B (active/default): standard left GMRES with one fixed linear map.
 lor_pc="left_gmres_fixed_jacobi"
 outer_rtol="1.0e-10"
@@ -137,6 +144,11 @@ case "$lor_pc" in
       "INNER_ATOL=$inner_atol"
       "INNER_MAX_IT=$inner_max_it"
     )
+    ;;
+  left_gmres_k_jacobi)
+    preconditioner_side="left"
+    scheme_settings="outer_rtol=$outer_rtol,outer_atol=$outer_atol,outer_dtol=$outer_dtol,outer_max_it=$outer_max_it,k_jacobi"
+    scheme_environment=()
     ;;
   left_gmres_fixed_jacobi)
     preconditioner_side="left"

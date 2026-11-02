@@ -80,15 +80,24 @@ struct ConditionNumberResult
     PetscReal condition_number = 0.0;
 };
 
+// Exact inverse used by the optional preconditioned spectral analysis. The
+// LOR choice factors K_LOR; stiffness_jacobi applies diag(K)^{-1} exactly.
+enum class ConditioningPreconditioner
+{
+    exact_lor,
+    stiffness_jacobi
+};
+
 // Destroy one independently owned PETSc result and reset its handle to null.
 PetscErrorCode destroy_global_matrix(GlobalMatrixAssemblyResult *result);
 PetscErrorCode destroy_global_vector(GlobalVectorAssemblyResult *result);
 
-// Independently analyze cond_2(K) and the selected left/right exact-LOR-
-// preconditioned operator. This expensive SLEPc operation is never implied by
-// assembly; orchestration must call it explicitly.
+// Independently analyze cond_2(K) and the selected exact preconditioned
+// operator, using either K_LOR^{-1} or diag(K)^{-1}. This expensive SLEPc
+// operation is never implied by assembly; orchestration calls it explicitly.
 PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
-    Mat lor_stiffness, PreconditionerSide side, PetscReal svd_tolerance,
+    Mat lor_stiffness, PreconditionerSide side,
+    ConditioningPreconditioner preconditioner, PetscReal svd_tolerance,
     PetscInt max_iterations, PetscInt subspace_dimension,
     ConditionNumberResult *original,
     ConditionNumberResult *preconditioned);

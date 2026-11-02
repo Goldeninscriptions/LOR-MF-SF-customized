@@ -104,6 +104,15 @@ case "$lor_pc" in
     scheme_settings="outer_rtol=$outer_rtol,outer_atol=$outer_atol,outer_dtol=$outer_dtol,outer_max_it=$outer_max_it,inner_pc=$inner_pc,inner_rtol=$inner_rtol,inner_atol=$inner_atol,inner_max_it=$inner_max_it"
     setting_tag="inner_${inner_pc}"
     ;;
+  left_gmres_k_jacobi)
+    preconditioner_side="left"
+    outer_rtol=${outer_rtol:-${OUTER_RTOL:-1.0e-10}}
+    outer_atol=${outer_atol:-${OUTER_ATOL:-1.0e-10}}
+    outer_dtol=${outer_dtol:-${OUTER_DTOL:-1.0e4}}
+    outer_max_it=${outer_max_it:-${OUTER_MAX_IT:-10000}}
+    scheme_settings="outer_rtol=$outer_rtol,outer_atol=$outer_atol,outer_dtol=$outer_dtol,outer_max_it=$outer_max_it,k_jacobi"
+    setting_tag="k_jacobi"
+    ;;
   left_gmres_fixed_jacobi)
     preconditioner_side="left"
     outer_rtol=${outer_rtol:-${OUTER_RTOL:-1.0e-10}}

@@ -34,7 +34,7 @@ geometry txt
   -> LocalAssembly -> 分布式组装 PETSc K / M / F
   -> GrevillePointSet / DemkoPointSet
   -> LORMesh -> LORIEN -> FEMQuad4/FEMHex8 -> 分布式组装 K_LOR / M_LOR / F_LOR
-  -> [compute_solution] 六个显式 LOR/Krylov 组合方案之一
+  -> [compute_solution] 七个显式预条件/Krylov 组合方案之一
   -> [compute_l2_error] L2 error
   -> [compute_condition_number] GlobalAssembly SLEPc condition numbers
   -> 只含启用项的 result log
@@ -127,10 +127,11 @@ geometry txt
 - `left_cg_lu` 与 `right_gmres_lu` 使用精确 LU 应用 LOR 逆；
 - `left_gmres_cg` 与 `right_gmres_cg` 保留标准 GMRES+容差控制内层 CG 对照；
 - `right_fgmres_cg`（方案 A1）用右预条件 FGMRES 匹配变化的内层 CG；
+- `left_gmres_k_jacobi` 直接应用 `diag(K)^{-1}`，作为不使用 LOR 的左预条件参考组；
 - `left_gmres_fixed_jacobi`（方案 B，默认）固定执行 `m=4, omega=2/3` 的 weighted
   Jacobi，从零初值生成固定线性多项式近似逆，再应用标准左 GMRES；
-- 参数所有权按完整方案严格区分：LU 不接收 inner/fixed 参数，三个 `*_cg` 只接收
-  inner CG 参数，固定 Jacobi 只接收 fixed 参数；
+- 参数所有权按完整方案严格区分：LU 与 K-Jacobi 不接收 inner/fixed 参数，三个
+  `*_cg` 只接收 inner CG 参数，固定 Jacobi 只接收 fixed 参数；
 - 三个 `*_cg` 方案可选择 Jacobi 或 PETSc GAMG；GAMG 层次在 setup 中构造一次后
   复用；外层/内层默认容差均参考
   Parallel-Computing 实际生效值，采用 `rtol=1e-10, atol=1e-10, dtol=1e4,

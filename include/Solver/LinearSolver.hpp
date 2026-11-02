@@ -20,6 +20,7 @@ enum class LORPCMode
     left_gmres_cg,
     right_gmres_cg,
     right_fgmres_cg,
+    left_gmres_k_jacobi,
     left_gmres_fixed_jacobi
 };
 
@@ -116,7 +117,8 @@ PetscErrorCode solve_unpreconditioned(Mat stiffness, Vec load,
 
 // Solve K u = F with the complete configuration selected by mode. The mode
 // fixes the side and outer method; inner_pc_mode affects only schemes ending
-// in _cg, while fixed_jacobi affects only left_gmres_fixed_jacobi.
+// in _cg, fixed_jacobi affects only left_gmres_fixed_jacobi, and
+// left_gmres_k_jacobi applies PETSc Jacobi directly to stiffness.
 PetscErrorCode solve_with_lor(Mat stiffness, Mat lor_stiffness, Vec load,
     LORPCMode mode, InnerPCMode inner_pc_mode,
     const SolverTolerances &tolerances,

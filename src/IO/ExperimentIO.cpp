@@ -327,8 +327,9 @@ void write_experiment_results(const std::string &filename,
     // algorithm label used by iterative solve and error diagnostics.
     const bool left =
         results.preconditioner_side == PreconditionerSide::left;
-    const char *ideal_operator = left ?
-        "K_LOR^{-1}K" : "KK_LOR^{-1}";
+    const char *ideal_operator =
+        results.lor_pc == LORPCMode::left_gmres_k_jacobi ?
+        "D_K^{-1}K" : (left ? "K_LOR^{-1}K" : "KK_LOR^{-1}");
     const char *solve_label = lor_pc_mode_name(results.lor_pc);
     if (results.computed_condition_number)
         output << "cond_2(K) = " << results.condition_K << '\n'

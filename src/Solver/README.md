@@ -2,7 +2,7 @@
 
 | 文件 | 当前实现 | 调用关系 |
 |---|---|---|
-| `LinearSolver.cpp` | 统一 baseline 与六个 LOR 方案；精确 LU、标准 GMRES+内层 CG、右 FGMRES+内层 CG及左 GMRES+固定 weighted Jacobi 共用统计入口 | 输入为 GlobalAssembly 的 K、K_LOR、F |
+| `LinearSolver.cpp` | 统一 baseline 与七个预条件方案；精确 LOR LU、标准 GMRES+内层 CG、右 FGMRES+内层 CG、K-Jacobi 及左 GMRES+固定 weighted Jacobi 共用统计入口 | 输入为 GlobalAssembly 的 K、K_LOR、F |
 | `ErrorAnalysis.cpp` | 把本 slab 所需的连续 ID 区间 scatter 到局部 halo 向量，从独立 lift 恢复非零边界系数，各 rank 只积分自己的 BSplineIEN 元素，再对误差平方做 MPI sum | 正确处理跨 slab 单元与非齐次 Dirichlet 值，不复制完整全局解 |
 | `AssembledLaplaceExperiment.cpp` | root-only 构造/细化并广播 Patch，随后编排边界、LOR、MPI 分区和组装；按三个独立开关调用两次求解、L2 与 GlobalAssembly 条件数入口 | 关闭功能时不构造其荷载、解向量、误差表或谱对象 |
 

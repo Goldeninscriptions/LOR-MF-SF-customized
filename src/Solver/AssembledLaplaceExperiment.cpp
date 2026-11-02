@@ -258,12 +258,19 @@ PetscErrorCode run_assembled_laplace_experiment(
     ConditionNumberResult original_condition;
     ConditionNumberResult preconditioned_condition;
     if (options.compute_condition_number)
+    {
+        const ConditioningPreconditioner spectral_preconditioner =
+            options.lor_pc == LORPCMode::left_gmres_k_jacobi ?
+            ConditioningPreconditioner::stiffness_jacobi :
+            ConditioningPreconditioner::exact_lor;
         PetscCall(compute_stiffness_condition_numbers(
             high_stiffness.matrix, lor_stiffness.matrix,
             options.preconditioner_side,
+            spectral_preconditioner,
             options.svd_tolerance, options.svd_max_iterations,
             options.svd_subspace_dimension, &original_condition,
             &preconditioned_condition));
+    }
 
     // Collect metadata and only the diagnostics whose computations were
     // enabled; root writes a self-describing sparse result record.
@@ -391,8 +398,10 @@ PetscErrorCode run_assembled_laplace_experiment(
         // Distinguish the ideal exact-LOR spectral operator from the actual
         // algorithm applying an exact, variable, or fixed approximate inverse.
         const char *ideal_operator =
-            options.preconditioner_side == PreconditionerSide::left ?
-            "K_LOR^{-1}K" : "KK_LOR^{-1}";
+            options.lor_pc == LORPCMode::left_gmres_k_jacobi ?
+            "D_K^{-1}K" :
+            (options.preconditioner_side == PreconditionerSide::left ?
+                "K_LOR^{-1}K" : "KK_LOR^{-1}");
         const char *solve_label = lor_pc_mode_name(options.lor_pc);
         if (options.compute_condition_number)
             PetscCall(PetscPrintf(comm,

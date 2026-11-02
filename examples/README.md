@@ -79,7 +79,8 @@ mpirun -n 4 ./build/assembled_driver \
 
 - `-lor_points greville|demko`；
 - `-lor_pc` 选择完整求解方案：`left_cg_lu|right_gmres_lu|left_gmres_cg|`
-  `right_gmres_cg|right_fgmres_cg|left_gmres_fixed_jacobi`；默认最后一项；
+  `right_gmres_cg|right_fgmres_cg|left_gmres_k_jacobi|`
+  `left_gmres_fixed_jacobi`；默认最后一项；
 - 预条件方向由方案名称唯一确定；`preconditioner_side` 只作为结果元数据；
 - `-inner_pc jacobi|gamg` 及 `-inner_*` 仅属于三个 `*_cg` 方案；
 - `-fixed_jacobi_steps` 和 `-fixed_jacobi_omega` 仅属于固定线性方案，默认 `4` 和
@@ -88,6 +89,7 @@ mpirun -n 4 ./build/assembled_driver \
 - `left_cg_lu`/`right_gmres_lu` 使用精确 LOR LU；
 - `left_gmres_cg`/`right_gmres_cg` 是原标准 GMRES 对照；
 - `right_fgmres_cg` 是方案 A1，允许变化的容差控制内层 CG；
+- `left_gmres_k_jacobi` 直接以 `diag(K)` 作为左预条件子，是不使用 LOR 的参考组；
 - `left_gmres_fixed_jacobi` 是方案 B，对固定线性近似逆应用标准左 GMRES；
 - 三个 `*_cg` 方案的外层/内层默认容差均参考 Parallel-Computing 实际生效的
   `rtol=1e-10, atol=1e-10`，也可用命令行逐次覆盖。
@@ -131,7 +133,8 @@ allocation_calls(K_LOR), estimated_minimum_bytes(K_LOR), memory_bytes(K_LOR)
 [L2_error(K), L2_error(<scheme>)]
 ```
 
-条件数仍以理想精确 LOR 算子 `K_LOR^{-1}K` 或 `KK_LOR^{-1}` 标记；求解、时间、
+LOR 条件数以理想算子 `K_LOR^{-1}K` 或 `KK_LOR^{-1}` 标记，K-Jacobi 参考组则标记
+`D_K^{-1}K`；求解、时间、
 真实残差与 L2 字段使用完整 `<scheme>` 名称，避免把实际近似逆误记成精确逆。
 
 未预条件和预条件求解都记录 setup 与完整外层时间。`*_cg` 方案输出内层 CG 成本，

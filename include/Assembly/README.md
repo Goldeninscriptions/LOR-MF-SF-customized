@@ -20,7 +20,8 @@ matrix-free 算子接口。若调用者同时需要多个项，可显式选择
 `assemble_global_stiffness_load_with_dirichlet` 额外接收完整 prescribed coefficient
 向量，并在局部 scatter 前把 `-K_fc g_c` 加入自由右端。
 `compute_stiffness_condition_numbers` 是独立且昂贵的后处理入口，只有调用者显式请求
-时才创建四个 SVD 求解和预条件算子。
+时才创建四个 SVD 求解和预条件算子；它可分析精确 LOR 逆或直接的
+`diag(K)^{-1}` 左预条件参考算子。
 高阶和 LOR 矩阵都从张量支撑直接计算逐 owned-row 的精确 `d_nnz/o_nnz`，不创建旧
 代码使用的临时 pattern 矩阵。结果同时保存 predicted/used/allocated nnz、PETSc
 malloc 次数、PETSc memory 报告和不含 allocator 开销的可移植最低字节估计。

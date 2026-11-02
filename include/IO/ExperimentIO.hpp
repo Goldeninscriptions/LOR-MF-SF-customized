@@ -27,7 +27,7 @@ struct ExperimentOptions
     std::vector<int> elements;
 
     // LOR point strategy, inverse-application hierarchy, algebraic side, and
-    // complete LOR solver configuration and optional nested algebraic PC.
+    // complete preconditioned solver configuration and optional nested PC.
     // inner_pc is meaningful only for the three modes ending in _cg; the
     // default mode instead uses a fixed weighted-Jacobi polynomial inverse.
     std::string lor_points = "greville";

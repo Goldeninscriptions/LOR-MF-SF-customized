@@ -137,6 +137,12 @@ case "$lor_pc" in
     outer_atol="1.0e-10"
     outer_dtol="1.0e4"
     ;;
+  left_gmres_k_jacobi)
+    preconditioner_side="left"
+    outer_rtol="1.0e-10"
+    outer_atol="1.0e-10"
+    outer_dtol="1.0e4"
+    ;;
   left_gmres_fixed_jacobi)
     preconditioner_side="left"
     uses_fixed_jacobi=true
@@ -145,7 +151,7 @@ case "$lor_pc" in
     outer_dtol="1.0e4"
     ;;
   *)
-    echo "LOR_PC must be left_cg_lu, right_gmres_lu, left_gmres_cg, right_gmres_cg, right_fgmres_cg, or left_gmres_fixed_jacobi" >&2
+    echo "LOR_PC must be left_cg_lu, right_gmres_lu, left_gmres_cg, right_gmres_cg, right_fgmres_cg, left_gmres_k_jacobi, or left_gmres_fixed_jacobi" >&2
     exit 2
     ;;
 esac

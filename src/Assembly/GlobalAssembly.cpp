@@ -1037,12 +1037,13 @@ PetscErrorCode assemble_lor_with_load(
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-// State for either exact left/right LOR-preconditioned shell used only by the
-// optional SLEPc condition-number analysis.
+// State for an exact left/right spectral shell. It applies either factored
+// K_LOR^{-1} or the explicitly cached diagonal inverse of K.
 struct PreconditionedContext
 {
     Mat stiffness = nullptr;
     KSP lor_solver = nullptr;
+    Vec diagonal_inverse = nullptr;
     Vec work = nullptr;
 };
 
@@ -1052,7 +1053,11 @@ PetscErrorCode apply_left_preconditioned(Mat matrix, Vec x, Vec y)
     PreconditionedContext *context = nullptr;
     PetscCall(MatShellGetContext(matrix, &context));
     PetscCall(MatMult(context->stiffness, x, context->work));
-    PetscCall(KSPSolve(context->lor_solver, context->work, y));
+    if (context->diagonal_inverse != nullptr)
+        PetscCall(VecPointwiseMult(y, context->diagonal_inverse,
+            context->work));
+    else
+        PetscCall(KSPSolve(context->lor_solver, context->work, y));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -1061,7 +1066,11 @@ PetscErrorCode apply_left_preconditioned_transpose(Mat matrix, Vec x, Vec y)
     PetscFunctionBeginUser;
     PreconditionedContext *context = nullptr;
     PetscCall(MatShellGetContext(matrix, &context));
-    PetscCall(KSPSolve(context->lor_solver, x, context->work));
+    if (context->diagonal_inverse != nullptr)
+        PetscCall(VecPointwiseMult(context->work,
+            context->diagonal_inverse, x));
+    else
+        PetscCall(KSPSolve(context->lor_solver, x, context->work));
     PetscCall(MatMult(context->stiffness, context->work, y));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -1146,6 +1155,7 @@ PetscErrorCode condition_number(Mat matrix, const char *largest_prefix,
 
 PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
     Mat lor_stiffness, const PreconditionerSide side,
+    const ConditioningPreconditioner preconditioner,
     const PetscReal svd_tolerance,
     const PetscInt max_iterations, const PetscInt subspace_dimension,
     ConditionNumberResult *original, ConditionNumberResult *preconditioned)
@@ -1171,40 +1181,64 @@ PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
     PetscInt lor_rows = 0;
     PetscInt lor_columns = 0;
     PetscCall(MatGetSize(stiffness, &high_rows, &high_columns));
-    PetscCall(MatGetSize(lor_stiffness, &lor_rows, &lor_columns));
+    if (preconditioner == ConditioningPreconditioner::exact_lor)
+    {
+        PetscCheck(lor_stiffness != nullptr, comm, PETSC_ERR_ARG_NULL,
+            "Exact-LOR condition analysis requires K_LOR");
+        PetscCall(MatGetSize(lor_stiffness, &lor_rows, &lor_columns));
+    }
+    else
+    {
+        lor_rows = high_rows;
+        lor_columns = high_columns;
+    }
     PetscCheck(high_rows == high_columns && lor_rows == lor_columns &&
         high_rows == lor_rows, comm, PETSC_ERR_ARG_SIZ,
-        "K and K_LOR must be square matrices of the same size");
+        "K and the selected preconditioner must have matching square size");
 
     // Analyze the assembled high-order stiffness directly.
     PetscCall(condition_number(stiffness, "cond_k_max_", "cond_k_min_",
         svd_tolerance, max_iterations, subspace_dimension, *original));
 
-    // Factor K_LOR once and reuse exact inverse applications throughout the
-    // preconditioned shell's two singular-value solves.
+    // Prepare one exact preconditioner application for both singular-value
+    // solves: factor K_LOR or cache diag(K)^{-1} once.
     PreconditionedContext context;
     context.stiffness = stiffness;
-    PetscCall(KSPCreate(comm, &context.lor_solver));
-    PetscCall(KSPSetOperators(context.lor_solver,
-        lor_stiffness, lor_stiffness));
-    PetscCall(KSPSetType(context.lor_solver, KSPPREONLY));
-    PC pc = nullptr;
-    PetscCall(KSPGetPC(context.lor_solver, &pc));
-    PetscCall(PCSetType(pc, PCLU));
-    PetscMPIInt comm_size = 1;
-    PetscCallMPI(MPI_Comm_size(comm, &comm_size));
-    if (comm_size > 1)
-    {
-#if defined(PETSC_HAVE_MUMPS)
-        PetscCall(PCFactorSetMatSolverType(pc, MATSOLVERMUMPS));
-#else
-        SETERRQ(comm, PETSC_ERR_SUP,
-            "Parallel cond_2(K_LOR^{-1}K) requires PETSc with MUMPS");
-#endif
-    }
-    PetscCall(KSPSetErrorIfNotConverged(context.lor_solver, PETSC_TRUE));
-    PetscCall(KSPSetUp(context.lor_solver));
     PetscCall(MatCreateVecs(stiffness, &context.work, nullptr));
+    if (preconditioner == ConditioningPreconditioner::stiffness_jacobi)
+    {
+        PetscCall(VecDuplicate(context.work, &context.diagonal_inverse));
+        PetscCall(MatGetDiagonal(stiffness, context.diagonal_inverse));
+        PetscReal minimum_diagonal = 0.0;
+        PetscCall(VecMin(context.diagonal_inverse, nullptr,
+            &minimum_diagonal));
+        PetscCheck(minimum_diagonal > 0.0, comm, PETSC_ERR_ARG_WRONG,
+            "K diagonal must be strictly positive");
+        PetscCall(VecReciprocal(context.diagonal_inverse));
+    }
+    else
+    {
+        PetscCall(KSPCreate(comm, &context.lor_solver));
+        PetscCall(KSPSetOperators(context.lor_solver,
+            lor_stiffness, lor_stiffness));
+        PetscCall(KSPSetType(context.lor_solver, KSPPREONLY));
+        PC pc = nullptr;
+        PetscCall(KSPGetPC(context.lor_solver, &pc));
+        PetscCall(PCSetType(pc, PCLU));
+        PetscMPIInt comm_size = 1;
+        PetscCallMPI(MPI_Comm_size(comm, &comm_size));
+        if (comm_size > 1)
+        {
+#if defined(PETSC_HAVE_MUMPS)
+            PetscCall(PCFactorSetMatSolverType(pc, MATSOLVERMUMPS));
+#else
+            SETERRQ(comm, PETSC_ERR_SUP,
+                "Parallel cond_2(K_LOR^{-1}K) requires PETSc with MUMPS");
+#endif
+        }
+        PetscCall(KSPSetErrorIfNotConverged(context.lor_solver, PETSC_TRUE));
+        PetscCall(KSPSetUp(context.lor_solver));
+    }
 
     // Expose the selected M=P^{-1}K or M=KP^{-1}; the opposite ordering is
     // its transpose because both assembled stiffness matrices are symmetric.
@@ -1224,12 +1258,17 @@ PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
     PetscCall(MatShellSetOperation(preconditioned_operator,
         MATOP_MULT_TRANSPOSE,
         reinterpret_cast<void (*)(void)>(apply_transpose)));
+    const bool stiffness_jacobi =
+        preconditioner == ConditioningPreconditioner::stiffness_jacobi;
     PetscCall(condition_number(preconditioned_operator,
-        "cond_lor_k_max_", "cond_lor_k_min_", svd_tolerance,
+        stiffness_jacobi ? "cond_k_jacobi_max_" : "cond_lor_k_max_",
+        stiffness_jacobi ? "cond_k_jacobi_min_" : "cond_lor_k_min_",
+        svd_tolerance,
         max_iterations, subspace_dimension, *preconditioned));
 
     // Release every object owned solely by this optional analysis call.
     PetscCall(MatDestroy(&preconditioned_operator));
+    PetscCall(VecDestroy(&context.diagonal_inverse));
     PetscCall(VecDestroy(&context.work));
     PetscCall(KSPDestroy(&context.lor_solver));
     PetscFunctionReturn(PETSC_SUCCESS);

@@ -134,6 +134,8 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
         mode == LORPCMode::right_fgmres_cg;
     const bool use_fixed_jacobi =
         mode == LORPCMode::left_gmres_fixed_jacobi;
+    const bool use_k_jacobi =
+        mode == LORPCMode::left_gmres_k_jacobi;
     const bool use_shell = use_inner_cg || use_fixed_jacobi;
     const bool use_fgmres = has_lor &&
         mode == LORPCMode::right_fgmres_cg;
@@ -170,12 +172,14 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
         tolerances.outer_max_it));
     PetscCall(KSPSetErrorIfNotConverged(ksp, PETSC_TRUE));
 
-    // Attach no PC, an exact LOR LU, or the nested shell preconditioner.
+    // Attach no PC, direct Jacobi on K, exact LOR LU, or a LOR shell.
     PC pc = nullptr;
     PetscCall(KSPGetPC(ksp, &pc));
     LORShellContext *shell_context = nullptr;
     if (lor_stiffness == nullptr)
         PetscCall(PCSetType(pc, PCNONE));
+    else if (use_k_jacobi)
+        PetscCall(PCSetType(pc, PCJACOBI));
     else if (!use_shell)
         PetscCall(PCSetType(pc, PCLU));
     else
@@ -291,11 +295,14 @@ LORPCMode parse_lor_pc_mode(const std::string &name)
         return LORPCMode::right_gmres_cg;
     if (name == "right_fgmres_cg")
         return LORPCMode::right_fgmres_cg;
+    if (name == "left_gmres_k_jacobi")
+        return LORPCMode::left_gmres_k_jacobi;
     if (name == "left_gmres_fixed_jacobi")
         return LORPCMode::left_gmres_fixed_jacobi;
     throw std::invalid_argument(
         "lor_pc must be left_cg_lu, right_gmres_lu, left_gmres_cg, "
-        "right_gmres_cg, right_fgmres_cg, or left_gmres_fixed_jacobi");
+        "right_gmres_cg, right_fgmres_cg, left_gmres_k_jacobi, or "
+        "left_gmres_fixed_jacobi");
 }
 
 // Preserve a stable complete configuration name in logs and result files.
@@ -313,6 +320,8 @@ const char *lor_pc_mode_name(const LORPCMode mode) noexcept
             return "right_gmres_cg";
         case LORPCMode::right_fgmres_cg:
             return "right_fgmres_cg";
+        case LORPCMode::left_gmres_k_jacobi:
+            return "left_gmres_k_jacobi";
         case LORPCMode::left_gmres_fixed_jacobi:
             return "left_gmres_fixed_jacobi";
     }
