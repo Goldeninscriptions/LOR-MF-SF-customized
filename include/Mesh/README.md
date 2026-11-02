@@ -13,8 +13,8 @@ Mesh 保存单 patch 全局几何、拓扑、细化策略、LOR 节点和代数�
 | `DistributedPatch.hpp` | 从 root 广播 refined degree、逐向 knot vectors 和完整控制网格，在各 rank 重建相同 Patch | 当前消除重复 refinement；下一阶段再替换为局部 slab+halo 控制点 |
 | `LORPointSet.hpp` | 不可变的逐方向参数点集合；具体 `GrevillePointSet` 与 Remez `DemkoPointSet` | 每方向读取自己的 knot vector；输出交给 LORMesh |
 | `LORMesh.hpp` | 在 point set 上采样高阶几何得到 LOR 顶点，保存逐方向参数节点和物理节点 | LORIEN 读取 cell 拓扑；Quad4/Hex8 读取局部顶点 |
-| `TensorSlabPartition.hpp` | 在 direction `Dim-1` 上均衡切分自由 ID、高阶元素和 LOR cells；保存每个 MPI rank 的半开区间 | 不改变 lexicographic/global_index/ID 编号；向 IEN 和 PETSc 局部尺寸提供一致所有权 |
-| `IEN.hpp` | `IEN` 基类以及 `BSplineIEN`、`LORIEN`；按需计算 local basis/node 到 `global_index` | 不再在每个 rank 复制完整 element-major 表；Assembly 组合 IEN 与 ID |
+| `TensorSlabPartition.hpp` | 在 direction `Dim-1` 上均衡切分自由 ID及唯一 element/cell 区间，并计算触及 owned rows 的最小 assembly halo | 唯一区间供误差积分，halo 区间供 owned-row Assembly；不改变 global_index/ID 编号 |
+| `IEN.hpp` | `IEN` 基类以及 `BSplineIEN`、`LORIEN`；同时暴露唯一 local interval 和 halo assembly interval，按需计算 local basis/node 到 `global_index` | 不再在每个 rank 复制完整 element-major 表；Assembly 组合 IEN 与 ID |
 | `ID.hpp` | 把完整 `global_index` 映射为自由代数 `ID`；Dirichlet 项为 `-1`，并提供逆映射 | 受约束列表来自 DirichletBC；高阶与 coefficient-aligned LOR 当前共享同一个 ID |
 
 LOR 顶点位于高阶几何上，但每个 LOR cell 内部使用独立的双线性/三线性 Q1 映射；

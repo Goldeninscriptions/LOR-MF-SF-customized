@@ -17,9 +17,21 @@ template <int Dim>
 class BSplineElement final : public IGAElement<Dim>
 {
 public:
+    // Create an empty reusable element workspace. reinitialize() must be
+    // called before any inherited quadrature accessor is used.
+    BSplineElement() = default;
+
     // Construct all equation-independent tensor-product data for one active
     // knot-span element. No local or global discrete matrix is formed here.
     BSplineElement(const BSplinePatch<Dim> &patch,
+        std::size_t element,
+        const std::vector<typename BSplinePatch<Dim>::Point> &control_points,
+        const QuadratureRule1D &quad,
+        const std::vector<BSplineBasis1D> &basis_tables);
+
+    // Overwrite this workspace for another element while retaining all
+    // contiguous tensor and Gauss storage allocations owned by the object.
+    void reinitialize(const BSplinePatch<Dim> &patch,
         std::size_t element,
         const std::vector<typename BSplinePatch<Dim>::Point> &control_points,
         const QuadratureRule1D &quad,

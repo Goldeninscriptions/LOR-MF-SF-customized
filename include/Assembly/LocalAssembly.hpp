@@ -15,6 +15,10 @@ namespace lor
 template <int Dim>
 using ScalarSource = std::function<double(const std::array<double, Dim> &)>;
 
+// Optional local-row selector used by halo assembly. A nonzero entry means
+// that the corresponding local test-function row belongs to this rank.
+using LocalRowMask = std::vector<unsigned char>;
+
 // Dense square matrix produced for one element. entries uses row-major local
 // basis ordering, and the determinant extrema describe the geometry points
 // visited by this particular stiffness or mass integration.
@@ -46,6 +50,9 @@ struct LocalVectorAssemblyResult
 template <int Dim>
 void assemble_local_stiffness(const IGAElement<Dim> &element,
     LocalMatrixAssemblyResult &result);
+template <int Dim>
+void assemble_local_stiffness_rows(const IGAElement<Dim> &element,
+    const LocalRowMask &active_rows, LocalMatrixAssemblyResult &result);
 void assemble_local_stiffness(const FEMQuad4 &element,
     LocalMatrixAssemblyResult &result);
 void assemble_local_stiffness(const FEMHex8 &element,
@@ -64,6 +71,10 @@ void assemble_local_mass(const FEMHex8 &element,
 template <int Dim>
 void assemble_local_load(const IGAElement<Dim> &element,
     const ScalarSource<Dim> &source, LocalVectorAssemblyResult &result);
+template <int Dim>
+void assemble_local_load_rows(const IGAElement<Dim> &element,
+    const ScalarSource<Dim> &source, const LocalRowMask &active_rows,
+    LocalVectorAssemblyResult &result);
 void assemble_local_load(const FEMQuad4 &element,
     const ScalarSource<2> &source, LocalVectorAssemblyResult &result);
 void assemble_local_load(const FEMHex8 &element,
@@ -75,6 +86,12 @@ void assemble_local_load(const FEMHex8 &element,
 template <int Dim>
 void assemble_local_stiffness_load(const IGAElement<Dim> &element,
     const ScalarSource<Dim> &source,
+    LocalMatrixAssemblyResult &stiffness,
+    LocalVectorAssemblyResult &load);
+template <int Dim>
+void assemble_local_stiffness_load_rows(
+    const IGAElement<Dim> &element, const ScalarSource<Dim> &source,
+    const LocalRowMask &active_rows,
     LocalMatrixAssemblyResult &stiffness,
     LocalVectorAssemblyResult &load);
 void assemble_local_stiffness_load(const FEMQuad4 &element,
@@ -114,6 +131,12 @@ extern template void assemble_local_stiffness<2>(
     const IGAElement<2> &, LocalMatrixAssemblyResult &);
 extern template void assemble_local_stiffness<3>(
     const IGAElement<3> &, LocalMatrixAssemblyResult &);
+extern template void assemble_local_stiffness_rows<2>(
+    const IGAElement<2> &, const LocalRowMask &,
+    LocalMatrixAssemblyResult &);
+extern template void assemble_local_stiffness_rows<3>(
+    const IGAElement<3> &, const LocalRowMask &,
+    LocalMatrixAssemblyResult &);
 extern template void assemble_local_mass<2>(
     const IGAElement<2> &, LocalMatrixAssemblyResult &);
 extern template void assemble_local_mass<3>(
@@ -124,12 +147,26 @@ extern template void assemble_local_load<2>(
 extern template void assemble_local_load<3>(
     const IGAElement<3> &, const ScalarSource<3> &,
     LocalVectorAssemblyResult &);
+extern template void assemble_local_load_rows<2>(
+    const IGAElement<2> &, const ScalarSource<2> &,
+    const LocalRowMask &, LocalVectorAssemblyResult &);
+extern template void assemble_local_load_rows<3>(
+    const IGAElement<3> &, const ScalarSource<3> &,
+    const LocalRowMask &, LocalVectorAssemblyResult &);
 extern template void assemble_local_stiffness_load<2>(
     const IGAElement<2> &, const ScalarSource<2> &,
     LocalMatrixAssemblyResult &, LocalVectorAssemblyResult &);
 extern template void assemble_local_stiffness_load<3>(
     const IGAElement<3> &, const ScalarSource<3> &,
     LocalMatrixAssemblyResult &, LocalVectorAssemblyResult &);
+extern template void assemble_local_stiffness_load_rows<2>(
+    const IGAElement<2> &, const ScalarSource<2> &,
+    const LocalRowMask &, LocalMatrixAssemblyResult &,
+    LocalVectorAssemblyResult &);
+extern template void assemble_local_stiffness_load_rows<3>(
+    const IGAElement<3> &, const ScalarSource<3> &,
+    const LocalRowMask &, LocalMatrixAssemblyResult &,
+    LocalVectorAssemblyResult &);
 extern template void assemble_local_mass_load<2>(
     const IGAElement<2> &, const ScalarSource<2> &,
     LocalMatrixAssemblyResult &, LocalVectorAssemblyResult &);

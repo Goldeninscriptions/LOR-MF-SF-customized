@@ -14,6 +14,7 @@ KSP 应用方式、SLEPc 条件数和 L2 误差分析。Matrix-free 与 sum fact
 - 高阶与 LOR Q1 的刚度、质量、荷载独立按需组装；
 - `greville|demko` LOR point set；
 - MPI 方向切片并行组装、分布式 PETSc 矩阵/向量和并行 KSP；
+- 张量支撑驱动的精确 MPIAIJ 逐行预分配、owned-row halo 组装和矩阵存储日志；
 - 几何文件与 p/h/k refinement 仅在 rank 0 执行，refined Patch 广播重建；
 - 默认高精度右预条件 `gmres_shell`，并保留 `cg_lu` 精确研究模式；
 - 求解/迭代数、L2 误差和 SLEPc 条件数可独立启用，禁用项不计算也不输出；

@@ -88,11 +88,15 @@ std::array<int, Dim> q1_corner_shape()
 
 IEN::IEN(const std::size_t num_elements, const int num_local_basis,
     const std::size_t local_element_begin,
-    const std::size_t local_element_end, const int owned_ID_begin,
+    const std::size_t local_element_end,
+    const std::size_t assembly_element_begin,
+    const std::size_t assembly_element_end, const int owned_ID_begin,
     const int owned_ID_end, const MPI_Comm comm)
     : num_elements_(num_elements), num_local_basis_(num_local_basis),
       local_element_begin_(local_element_begin),
       local_element_end_(local_element_end),
+      assembly_element_begin_(assembly_element_begin),
+      assembly_element_end_(assembly_element_end),
       owned_ID_begin_(owned_ID_begin), owned_ID_end_(owned_ID_end), comm_(comm)
 {
     // Validate the global topology and the nonoverlapping local work interval.
@@ -101,6 +105,9 @@ IEN::IEN(const std::size_t num_elements, const int num_local_basis,
     if (local_element_begin_ > local_element_end_ ||
         local_element_end_ > num_elements_)
         throw std::invalid_argument("Invalid local IEN element interval");
+    if (assembly_element_begin_ > assembly_element_end_ ||
+        assembly_element_end_ > num_elements_)
+        throw std::invalid_argument("Invalid assembly IEN element interval");
     if ((owned_ID_begin_ < 0) != (owned_ID_end_ < 0) ||
         (owned_ID_begin_ >= 0 && owned_ID_begin_ > owned_ID_end_))
         throw std::invalid_argument("Invalid local IEN ownership interval");
@@ -111,7 +118,8 @@ IEN::IEN(const std::size_t num_elements, const int num_local_basis,
 template <int Dim>
 BSplineIEN<Dim>::BSplineIEN(const BSplinePatch<Dim> &patch)
     : IEN(patch.num_elements(), bspline_num_local_basis(patch),
-          0, patch.num_elements(), -1, -1, MPI_COMM_SELF),
+          0, patch.num_elements(), 0, patch.num_elements(),
+          -1, -1, MPI_COMM_SELF),
       degrees_(patch_degrees(patch)), active_spans_(copy_active_spans(patch)),
       basis_ordering_(patch.basis_shape()),
       element_ordering_(high_element_shape(patch)),
@@ -124,6 +132,8 @@ BSplineIEN<Dim>::BSplineIEN(const BSplinePatch<Dim> &patch,
     const TensorSlabPartition<Dim> &partition)
     : IEN(patch.num_elements(), bspline_num_local_basis(patch),
           partition.high_element_begin(), partition.high_element_end(),
+          partition.high_assembly_element_begin(),
+          partition.high_assembly_element_end(),
           partition.owned_ID_begin(), partition.owned_ID_end(),
           partition.communicator()),
       degrees_(patch_degrees(patch)), active_spans_(copy_active_spans(patch)),
@@ -166,8 +176,8 @@ int BSplineIEN<Dim>::get_IEN(
 
 template <int Dim>
 LORIEN<Dim>::LORIEN(const LORMesh<Dim> &mesh)
-    : IEN(mesh.num_cells(), 1 << Dim, 0, mesh.num_cells(), -1, -1,
-          MPI_COMM_SELF),
+    : IEN(mesh.num_cells(), 1 << Dim, 0, mesh.num_cells(),
+          0, mesh.num_cells(), -1, -1, MPI_COMM_SELF),
       node_ordering_(mesh.node_shape()),
       cell_ordering_(lor_cell_shape(mesh)),
       corner_ordering_(q1_corner_shape<Dim>())
@@ -179,6 +189,8 @@ LORIEN<Dim>::LORIEN(const LORMesh<Dim> &mesh,
     const TensorSlabPartition<Dim> &partition)
     : IEN(mesh.num_cells(), 1 << Dim,
           partition.lor_cell_begin(), partition.lor_cell_end(),
+          partition.lor_assembly_cell_begin(),
+          partition.lor_assembly_cell_end(),
           partition.owned_ID_begin(), partition.owned_ID_end(),
           partition.communicator()),
       node_ordering_(mesh.node_shape()),

@@ -64,6 +64,22 @@ struct ExperimentResults
     bool computed_l2_error = false;
     bool computed_condition_number = false;
 
+    // Global PETSc storage diagnostics for the assembled high-order and LOR
+    // stiffness matrices. These are always available because both matrices
+    // are required by every experiment configuration.
+    PetscInt predicted_nonzeros_K = 0;
+    PetscLogDouble allocated_nonzeros_K = 0.0;
+    PetscLogDouble used_nonzeros_K = 0.0;
+    PetscLogDouble allocation_calls_K = 0.0;
+    PetscLogDouble memory_bytes_K = 0.0;
+    PetscLogDouble estimated_minimum_bytes_K = 0.0;
+    PetscInt predicted_nonzeros_lor = 0;
+    PetscLogDouble allocated_nonzeros_lor = 0.0;
+    PetscLogDouble used_nonzeros_lor = 0.0;
+    PetscLogDouble allocation_calls_lor = 0.0;
+    PetscLogDouble memory_bytes_lor = 0.0;
+    PetscLogDouble estimated_minimum_bytes_lor = 0.0;
+
     // Unpreconditioned high-order stiffness diagnostics, including physical
     // absolute and right-hand-side-scaled residual norms.
     PetscReal condition_K = 0.0;

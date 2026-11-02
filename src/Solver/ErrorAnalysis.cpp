@@ -39,6 +39,7 @@ PetscErrorCode compute_l2_error(const BSplinePatch<Dim> &patch,
     // basis functions carry ID=-1 and do not enlarge this halo.
     PetscInt halo_begin = std::numeric_limits<PetscInt>::max();
     PetscInt halo_end = 0;
+    BSplineElement<Dim> element;
     for (std::size_t element_index = IEN_map.local_element_begin();
          element_index < IEN_map.local_element_end(); ++element_index)
         for (int local = 0; local < IEN_map.num_local_basis(); ++local)
@@ -99,7 +100,7 @@ PetscErrorCode compute_l2_error(const BSplinePatch<Dim> &patch,
                 PetscRealPart(reduced_solution[ID_value - halo_begin]);
         }
 
-        const BSplineElement<Dim> element(patch, element_index,
+        element.reinitialize(patch, element_index,
             control_points, quad, basis_tables);
         for (int q = 0; q < element.num_quad_pts(); ++q)
         {

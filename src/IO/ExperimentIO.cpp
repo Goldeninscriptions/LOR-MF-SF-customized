@@ -208,6 +208,26 @@ void write_experiment_results(const std::string &filename,
            << "compute_condition_number = "
            << results.computed_condition_number << '\n'
            << std::scientific << std::setprecision(16);
+
+    // Record predicted tensor structure and PETSc's post-assembly storage so
+    // remote batches can detect reallocations and memory regressions.
+    output << "predicted_nnz(K) = " << results.predicted_nonzeros_K << '\n'
+           << "used_nnz(K) = " << results.used_nonzeros_K << '\n'
+           << "allocated_nnz(K) = " << results.allocated_nonzeros_K << '\n'
+           << "allocation_calls(K) = " << results.allocation_calls_K << '\n'
+           << "memory_bytes(K) = " << results.memory_bytes_K << '\n'
+           << "estimated_minimum_bytes(K) = "
+           << results.estimated_minimum_bytes_K << '\n'
+           << "predicted_nnz(K_LOR) = "
+           << results.predicted_nonzeros_lor << '\n'
+           << "used_nnz(K_LOR) = " << results.used_nonzeros_lor << '\n'
+           << "allocated_nnz(K_LOR) = "
+           << results.allocated_nonzeros_lor << '\n'
+           << "allocation_calls(K_LOR) = "
+           << results.allocation_calls_lor << '\n'
+           << "memory_bytes(K_LOR) = " << results.memory_bytes_lor << '\n';
+    output << "estimated_minimum_bytes(K_LOR) = "
+           << results.estimated_minimum_bytes_lor << '\n';
     if (results.computed_condition_number)
         output << "cond_2(K) = " << results.condition_K << '\n'
                << "cond_2(K_LOR^{-1}K) = "

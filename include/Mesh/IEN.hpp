@@ -50,6 +50,17 @@ public:
         return local_element_end_;
     }
 
+    // Halo-extended assembly interval. This equals the local interval in
+    // serial; distributed Assembly uses it while inserting only owned rows.
+    std::size_t assembly_element_begin() const noexcept
+    {
+        return assembly_element_begin_;
+    }
+    std::size_t assembly_element_end() const noexcept
+    {
+        return assembly_element_end_;
+    }
+
     // Local contiguous ID ownership and borrowed communicator used by PETSc.
     // Negative endpoints are reserved for legacy serial construction.
     int owned_ID_begin() const noexcept { return owned_ID_begin_; }
@@ -64,6 +75,8 @@ public:
 protected:
     IEN(std::size_t num_elements, int num_local_basis,
         std::size_t local_element_begin, std::size_t local_element_end,
+        std::size_t assembly_element_begin,
+        std::size_t assembly_element_end,
         int owned_ID_begin, int owned_ID_end, MPI_Comm comm);
 
 private:
@@ -71,6 +84,8 @@ private:
     int num_local_basis_ = 0;
     std::size_t local_element_begin_ = 0;
     std::size_t local_element_end_ = 0;
+    std::size_t assembly_element_begin_ = 0;
+    std::size_t assembly_element_end_ = 0;
     int owned_ID_begin_ = -1;
     int owned_ID_end_ = -1;
     MPI_Comm comm_ = MPI_COMM_SELF;

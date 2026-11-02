@@ -45,12 +45,17 @@ void update_geometry_statistics(const double det_jac, Result &result)
 // interface shared by high-order IGA and low-order Q1 elements.
 template <int Dim, class Element>
 void assemble_precomputed_stiffness(const Element &element,
-    LocalMatrixAssemblyResult &result)
+    LocalMatrixAssemblyResult &result,
+    const LocalRowMask *active_rows = nullptr)
 {
     // Allocate only the requested local matrix; no mass or load storage is
     // touched by this call.
     initialize_matrix_result(element, result);
     const int num_basis = element.num_local_basis();
+    if (active_rows != nullptr &&
+        active_rows->size() != static_cast<std::size_t>(num_basis))
+        throw std::invalid_argument(
+            "Local stiffness row mask has the wrong size");
 
     // Accumulate one triangle of Kloc and mirror it into the complete
     // row-major array expected by PETSc scatter operations.
@@ -58,20 +63,40 @@ void assemble_precomputed_stiffness(const Element &element,
     {
         const double det_jac = element.det_Jac(q);
         const double measure = element.quad_weight(q) * det_jac;
-        const auto &grads = element.N_der1(q);
         update_geometry_statistics(det_jac, result);
-        for (int row = 0; row < num_basis; ++row)
-            for (int column = row; column < num_basis; ++column)
+        if (active_rows != nullptr)
+            for (int row = 0; row < num_basis; ++row)
             {
-                double grad_dot = 0.0;
-                for (int direction = 0; direction < Dim; ++direction)
-                    grad_dot += grads[row][direction] *
-                        grads[column][direction];
-                const double value = grad_dot * measure;
-                result.entries[row * num_basis + column] += value;
-                if (column != row)
-                    result.entries[column * num_basis + row] += value;
+                if ((*active_rows)[row] == 0)
+                    continue;
+                const auto &row_gradient = element.N_der1(q, row);
+                for (int column = 0; column < num_basis; ++column)
+                {
+                    const auto &column_gradient =
+                        element.N_der1(q, column);
+                    double grad_dot = 0.0;
+                    for (int direction = 0; direction < Dim; ++direction)
+                        grad_dot += row_gradient[direction] *
+                            column_gradient[direction];
+                    result.entries[row * num_basis + column] +=
+                        grad_dot * measure;
+                }
             }
+        else
+            for (int row = 0; row < num_basis; ++row)
+                for (int column = row; column < num_basis; ++column)
+                {
+                    const auto &row_gradient = element.N_der1(q, row);
+                    const auto &column_gradient = element.N_der1(q, column);
+                    double grad_dot = 0.0;
+                    for (int direction = 0; direction < Dim; ++direction)
+                        grad_dot += row_gradient[direction] *
+                            column_gradient[direction];
+                    const double value = grad_dot * measure;
+                    result.entries[row * num_basis + column] += value;
+                    if (column != row)
+                        result.entries[column * num_basis + row] += value;
+                }
     }
 }
 
@@ -91,13 +116,12 @@ void assemble_precomputed_mass(const Element &element,
     {
         const double det_jac = element.det_Jac(q);
         const double measure = element.quad_weight(q) * det_jac;
-        const auto &basis_values = element.N(q);
         update_geometry_statistics(det_jac, result);
         for (int row = 0; row < num_basis; ++row)
             for (int column = row; column < num_basis; ++column)
             {
-                const double value = basis_values[row] *
-                    basis_values[column] * measure;
+                const double value = element.N(q, row) *
+                    element.N(q, column) * measure;
                 result.entries[row * num_basis + column] += value;
                 if (column != row)
                     result.entries[column * num_basis + row] += value;
@@ -108,7 +132,8 @@ void assemble_precomputed_mass(const Element &element,
 // Integrate the source functional independently of both local matrices.
 template <int Dim, class Element>
 void assemble_precomputed_load(const Element &element,
-    const ScalarSource<Dim> &source, LocalVectorAssemblyResult &result)
+    const ScalarSource<Dim> &source, LocalVectorAssemblyResult &result,
+    const LocalRowMask *active_rows = nullptr)
 {
     // Reject an empty source before allocating or entering quadrature.
     if (!source)
@@ -116,6 +141,9 @@ void assemble_precomputed_load(const Element &element,
             "Local load assembly requires a scalar source function");
     initialize_vector_result(element, result);
     const int num_basis = element.num_local_basis();
+    if (active_rows != nullptr &&
+        active_rows->size() != static_cast<std::size_t>(num_basis))
+        throw std::invalid_argument("Local load row mask has the wrong size");
 
     // Evaluate f once per quadrature point and accumulate Floc in local basis
     // order without constructing either dense local matrix.
@@ -123,12 +151,12 @@ void assemble_precomputed_load(const Element &element,
     {
         const double det_jac = element.det_Jac(q);
         const double measure = element.quad_weight(q) * det_jac;
-        const auto &basis_values = element.N(q);
         const double source_value = source(element.phy_coor(q));
         update_geometry_statistics(det_jac, result);
         for (int row = 0; row < num_basis; ++row)
-            result.entries[row] +=
-                basis_values[row] * source_value * measure;
+            if (active_rows == nullptr || (*active_rows)[row] != 0)
+                result.entries[row] +=
+                    element.N(q, row) * source_value * measure;
     }
 }
 
@@ -139,7 +167,8 @@ template <int Dim, bool DoStiffness, bool DoMass, class Element>
 void assemble_precomputed_with_load(const Element &element,
     const ScalarSource<Dim> &source,
     LocalMatrixAssemblyResult *stiffness,
-    LocalMatrixAssemblyResult *mass, LocalVectorAssemblyResult &load)
+    LocalMatrixAssemblyResult *mass, LocalVectorAssemblyResult &load,
+    const LocalRowMask *active_rows = nullptr)
 {
     // A fused load path always needs a valid source and load storage; matrix
     // pointers are required only when their compile-time switch is enabled.
@@ -168,6 +197,9 @@ void assemble_precomputed_with_load(const Element &element,
     }
     initialize_vector_result(element, load);
     const int num_basis = element.num_local_basis();
+    if (active_rows != nullptr &&
+        active_rows->size() != static_cast<std::size_t>(num_basis))
+        throw std::invalid_argument("Local fused row mask has the wrong size");
 
     // Reuse determinant, physical measure, basis values, and source value for
     // every requested term at the current quadrature point.
@@ -175,7 +207,6 @@ void assemble_precomputed_with_load(const Element &element,
     {
         const double det_jac = element.det_Jac(q);
         const double measure = element.quad_weight(q) * det_jac;
-        const auto &basis_values = element.N(q);
         const double source_value = source(element.phy_coor(q));
         update_geometry_statistics(det_jac, load);
         if constexpr (DoStiffness)
@@ -185,37 +216,64 @@ void assemble_precomputed_with_load(const Element &element,
 
         // Accumulate the load while the source and basis values are hot.
         for (int row = 0; row < num_basis; ++row)
-            load.entries[row] +=
-                basis_values[row] * source_value * measure;
+            if (active_rows == nullptr || (*active_rows)[row] != 0)
+                load.entries[row] +=
+                    element.N(q, row) * source_value * measure;
 
         // Accumulate one triangle of each requested symmetric matrix and
         // mirror its off-diagonal contribution into row-major storage.
         if constexpr (DoStiffness)
         {
-            const auto &grads = element.N_der1(q);
-            for (int row = 0; row < num_basis; ++row)
-                for (int column = row; column < num_basis; ++column)
+            if (active_rows != nullptr)
+                for (int row = 0; row < num_basis; ++row)
                 {
-                    double grad_dot = 0.0;
-                    for (int direction = 0; direction < Dim; ++direction)
-                        grad_dot += grads[row][direction] *
-                            grads[column][direction];
-                    const double stiffness_value = grad_dot * measure;
-                    stiffness->entries[row * num_basis + column] +=
-                        stiffness_value;
-                    if (column != row)
-                        stiffness->entries[column * num_basis + row] +=
-                            stiffness_value;
-                    if constexpr (DoMass)
+                    if ((*active_rows)[row] == 0)
+                        continue;
+                    const auto &row_gradient = element.N_der1(q, row);
+                    for (int column = 0; column < num_basis; ++column)
                     {
-                        const double mass_value = basis_values[row] *
-                            basis_values[column] * measure;
-                        mass->entries[row * num_basis + column] += mass_value;
-                        if (column != row)
-                            mass->entries[column * num_basis + row] +=
-                                mass_value;
+                        const auto &column_gradient =
+                            element.N_der1(q, column);
+                        double grad_dot = 0.0;
+                        for (int direction = 0; direction < Dim; ++direction)
+                            grad_dot += row_gradient[direction] *
+                                column_gradient[direction];
+                        stiffness->entries[row * num_basis + column] +=
+                            grad_dot * measure;
+                        if constexpr (DoMass)
+                            mass->entries[row * num_basis + column] +=
+                                element.N(q, row) * element.N(q, column) *
+                                measure;
                     }
                 }
+            else
+                for (int row = 0; row < num_basis; ++row)
+                    for (int column = row; column < num_basis; ++column)
+                    {
+                        const auto &row_gradient = element.N_der1(q, row);
+                        const auto &column_gradient =
+                            element.N_der1(q, column);
+                        double grad_dot = 0.0;
+                        for (int direction = 0; direction < Dim; ++direction)
+                            grad_dot += row_gradient[direction] *
+                                column_gradient[direction];
+                        const double stiffness_value = grad_dot * measure;
+                        stiffness->entries[row * num_basis + column] +=
+                            stiffness_value;
+                        if (column != row)
+                            stiffness->entries[column * num_basis + row] +=
+                                stiffness_value;
+                        if constexpr (DoMass)
+                        {
+                            const double mass_value = element.N(q, row) *
+                                element.N(q, column) * measure;
+                            mass->entries[row * num_basis + column] +=
+                                mass_value;
+                            if (column != row)
+                                mass->entries[column * num_basis + row] +=
+                                    mass_value;
+                        }
+                    }
         }
         else if constexpr (DoMass)
         {
@@ -223,8 +281,8 @@ void assemble_precomputed_with_load(const Element &element,
             for (int row = 0; row < num_basis; ++row)
                 for (int column = row; column < num_basis; ++column)
                 {
-                    const double mass_value = basis_values[row] *
-                        basis_values[column] * measure;
+                    const double mass_value = element.N(q, row) *
+                        element.N(q, column) * measure;
                     mass->entries[row * num_basis + column] += mass_value;
                     if (column != row)
                         mass->entries[column * num_basis + row] += mass_value;
@@ -241,6 +299,14 @@ void assemble_local_stiffness(const IGAElement<Dim> &element,
 {
     // Dispatch the IGA interface to the stiffness-only integration kernel.
     assemble_precomputed_stiffness<Dim>(element, result);
+}
+
+template <int Dim>
+void assemble_local_stiffness_rows(const IGAElement<Dim> &element,
+    const LocalRowMask &active_rows, LocalMatrixAssemblyResult &result)
+{
+    // Integrate complete trial columns only for the selected IGA test rows.
+    assemble_precomputed_stiffness<Dim>(element, result, &active_rows);
 }
 
 void assemble_local_stiffness(const FEMQuad4 &element,
@@ -287,6 +353,15 @@ void assemble_local_load(const IGAElement<Dim> &element,
     assemble_precomputed_load<Dim>(element, source, result);
 }
 
+template <int Dim>
+void assemble_local_load_rows(const IGAElement<Dim> &element,
+    const ScalarSource<Dim> &source, const LocalRowMask &active_rows,
+    LocalVectorAssemblyResult &result)
+{
+    // Integrate source entries only for selected IGA test rows.
+    assemble_precomputed_load<Dim>(element, source, result, &active_rows);
+}
+
 void assemble_local_load(const FEMQuad4 &element,
     const ScalarSource<2> &source, LocalVectorAssemblyResult &result)
 {
@@ -310,6 +385,18 @@ void assemble_local_stiffness_load(const IGAElement<Dim> &element,
     // Fuse IGA stiffness and load integration over the same Gauss points.
     assemble_precomputed_with_load<Dim, true, false>(
         element, source, &stiffness, nullptr, load);
+}
+
+template <int Dim>
+void assemble_local_stiffness_load_rows(
+    const IGAElement<Dim> &element, const ScalarSource<Dim> &source,
+    const LocalRowMask &active_rows,
+    LocalMatrixAssemblyResult &stiffness,
+    LocalVectorAssemblyResult &load)
+{
+    // Fuse source and complete trial columns for selected IGA test rows.
+    assemble_precomputed_with_load<Dim, true, false>(
+        element, source, &stiffness, nullptr, load, &active_rows);
 }
 
 void assemble_local_stiffness_load(const FEMQuad4 &element,
@@ -393,6 +480,12 @@ template void assemble_local_stiffness<2>(
     const IGAElement<2> &, LocalMatrixAssemblyResult &);
 template void assemble_local_stiffness<3>(
     const IGAElement<3> &, LocalMatrixAssemblyResult &);
+template void assemble_local_stiffness_rows<2>(
+    const IGAElement<2> &, const LocalRowMask &,
+    LocalMatrixAssemblyResult &);
+template void assemble_local_stiffness_rows<3>(
+    const IGAElement<3> &, const LocalRowMask &,
+    LocalMatrixAssemblyResult &);
 template void assemble_local_mass<2>(
     const IGAElement<2> &, LocalMatrixAssemblyResult &);
 template void assemble_local_mass<3>(
@@ -403,12 +496,26 @@ template void assemble_local_load<2>(
 template void assemble_local_load<3>(
     const IGAElement<3> &, const ScalarSource<3> &,
     LocalVectorAssemblyResult &);
+template void assemble_local_load_rows<2>(
+    const IGAElement<2> &, const ScalarSource<2> &,
+    const LocalRowMask &, LocalVectorAssemblyResult &);
+template void assemble_local_load_rows<3>(
+    const IGAElement<3> &, const ScalarSource<3> &,
+    const LocalRowMask &, LocalVectorAssemblyResult &);
 template void assemble_local_stiffness_load<2>(
     const IGAElement<2> &, const ScalarSource<2> &,
     LocalMatrixAssemblyResult &, LocalVectorAssemblyResult &);
 template void assemble_local_stiffness_load<3>(
     const IGAElement<3> &, const ScalarSource<3> &,
     LocalMatrixAssemblyResult &, LocalVectorAssemblyResult &);
+template void assemble_local_stiffness_load_rows<2>(
+    const IGAElement<2> &, const ScalarSource<2> &,
+    const LocalRowMask &, LocalMatrixAssemblyResult &,
+    LocalVectorAssemblyResult &);
+template void assemble_local_stiffness_load_rows<3>(
+    const IGAElement<3> &, const ScalarSource<3> &,
+    const LocalRowMask &, LocalMatrixAssemblyResult &,
+    LocalVectorAssemblyResult &);
 template void assemble_local_mass_load<2>(
     const IGAElement<2> &, const ScalarSource<2> &,
     LocalMatrixAssemblyResult &, LocalVectorAssemblyResult &);

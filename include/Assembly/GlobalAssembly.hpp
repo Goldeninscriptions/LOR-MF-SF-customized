@@ -38,6 +38,20 @@ struct GlobalMatrixAssemblyResult
 
     // Geometry diagnostics from this matrix's element traversal.
     AssemblyStatistics statistics;
+
+    // Structural entries predicted from tensor support before allocation.
+    PetscInt predicted_nonzeros = 0;
+
+    // PETSc storage diagnostics queried after final assembly. Counts are
+    // global sums; memory_bytes is PETSc's reported matrix storage estimate.
+    PetscLogDouble allocated_nonzeros = 0.0;
+    PetscLogDouble used_nonzeros = 0.0;
+    PetscLogDouble allocation_calls = 0.0;
+    PetscLogDouble memory_bytes = 0.0;
+
+    // Portable lower-bound estimate for values, column indices, and the two
+    // MPIAIJ row-pointer arrays; PETSc allocator/object overhead is excluded.
+    PetscLogDouble estimated_minimum_bytes = 0.0;
 };
 
 // One independently assembled reduced PETSc vector. The caller owns vector

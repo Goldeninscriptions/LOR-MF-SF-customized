@@ -99,6 +99,10 @@ mpi_ranks
 compute_solution
 compute_l2_error
 compute_condition_number
+predicted_nnz(K), used_nnz(K), allocated_nnz(K), allocation_calls(K)
+estimated_minimum_bytes(K), memory_bytes(K)
+predicted_nnz(K_LOR), used_nnz(K_LOR), allocated_nnz(K_LOR)
+allocation_calls(K_LOR), estimated_minimum_bytes(K_LOR), memory_bytes(K_LOR)
 [cond_2(K), cond_2(K_LOR^{-1}K)]
 [iterations(K), iterations(K_LOR^{-1}K)]
 [residual(K), relative_residual(K)]
@@ -106,7 +110,9 @@ compute_condition_number
 [L2_error(K), L2_error(K_LOR^{-1}K)]
 ```
 
-方括号字段只在对应开关启用时出现。条件数来自独立 SLEPc SVD，不由 CG/GMRES
+矩阵存储字段始终输出；`estimated_minimum_bytes` 是 values、column indices 和 MPIAIJ
+row pointers 的可移植下界，`memory_bytes` 是当前 PETSc 实现的报告值，某些版本可能
+返回 0。方括号字段只在对应开关启用时出现。条件数来自独立 SLEPc SVD，不由 CG/GMRES
 迭代投影估计。两个 L2 error 都针对同一
 高阶系统 `K u=F`；LOR 系统只作为预条件器，不作为另一个 PDE 解进行误差比较。
 质量矩阵接口仍由 Assembly 提供，但该 Laplace Driver 不请求它，因此运行时不会

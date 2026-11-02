@@ -2,6 +2,7 @@
 
 #include "Assembly/LexicographicOrdering.hpp"
 
+#include <algorithm>
 #include <array>
 #include <stdexcept>
 
@@ -75,6 +76,16 @@ BSplineElement<Dim>::BSplineElement(const BSplinePatch<Dim> &patch,
     const QuadratureRule1D &quad,
     const std::vector<BSplineBasis1D> &basis_tables)
 {
+    reinitialize(patch, element, control_points, quad, basis_tables);
+}
+
+template <int Dim>
+void BSplineElement<Dim>::reinitialize(const BSplinePatch<Dim> &patch,
+    const std::size_t element,
+    const std::vector<typename BSplinePatch<Dim>::Point> &control_points,
+    const QuadratureRule1D &quad,
+    const std::vector<BSplineBasis1D> &basis_tables)
+{
     // Validate the element, one-dimensional rule, and directional tables
     // before allocating any tensor-product data.
     if (element >= patch.num_elements())
@@ -119,6 +130,11 @@ void BSplineElement<Dim>::build_quad_data(
     quad_shape.fill(num_quad_1d);
     const int num_quad_pts = product<Dim>(quad_shape);
     this->quad_data_.resize(num_quad_pts);
+    const std::size_t table_size = static_cast<std::size_t>(
+        num_quad_pts) * num_local_basis;
+    this->basis_values_.assign(table_size, 0.0);
+    this->phy_grads_.assign(table_size, typename IGAElement<Dim>::Point{});
+    this->para_gradient_workspace_.resize(num_local_basis);
     const LexicographicOrdering<Dim> local_ordering(local_shape);
     const LexicographicOrdering<Dim> quad_ordering(quad_shape);
 
@@ -151,11 +167,12 @@ void BSplineElement<Dim>::build_quad_data(
          quad_global_index < num_quad_pts; ++quad_global_index)
     {
         QuadData &data = this->quad_data_[quad_global_index];
+        data = QuadData{};
         data.quad_multi_index =
             quad_ordering.multi_index(quad_global_index);
-        data.basis_values.assign(num_local_basis, 0.0);
-        data.para_grads.resize(num_local_basis);
-        data.phy_grads.resize(num_local_basis);
+        std::fill(this->para_gradient_workspace_.begin(),
+            this->para_gradient_workspace_.end(),
+            typename IGAElement<Dim>::Point{});
         double tensor_quad_weight = 1.0;
 
         // Map reference Gauss coordinates to this knot-span element and
@@ -189,7 +206,10 @@ void BSplineElement<Dim>::build_quad_data(
             for (int direction = 0; direction < Dim; ++direction)
                 value *= basis_tables[direction].N_Gauss()[
                     offsets[direction]];
-            data.basis_values[local] = value;
+            const std::size_t table_index =
+                static_cast<std::size_t>(quad_global_index) *
+                    num_local_basis + local;
+            this->basis_values_[table_index] = value;
 
             // Differentiate one tensor factor at a time to obtain each
             // component of the parameter-space gradient.
@@ -203,7 +223,7 @@ void BSplineElement<Dim>::build_quad_data(
                               offsets[direction]]
                         : basis_tables[direction].N_Gauss()[
                               offsets[direction]];
-                data.para_grads[local][derivative_direction] =
+                this->para_gradient_workspace_[local][derivative_direction] =
                     derivative;
             }
         }
@@ -217,10 +237,13 @@ void BSplineElement<Dim>::build_quad_data(
             for (int phy = 0; phy < Dim; ++phy)
             {
                 data.phy_coor[phy] +=
-                    data.basis_values[local] * control[phy];
+                    this->basis_values_[
+                        static_cast<std::size_t>(quad_global_index) *
+                            num_local_basis + local] * control[phy];
                 for (int para = 0; para < Dim; ++para)
                     data.jac[phy][para] +=
-                        control[phy] * data.para_grads[local][para];
+                        control[phy] *
+                            this->para_gradient_workspace_[local][para];
             }
         }
 
@@ -237,9 +260,11 @@ void BSplineElement<Dim>::build_quad_data(
         for (int local = 0; local < num_local_basis; ++local)
             for (int phy = 0; phy < Dim; ++phy)
                 for (int para = 0; para < Dim; ++para)
-                    data.phy_grads[local][phy] +=
+                    this->phy_grads_[
+                        static_cast<std::size_t>(quad_global_index) *
+                            num_local_basis + local][phy] +=
                         data.inv_jac[para][phy] *
-                        data.para_grads[local][para];
+                        this->para_gradient_workspace_[local][para];
     }
 }
 

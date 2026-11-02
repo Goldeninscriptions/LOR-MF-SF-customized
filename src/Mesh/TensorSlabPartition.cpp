@@ -4,6 +4,7 @@
 #include "Mesh/ID.hpp"
 #include "Mesh/LORMesh.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 
@@ -105,27 +106,62 @@ TensorSlabPartition<Dim>::TensorSlabPartition(
     owned_ID_end_ = checked_ID_count(
         owned_layer_end * free_dofs_per_layer);
 
-    // Partition high-order element layers independently and convert the layer
-    // interval into one contiguous flat element interval.
-    const std::size_t high_layer_begin = balanced_start(
+    // Retain a nonoverlapping element partition for error integration and
+    // diagnostics that must visit every physical element exactly once.
+    const std::size_t unique_high_layer_begin = balanced_start(
         high_element_shape_[slowest], rank_, size_);
-    const std::size_t high_layer_end = balanced_start(
+    const std::size_t unique_high_layer_end = balanced_start(
         high_element_shape_[slowest], rank_ + 1, size_);
     const std::size_t high_per_layer =
         objects_per_slowest_layer<Dim>(high_element_shape_);
-    high_element_begin_ = high_layer_begin * high_per_layer;
-    high_element_end_ = high_layer_end * high_per_layer;
+    high_element_begin_ = unique_high_layer_begin * high_per_layer;
+    high_element_end_ = unique_high_layer_end * high_per_layer;
 
-    // Partition the larger coefficient-aligned LOR cell grid with the same
-    // ranks but its own slow-direction count, preserving complete coverage.
-    const std::size_t lor_layer_begin = balanced_start(
+    // Extend owned free-basis layers to precisely the high-order element halo
+    // whose slow-direction basis support intersects at least one owned row.
+    std::size_t high_layer_begin = 0;
+    std::size_t high_layer_end = 0;
+    if (owned_layer_begin < owned_layer_end)
+    {
+        const int owned_basis_begin = static_cast<int>(owned_layer_begin) + 1;
+        const int owned_basis_end = static_cast<int>(owned_layer_end) + 1;
+        const int degree = patch.degree(slowest);
+        const auto &active_spans = patch.active_spans(slowest);
+        high_layer_begin = static_cast<std::size_t>(std::lower_bound(
+            active_spans.begin(), active_spans.end(), owned_basis_begin) -
+            active_spans.begin());
+        high_layer_end = high_layer_begin;
+        while (high_layer_end < active_spans.size() &&
+               active_spans[high_layer_end] - degree < owned_basis_end)
+            ++high_layer_end;
+    }
+    high_assembly_element_begin_ = high_layer_begin * high_per_layer;
+    high_assembly_element_end_ = high_layer_end * high_per_layer;
+
+    // Retain an independent nonoverlapping LOR cell partition.
+    const std::size_t unique_lor_layer_begin = balanced_start(
         lor_cell_shape_[slowest], rank_, size_);
-    const std::size_t lor_layer_end = balanced_start(
+    const std::size_t unique_lor_layer_end = balanced_start(
         lor_cell_shape_[slowest], rank_ + 1, size_);
     const std::size_t lor_per_layer =
         objects_per_slowest_layer<Dim>(lor_cell_shape_);
-    lor_cell_begin_ = lor_layer_begin * lor_per_layer;
-    lor_cell_end_ = lor_layer_end * lor_per_layer;
+    lor_cell_begin_ = unique_lor_layer_begin * lor_per_layer;
+    lor_cell_end_ = unique_lor_layer_end * lor_per_layer;
+
+    // Add one Q1 cell halo on either side of the owned free-node layers. These
+    // are exactly the cells contributing to at least one locally owned row.
+    std::size_t lor_layer_begin = 0;
+    std::size_t lor_layer_end = 0;
+    if (owned_layer_begin < owned_layer_end)
+    {
+        const std::size_t owned_basis_begin = owned_layer_begin + 1;
+        const std::size_t owned_basis_end = owned_layer_end + 1;
+        lor_layer_begin = owned_basis_begin > 0 ? owned_basis_begin - 1 : 0;
+        lor_layer_end = std::min<std::size_t>(
+            lor_cell_shape_[slowest], owned_basis_end);
+    }
+    lor_assembly_cell_begin_ = lor_layer_begin * lor_per_layer;
+    lor_assembly_cell_end_ = lor_layer_end * lor_per_layer;
 }
 
 // Emit both paper dimensions from this source-owned template implementation.

@@ -187,11 +187,15 @@ PetscErrorCode run_assembled_laplace_experiment(
     // public-interface-DOF diagnostics.
     PetscCall(PetscSynchronizedPrintf(comm,
         "[rank %d/%d] ID=[%d,%d), high elements=[%zu,%zu), "
-        "LOR cells=[%zu,%zu)\n",
+        "high assembly halo=[%zu,%zu), LOR cells=[%zu,%zu), "
+        "LOR assembly halo=[%zu,%zu)\n",
         partition.rank(), partition.size(), partition.owned_ID_begin(),
         partition.owned_ID_end(), partition.high_element_begin(),
-        partition.high_element_end(), partition.lor_cell_begin(),
-        partition.lor_cell_end()));
+        partition.high_element_end(),
+        partition.high_assembly_element_begin(),
+        partition.high_assembly_element_end(), partition.lor_cell_begin(),
+        partition.lor_cell_end(), partition.lor_assembly_cell_begin(),
+        partition.lor_assembly_cell_end()));
     PetscCall(PetscSynchronizedFlush(comm, PETSC_STDOUT));
 
     // Always assemble the high-order stiffness. Fuse load into the traversal
@@ -269,6 +273,20 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.computed_solution = options.compute_solution;
     results.computed_l2_error = options.compute_l2_error;
     results.computed_condition_number = options.compute_condition_number;
+    results.predicted_nonzeros_K = high_stiffness.predicted_nonzeros;
+    results.allocated_nonzeros_K = high_stiffness.allocated_nonzeros;
+    results.used_nonzeros_K = high_stiffness.used_nonzeros;
+    results.allocation_calls_K = high_stiffness.allocation_calls;
+    results.memory_bytes_K = high_stiffness.memory_bytes;
+    results.estimated_minimum_bytes_K =
+        high_stiffness.estimated_minimum_bytes;
+    results.predicted_nonzeros_lor = lor_stiffness.predicted_nonzeros;
+    results.allocated_nonzeros_lor = lor_stiffness.allocated_nonzeros;
+    results.used_nonzeros_lor = lor_stiffness.used_nonzeros;
+    results.allocation_calls_lor = lor_stiffness.allocation_calls;
+    results.memory_bytes_lor = lor_stiffness.memory_bytes;
+    results.estimated_minimum_bytes_lor =
+        lor_stiffness.estimated_minimum_bytes;
     if (options.compute_condition_number)
     {
         results.condition_K = original_condition.condition_number;
@@ -320,6 +338,21 @@ PetscErrorCode run_assembled_laplace_experiment(
             options.compute_solution ? "true" : "false",
             options.compute_l2_error ? "true" : "false",
             options.compute_condition_number ? "true" : "false"));
+        PetscCall(PetscPrintf(comm,
+            "  K storage: predicted_nnz=%" PetscInt_FMT
+            ", used_nnz=%.0f, allocated_nnz=%.0f, mallocs=%.0f, "
+            "minimum=%.3f MiB, PETSc_reported=%.3f MiB\n"
+            "  K_LOR storage: predicted_nnz=%" PetscInt_FMT
+            ", used_nnz=%.0f, allocated_nnz=%.0f, mallocs=%.0f, "
+            "minimum=%.3f MiB, PETSc_reported=%.3f MiB\n",
+            results.predicted_nonzeros_K, results.used_nonzeros_K,
+            results.allocated_nonzeros_K, results.allocation_calls_K,
+            results.estimated_minimum_bytes_K / (1024.0 * 1024.0),
+            results.memory_bytes_K / (1024.0 * 1024.0),
+            results.predicted_nonzeros_lor, results.used_nonzeros_lor,
+            results.allocated_nonzeros_lor, results.allocation_calls_lor,
+            results.estimated_minimum_bytes_lor / (1024.0 * 1024.0),
+            results.memory_bytes_lor / (1024.0 * 1024.0)));
         if (options.compute_condition_number)
             PetscCall(PetscPrintf(comm,
                 "  cond_2(K) = %.12e\n"

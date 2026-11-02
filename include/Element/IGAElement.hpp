@@ -41,44 +41,17 @@ public:
         return quad_data_.at(q).quad_multi_index;
     }
 
-    // Return all local basis values at Gauss point q without copying.
-    const std::vector<double> &N(const std::size_t q) const
-    {
-        return quad_data_.at(q).basis_values;
-    }
-
     // Return one local basis value N_local at Gauss point q.
     double N(const std::size_t q, const std::size_t local) const
     {
-        return N(q).at(local);
-    }
-
-    // Return all first derivatives with respect to physical coordinates x at
-    // Gauss point q. Entry local is the Dim-component gradient of N_local.
-    const std::vector<Point> &N_der1(const std::size_t q) const
-    {
-        return quad_data_.at(q).phy_grads;
+        return basis_values_[q * num_local_basis_ + local];
     }
 
     // Return the physical gradient of one local basis function.
     const Point &N_der1(
         const std::size_t q, const std::size_t local) const
     {
-        return N_der1(q).at(local);
-    }
-
-    // Return first derivatives with respect to spline parameters xi. This is
-    // distinct from N_der1(), which returns physical-coordinate derivatives.
-    const std::vector<Point> &N_der1_para(const std::size_t q) const
-    {
-        return quad_data_.at(q).para_grads;
-    }
-
-    // Return the parametric gradient of one local basis function.
-    const Point &N_der1_para(
-        const std::size_t q, const std::size_t local) const
-    {
-        return N_der1_para(q).at(local);
+        return phy_grads_[q * num_local_basis_ + local];
     }
 
     // Return reference, spline-parameter, and physical coordinates of Gauss
@@ -134,10 +107,6 @@ protected:
         Point para_coor{};
         Point phy_coor{};
 
-        std::vector<double> basis_values;
-        std::vector<Point> para_grads;
-        std::vector<Point> phy_grads;
-
         Matrix jac{};
         Matrix inv_jac{};
         double det_jac = 0.0;
@@ -146,6 +115,18 @@ protected:
     };
 
     int num_local_basis_ = 0;
+
+    // Contiguous q-major tables. Entry q*num_local_basis_+a stores basis a at
+    // Gauss point q; vector capacity is retained across element rebuilds.
+    std::vector<double> basis_values_;
+    std::vector<Point> phy_grads_;
+
+    // One-q parameter-gradient workspace retained across element rebuilds.
+    // Parameter gradients are consumed while forming geometry and physical
+    // gradients, so storing them for every Gauss point is unnecessary.
+    std::vector<Point> para_gradient_workspace_;
+
+    // Per-Gauss geometry records are also retained and overwritten in place.
     std::vector<QuadData> quad_data_;
 };
 

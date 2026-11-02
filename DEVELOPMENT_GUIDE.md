@@ -112,6 +112,12 @@ geometry txt
 - `GlobalAssembly` 对高阶 IGA 和 LOR Q1 使用相同的
   gather -> element -> local assembly -> IEN/ID scatter 结构，并分别提供刚度、
   质量和荷载入口；
+- PETSc MPIAIJ 由张量支撑直接得到精确逐行 `d_nnz/o_nnz`；组装访问最小支撑 halo，
+  高阶 stiffness/load 在分区界面只积分 owned test rows（trial columns 保持完整），并且
+  只插入 owned rows，从而不产生 off-process row stash；每次运行记录预测/实际 nnz、
+  动态扩容次数和矩阵内存估计；
+- 每个 rank 复用一个连续 q-major `BSplineElement` 工作区；参数梯度只保留当前 Gauss
+  点，避免每个单元创建上千个嵌套 vector；
 - 非零 Dirichlet 制造解组装在局部 scatter 前执行
   `F_f -= K_fc g_c`，与 MixPERIGEE 的 `ID=-1` 加 base solution/lifting 思路等价；
 - 当前 `AssembledLaplaceExperiment` 始终请求高阶/LOR 刚度；只有

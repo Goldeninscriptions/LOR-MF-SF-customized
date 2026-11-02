@@ -1,5 +1,6 @@
 #include "Assembly/GlobalAssembly.hpp"
 
+#include "Assembly/LexicographicOrdering.hpp"
 #include "Element/BSplineElement.hpp"
 #include "Element/FEMHex8.hpp"
 #include "Element/FEMQ1Basis.hpp"
@@ -25,6 +26,15 @@ enum class MatrixQuantity
     mass
 };
 
+// Exact per-owned-row diagonal/off-diagonal capacities and their global sum.
+// The arrays are passed directly to PETSc AIJ preallocation.
+struct MatrixPreallocation
+{
+    std::vector<PetscInt> diagonal;
+    std::vector<PetscInt> off_diagonal;
+    PetscInt local_nonzeros = 0;
+};
+
 // Initialize determinant extrema for an independent matrix or vector
 // traversal before its first element contribution.
 void initialize_statistics(AssemblyStatistics &statistics)
@@ -33,23 +43,158 @@ void initialize_statistics(AssemblyStatistics &statistics)
     statistics.max_det_jac = 0.0;
 }
 
-// Create one reduced symmetric PETSc matrix with connectivity-based uniform
-// row preallocation.
+// Create one reduced symmetric PETSc matrix from exact row-wise tensor
+// connectivity, avoiding a provisional trial matrix and unused MPI slots.
 PetscErrorCode create_matrix(const MPI_Comm comm, const PetscInt local_size,
-    const PetscInt global_size, const PetscInt nonzeros_per_row,
+    const PetscInt global_size, const MatrixPreallocation &preallocation,
     GlobalMatrixAssemblyResult &result)
 {
     PetscFunctionBeginUser;
-    const PetscInt diagonal_nonzeros =
-        std::min(nonzeros_per_row, local_size);
-    const PetscInt off_diagonal_nonzeros = std::min(nonzeros_per_row,
-        std::max<PetscInt>(0, global_size - local_size));
+    PetscCheck(static_cast<PetscInt>(preallocation.diagonal.size()) ==
+        local_size, comm, PETSC_ERR_ARG_SIZ,
+        "Diagonal preallocation length must match local rows");
+    PetscCheck(static_cast<PetscInt>(preallocation.off_diagonal.size()) ==
+        local_size, comm, PETSC_ERR_ARG_SIZ,
+        "Off-diagonal preallocation length must match local rows");
+    const PetscInt *diagonal = preallocation.diagonal.empty() ? nullptr :
+        preallocation.diagonal.data();
+    const PetscInt *off_diagonal =
+        preallocation.off_diagonal.empty() ? nullptr :
+        preallocation.off_diagonal.data();
+    // Report the portable storage lower bound before PETSc attempts the
+    // allocation, so an external batch log survives a subsequent OOM kill.
+    PetscCallMPI(MPI_Allreduce(&preallocation.local_nonzeros,
+        &result.predicted_nonzeros, 1, MPIU_INT, MPI_SUM, comm));
+    int communicator_size = 1;
+    PetscCallMPI(MPI_Comm_size(comm, &communicator_size));
+    result.estimated_minimum_bytes =
+        static_cast<PetscLogDouble>(result.predicted_nonzeros) *
+            (sizeof(PetscScalar) + sizeof(PetscInt)) +
+        static_cast<PetscLogDouble>(
+            2 * (global_size + communicator_size)) * sizeof(PetscInt);
+    PetscCall(PetscPrintf(comm,
+        "[matrix allocation] rows=%" PetscInt_FMT
+        ", predicted_nnz=%" PetscInt_FMT
+        ", estimated_minimum=%.3f MiB\n",
+        global_size, result.predicted_nonzeros,
+        result.estimated_minimum_bytes / (1024.0 * 1024.0)));
+
+    // Allocate exactly the predicted row structure and turn any missed entry
+    // into an immediate correctness error rather than a hidden reallocation.
     PetscCall(MatCreateAIJ(comm, local_size, local_size,
-        global_size, global_size, diagonal_nonzeros, nullptr,
-        off_diagonal_nonzeros, nullptr, &result.matrix));
+        global_size, global_size, 0, diagonal,
+        0, off_diagonal, &result.matrix));
     PetscCall(MatSetOption(result.matrix, MAT_SYMMETRIC, PETSC_TRUE));
+    PetscCall(MatSetOption(
+        result.matrix, MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_TRUE));
     initialize_statistics(result.statistics);
     PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Determine whether two directional B-spline basis functions occur together
+// on at least one positive-measure active knot span.
+template <int Dim>
+bool share_active_span(const BSplinePatch<Dim> &patch, const int direction,
+    const int first_basis, const int second_basis)
+{
+    const int degree = patch.degree(direction);
+    const int lower_span = std::max(first_basis, second_basis);
+    const int upper_span = std::min(first_basis, second_basis) + degree;
+    const auto &spans = patch.active_spans(direction);
+    const auto candidate = std::lower_bound(
+        spans.begin(), spans.end(), lower_span);
+    return candidate != spans.end() && *candidate <= upper_span;
+}
+
+// Build exact one-dimensional adjacency lists after removing the two
+// all-Dirichlet boundary layers. Tensor products of these lists define the
+// structural rows of a high-order B-spline matrix.
+template <int Dim>
+std::array<std::vector<std::vector<int>>, Dim> high_order_adjacency(
+    const BSplinePatch<Dim> &patch)
+{
+    std::array<std::vector<std::vector<int>>, Dim> adjacency;
+    for (int direction = 0; direction < Dim; ++direction)
+    {
+        const int count = patch.num_basis(direction);
+        const int degree = patch.degree(direction);
+        adjacency[direction].resize(count);
+        for (int row = 1; row < count - 1; ++row)
+            for (int column = std::max(1, row - degree);
+                 column <= std::min(count - 2, row + degree); ++column)
+                if (share_active_span(
+                        patch, direction, row, column))
+                    adjacency[direction][row].push_back(column);
+    }
+    return adjacency;
+}
+
+// Build the exact three-point one-dimensional adjacency of the Q1 LOR grid
+// after removing all-boundary constrained nodes.
+template <int Dim>
+std::array<std::vector<std::vector<int>>, Dim> lor_adjacency(
+    const LORMesh<Dim> &mesh)
+{
+    const auto shape = mesh.node_shape();
+    std::array<std::vector<std::vector<int>>, Dim> adjacency;
+    for (int direction = 0; direction < Dim; ++direction)
+    {
+        adjacency[direction].resize(shape[direction]);
+        for (int row = 1; row < shape[direction] - 1; ++row)
+            for (int column = std::max(1, row - 1);
+                 column <= std::min(shape[direction] - 2, row + 1); ++column)
+                adjacency[direction][row].push_back(column);
+    }
+    return adjacency;
+}
+
+// Convert separable directional adjacency into exact PETSc diagonal and
+// off-diagonal counts. Slow-direction slab ownership makes the split a small
+// one-dimensional count multiplied by the inner-direction connectivity.
+template <int Dim>
+MatrixPreallocation tensor_preallocation(
+    const std::array<int, Dim> &shape,
+    const std::array<std::vector<std::vector<int>>, Dim> &adjacency,
+    const ID &ID_map, const IEN &IEN_map)
+{
+    const PetscInt owned_begin = IEN_map.owned_ID_begin() < 0 ? 0 :
+        IEN_map.owned_ID_begin();
+    const PetscInt owned_end = IEN_map.owned_ID_end() < 0 ?
+        ID_map.num_free_dofs() : IEN_map.owned_ID_end();
+    const PetscInt local_size = owned_end - owned_begin;
+    MatrixPreallocation result;
+    result.diagonal.resize(local_size);
+    result.off_diagonal.resize(local_size);
+    const LexicographicOrdering<Dim> ordering(shape);
+
+    // Count each owned tensor row without materializing its Cartesian-product
+    // column list. Only the slow-direction neighbors determine MPI ownership.
+    for (PetscInt local_row = 0; local_row < local_size; ++local_row)
+    {
+        const PetscInt row_ID = owned_begin + local_row;
+        const auto row = ordering.multi_index(ID_map.global_index(row_ID));
+        PetscInt inner_count = 1;
+        for (int direction = 0; direction < Dim - 1; ++direction)
+            inner_count *= static_cast<PetscInt>(
+                adjacency[direction][row[direction]].size());
+        PetscInt diagonal_slow_count = 0;
+        for (const int slow_column : adjacency[Dim - 1][row[Dim - 1]])
+        {
+            auto column = row;
+            column[Dim - 1] = slow_column;
+            const int column_ID = ID_map.get_ID(
+                ordering.global_index(column));
+            if (column_ID >= owned_begin && column_ID < owned_end)
+                ++diagonal_slow_count;
+        }
+        const PetscInt total = inner_count * static_cast<PetscInt>(
+            adjacency[Dim - 1][row[Dim - 1]].size());
+        result.diagonal[local_row] = inner_count * diagonal_slow_count;
+        result.off_diagonal[local_row] =
+            total - result.diagonal[local_row];
+        result.local_nonzeros += total;
+    }
+    return result;
 }
 
 // Create one reduced load vector and configure ID=-1 constrained entries to
@@ -111,28 +256,96 @@ void build_element_IDs(const IEN &IEN_map, const ID &ID_map,
             ID_map.get_ID(IEN_map.get_IEN(element, local));
 }
 
+// Reusable packing buffers for the subset of one local contribution whose
+// rows belong to this rank. Columns may remain off-diagonal because PETSc
+// stores them locally in the owned row without an MPI stash.
+struct OwnedRowScratch
+{
+    std::vector<PetscInt> rows;
+    std::vector<PetscScalar> matrix_entries;
+    std::vector<PetscScalar> vector_entries;
+};
+
+bool is_owned_row(const PetscInt ID_value, const IEN &IEN_map)
+{
+    if (ID_value < 0)
+        return false;
+    return IEN_map.owned_ID_begin() < 0 ||
+        (ID_value >= IEN_map.owned_ID_begin() &&
+         ID_value < IEN_map.owned_ID_end());
+}
+
+// Mark the local test-function rows that survive Dirichlet elimination and
+// belong to this rank's PETSc ownership interval.
+void build_owned_row_mask(const std::vector<PetscInt> &ID_values,
+    const IEN &IEN_map, LocalRowMask &mask)
+{
+    mask.resize(ID_values.size());
+    for (std::size_t row = 0; row < ID_values.size(); ++row)
+        mask[row] = is_owned_row(ID_values[row], IEN_map) ? 1 : 0;
+}
+
+// Preserve the symmetric half-matrix kernel whenever this rank owns every
+// unconstrained row touched by the element. Only interface-halo elements need
+// the more expensive rectangular owned-row integration.
+bool all_free_rows_are_owned(const std::vector<PetscInt> &ID_values,
+    const IEN &IEN_map)
+{
+    return std::all_of(ID_values.begin(), ID_values.end(),
+        [&IEN_map](const PetscInt ID_value)
+        {
+            return ID_value < 0 || is_owned_row(ID_value, IEN_map);
+        });
+}
+
 // Scatter a local matrix using an ID row already built for the current
 // element. Fused assembly calls this for multiple outputs without repeating
 // the IEN-to-ID composition.
 PetscErrorCode add_local_matrix_with_IDs(Mat matrix,
     const LocalMatrixAssemblyResult &local,
-    const std::vector<PetscInt> &ID_values)
+    const std::vector<PetscInt> &ID_values, const IEN &IEN_map,
+    OwnedRowScratch &scratch)
 {
     PetscFunctionBeginUser;
     const PetscInt num_basis = static_cast<PetscInt>(ID_values.size());
-    PetscCall(MatSetValues(matrix, num_basis, ID_values.data(),
-        num_basis, ID_values.data(), local.entries.data(), ADD_VALUES));
+    scratch.rows.clear();
+    scratch.matrix_entries.clear();
+    scratch.matrix_entries.reserve(local.entries.size());
+    for (PetscInt row = 0; row < num_basis; ++row)
+        if (is_owned_row(ID_values[row], IEN_map))
+        {
+            scratch.rows.push_back(ID_values[row]);
+            const auto begin = local.entries.begin() + row * num_basis;
+            scratch.matrix_entries.insert(scratch.matrix_entries.end(),
+                begin, begin + num_basis);
+        }
+    if (!scratch.rows.empty())
+        PetscCall(MatSetValues(matrix,
+            static_cast<PetscInt>(scratch.rows.size()), scratch.rows.data(),
+            num_basis, ID_values.data(), scratch.matrix_entries.data(),
+            ADD_VALUES));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 // Scatter a local vector using the same prebuilt ID row as fused matrices.
 PetscErrorCode add_local_vector_with_IDs(Vec vector,
     const LocalVectorAssemblyResult &local,
-    const std::vector<PetscInt> &ID_values)
+    const std::vector<PetscInt> &ID_values, const IEN &IEN_map,
+    OwnedRowScratch &scratch)
 {
     PetscFunctionBeginUser;
-    PetscCall(VecSetValues(vector, static_cast<PetscInt>(ID_values.size()),
-        ID_values.data(), local.entries.data(), ADD_VALUES));
+    scratch.rows.clear();
+    scratch.vector_entries.clear();
+    for (std::size_t row = 0; row < ID_values.size(); ++row)
+        if (is_owned_row(ID_values[row], IEN_map))
+        {
+            scratch.rows.push_back(ID_values[row]);
+            scratch.vector_entries.push_back(local.entries[row]);
+        }
+    if (!scratch.rows.empty())
+        PetscCall(VecSetValues(vector,
+            static_cast<PetscInt>(scratch.rows.size()), scratch.rows.data(),
+            scratch.vector_entries.data(), ADD_VALUES));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -141,11 +354,12 @@ PetscErrorCode add_local_vector_with_IDs(Vec vector,
 PetscErrorCode add_local_matrix(Mat matrix, const IEN &IEN_map,
     const ID &ID_map, const std::size_t element,
     const LocalMatrixAssemblyResult &local,
-    std::vector<PetscInt> &ID_values)
+    std::vector<PetscInt> &ID_values, OwnedRowScratch &scratch)
 {
     PetscFunctionBeginUser;
     build_element_IDs(IEN_map, ID_map, element, ID_values);
-    PetscCall(add_local_matrix_with_IDs(matrix, local, ID_values));
+    PetscCall(add_local_matrix_with_IDs(
+        matrix, local, ID_values, IEN_map, scratch));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -154,20 +368,28 @@ PetscErrorCode add_local_matrix(Mat matrix, const IEN &IEN_map,
 PetscErrorCode add_local_vector(Vec vector, const IEN &IEN_map,
     const ID &ID_map, const std::size_t element,
     const LocalVectorAssemblyResult &local,
-    std::vector<PetscInt> &ID_values)
+    std::vector<PetscInt> &ID_values, OwnedRowScratch &scratch)
 {
     PetscFunctionBeginUser;
     build_element_IDs(IEN_map, ID_map, element, ID_values);
-    PetscCall(add_local_vector_with_IDs(vector, local, ID_values));
+    PetscCall(add_local_vector_with_IDs(
+        vector, local, ID_values, IEN_map, scratch));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-// Complete PETSc communication/state transitions for one matrix or vector.
-PetscErrorCode finalize_matrix(Mat matrix)
+// Complete PETSc matrix assembly and retain global storage diagnostics for
+// resource planning and cross-machine batch logs.
+PetscErrorCode finalize_matrix(GlobalMatrixAssemblyResult &result)
 {
     PetscFunctionBeginUser;
-    PetscCall(MatAssemblyBegin(matrix, MAT_FINAL_ASSEMBLY));
-    PetscCall(MatAssemblyEnd(matrix, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyBegin(result.matrix, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyEnd(result.matrix, MAT_FINAL_ASSEMBLY));
+    MatInfo info{};
+    PetscCall(MatGetInfo(result.matrix, MAT_GLOBAL_SUM, &info));
+    result.allocated_nonzeros = info.nz_allocated;
+    result.used_nonzeros = info.nz_used;
+    result.allocation_calls = info.mallocs;
+    result.memory_bytes = info.memory;
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -273,18 +495,6 @@ PetscErrorCode validate_lor_inputs(const LORMesh<Dim> &mesh,
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-// Estimate the maximum high-order row connectivity used by both stiffness and
-// mass preallocation.
-template <int Dim>
-PetscInt high_order_nonzeros_per_row(const BSplinePatch<Dim> &patch,
-    const PetscInt matrix_size)
-{
-    PetscInt count = 1;
-    for (int direction = 0; direction < Dim; ++direction)
-        count *= 2 * patch.degree(direction) + 1;
-    return std::min(matrix_size, count);
-}
-
 // Assemble exactly one selected high-order matrix. The independent traversal
 // never allocates or computes the other matrix or the load vector.
 template <int Dim>
@@ -306,37 +516,50 @@ PetscErrorCode assemble_high_order_matrix(
     PetscCall(validate_high_order_inputs(
         patch, IEN_map, ID_map, basis_tables));
 
-    // Allocate only the requested sparse matrix.
+    // Allocate only the requested sparse matrix from exact tensor support.
     const PetscInt matrix_size = ID_map.num_free_dofs();
     const PetscInt local_size = IEN_map.num_owned_dofs() < 0 ?
         matrix_size : IEN_map.num_owned_dofs();
+    const MatrixPreallocation preallocation = tensor_preallocation<Dim>(
+        patch.basis_shape(), high_order_adjacency(patch), ID_map, IEN_map);
     PetscCall(create_matrix(IEN_map.communicator(), local_size, matrix_size,
-        high_order_nonzeros_per_row(patch, matrix_size), *result));
+        preallocation, *result));
     PetscCall(validate_matrix_ownership(result->matrix, IEN_map));
 
     // Follow gather -> Element -> selected LocalAssembly -> matrix scatter.
     std::vector<typename BSplinePatch<Dim>::Point> control_points(
         IEN_map.num_local_basis());
     std::vector<PetscInt> ID_values(IEN_map.num_local_basis());
+    LocalRowMask active_rows;
+    OwnedRowScratch row_scratch;
     LocalMatrixAssemblyResult local;
-    for (std::size_t element_index = IEN_map.local_element_begin();
-         element_index < IEN_map.local_element_end(); ++element_index)
+    BSplineElement<Dim> element;
+    for (std::size_t element_index = IEN_map.assembly_element_begin();
+         element_index < IEN_map.assembly_element_end(); ++element_index)
     {
         gather_control_points(
             patch, IEN_map, element_index, control_points);
-        const BSplineElement<Dim> element(patch, element_index,
+        build_element_IDs(IEN_map, ID_map, element_index, ID_values);
+        build_owned_row_mask(ID_values, IEN_map, active_rows);
+        element.reinitialize(patch, element_index,
             control_points, quad, basis_tables);
         if (quantity == MatrixQuantity::stiffness)
-            assemble_local_stiffness<Dim>(element, local);
+        {
+            if (all_free_rows_are_owned(ID_values, IEN_map))
+                assemble_local_stiffness<Dim>(element, local);
+            else
+                assemble_local_stiffness_rows<Dim>(
+                    element, active_rows, local);
+        }
         else
             assemble_local_mass<Dim>(element, local);
         update_statistics(local, result->statistics);
-        PetscCall(add_local_matrix(result->matrix, IEN_map, ID_map,
-            element_index, local, ID_values));
+        PetscCall(add_local_matrix_with_IDs(result->matrix, local,
+            ID_values, IEN_map, row_scratch));
     }
 
     // Finalize this matrix and reduce geometry diagnostics over all slabs.
-    PetscCall(finalize_matrix(result->matrix));
+    PetscCall(finalize_matrix(*result));
     PetscCall(reduce_statistics(IEN_map.communicator(), result->statistics));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -374,18 +597,27 @@ PetscErrorCode assemble_high_order_load(
     std::vector<typename BSplinePatch<Dim>::Point> control_points(
         IEN_map.num_local_basis());
     std::vector<PetscInt> ID_values(IEN_map.num_local_basis());
+    LocalRowMask active_rows;
+    OwnedRowScratch row_scratch;
     LocalVectorAssemblyResult local;
-    for (std::size_t element_index = IEN_map.local_element_begin();
-         element_index < IEN_map.local_element_end(); ++element_index)
+    BSplineElement<Dim> element;
+    for (std::size_t element_index = IEN_map.assembly_element_begin();
+         element_index < IEN_map.assembly_element_end(); ++element_index)
     {
         gather_control_points(
             patch, IEN_map, element_index, control_points);
-        const BSplineElement<Dim> element(patch, element_index,
+        build_element_IDs(IEN_map, ID_map, element_index, ID_values);
+        build_owned_row_mask(ID_values, IEN_map, active_rows);
+        element.reinitialize(patch, element_index,
             control_points, quad, basis_tables);
-        assemble_local_load<Dim>(element, source, local);
+        if (all_free_rows_are_owned(ID_values, IEN_map))
+            assemble_local_load<Dim>(element, source, local);
+        else
+            assemble_local_load_rows<Dim>(
+                element, source, active_rows, local);
         update_statistics(local, result->statistics);
-        PetscCall(add_local_vector(result->vector, IEN_map, ID_map,
-            element_index, local, ID_values));
+        PetscCall(add_local_vector_with_IDs(result->vector, local,
+            ID_values, IEN_map, row_scratch));
     }
 
     // Finalize the load independently of both matrices.
@@ -411,16 +643,14 @@ PetscErrorCode assemble_lor_matrix(const MatrixQuantity quantity,
         "The global matrix result already owns a PETSc matrix");
     PetscCall(validate_lor_inputs(mesh, IEN_map, ID_map));
 
-    // Allocate only the selected Q1 matrix with at most 3^Dim neighbors per
-    // interior tensor-grid row.
+    // Allocate only the selected Q1 matrix from its exact tensor adjacency.
     const PetscInt matrix_size = ID_map.num_free_dofs();
     const PetscInt local_size = IEN_map.num_owned_dofs() < 0 ?
         matrix_size : IEN_map.num_owned_dofs();
-    PetscInt nonzeros_per_row = 1;
-    for (int direction = 0; direction < Dim; ++direction)
-        nonzeros_per_row *= 3;
+    const MatrixPreallocation preallocation = tensor_preallocation<Dim>(
+        mesh.node_shape(), lor_adjacency(mesh), ID_map, IEN_map);
     PetscCall(create_matrix(IEN_map.communicator(), local_size, matrix_size,
-        std::min(matrix_size, nonzeros_per_row), *result));
+        preallocation, *result));
     PetscCall(validate_matrix_ownership(result->matrix, IEN_map));
 
     // Reuse one reference Q1 table for gather -> Element -> selected local
@@ -428,9 +658,10 @@ PetscErrorCode assemble_lor_matrix(const MatrixQuantity quantity,
     const FEMQ1Basis<Dim> ref_basis(quad);
     using FEMElement = std::conditional_t<Dim == 2, FEMQuad4, FEMHex8>;
     std::vector<PetscInt> ID_values(IEN_map.num_local_basis());
+    OwnedRowScratch row_scratch;
     LocalMatrixAssemblyResult local;
-    for (std::size_t cell_index = IEN_map.local_element_begin();
-         cell_index < IEN_map.local_element_end(); ++cell_index)
+    for (std::size_t cell_index = IEN_map.assembly_element_begin();
+         cell_index < IEN_map.assembly_element_end(); ++cell_index)
     {
         const auto phy_nodes =
             gather_lor_nodes(mesh, IEN_map, cell_index);
@@ -441,11 +672,11 @@ PetscErrorCode assemble_lor_matrix(const MatrixQuantity quantity,
             assemble_local_mass(element, local);
         update_statistics(local, result->statistics);
         PetscCall(add_local_matrix(result->matrix, IEN_map, ID_map,
-            cell_index, local, ID_values));
+            cell_index, local, ID_values, row_scratch));
     }
 
     // Finalize this LOR matrix without creating a load vector.
-    PetscCall(finalize_matrix(result->matrix));
+    PetscCall(finalize_matrix(*result));
     PetscCall(reduce_statistics(IEN_map.communicator(), result->statistics));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -481,9 +712,10 @@ PetscErrorCode assemble_lor_load(const LORMesh<Dim> &mesh,
     const FEMQ1Basis<Dim> ref_basis(quad);
     using FEMElement = std::conditional_t<Dim == 2, FEMQuad4, FEMHex8>;
     std::vector<PetscInt> ID_values(IEN_map.num_local_basis());
+    OwnedRowScratch row_scratch;
     LocalVectorAssemblyResult local;
-    for (std::size_t cell_index = IEN_map.local_element_begin();
-         cell_index < IEN_map.local_element_end(); ++cell_index)
+    for (std::size_t cell_index = IEN_map.assembly_element_begin();
+         cell_index < IEN_map.assembly_element_end(); ++cell_index)
     {
         const auto phy_nodes =
             gather_lor_nodes(mesh, IEN_map, cell_index);
@@ -491,7 +723,7 @@ PetscErrorCode assemble_lor_load(const LORMesh<Dim> &mesh,
         assemble_local_load(element, source, local);
         update_statistics(local, result->statistics);
         PetscCall(add_local_vector(result->vector, IEN_map, ID_map,
-            cell_index, local, ID_values));
+            cell_index, local, ID_values, row_scratch));
     }
 
     // Finalize this LOR vector without creating either matrix.
@@ -555,23 +787,23 @@ PetscErrorCode assemble_high_order_with_load(
     PetscCall(validate_high_order_inputs(
         patch, IEN_map, ID_map, basis_tables));
 
-    // Allocate exactly the requested global objects with the same high-order
-    // connectivity estimate for either matrix.
+    // Allocate exactly the requested global objects with one shared exact
+    // high-order tensor-connectivity description.
     const PetscInt matrix_size = ID_map.num_free_dofs();
     const PetscInt local_size = IEN_map.num_owned_dofs() < 0 ?
         matrix_size : IEN_map.num_owned_dofs();
-    const PetscInt nonzeros_per_row =
-        high_order_nonzeros_per_row(patch, matrix_size);
+    const MatrixPreallocation preallocation = tensor_preallocation<Dim>(
+        patch.basis_shape(), high_order_adjacency(patch), ID_map, IEN_map);
     if constexpr (DoStiffness)
     {
         PetscCall(create_matrix(IEN_map.communicator(), local_size,
-            matrix_size, nonzeros_per_row, *stiffness));
+            matrix_size, preallocation, *stiffness));
         PetscCall(validate_matrix_ownership(stiffness->matrix, IEN_map));
     }
     if constexpr (DoMass)
     {
         PetscCall(create_matrix(IEN_map.communicator(), local_size,
-            matrix_size, nonzeros_per_row, *mass));
+            matrix_size, preallocation, *mass));
         PetscCall(validate_matrix_ownership(mass->matrix, IEN_map));
     }
     PetscCall(create_vector(IEN_map.communicator(), local_size,
@@ -583,22 +815,33 @@ PetscErrorCode assemble_high_order_with_load(
     std::vector<typename BSplinePatch<Dim>::Point> control_points(
         IEN_map.num_local_basis());
     std::vector<PetscInt> ID_values(IEN_map.num_local_basis());
+    LocalRowMask active_rows;
+    OwnedRowScratch row_scratch;
     LocalMatrixAssemblyResult local_stiffness;
     LocalMatrixAssemblyResult local_mass;
     LocalVectorAssemblyResult local_load;
-    for (std::size_t element_index = IEN_map.local_element_begin();
-         element_index < IEN_map.local_element_end(); ++element_index)
+    BSplineElement<Dim> element;
+    for (std::size_t element_index = IEN_map.assembly_element_begin();
+         element_index < IEN_map.assembly_element_end(); ++element_index)
     {
         gather_control_points(
             patch, IEN_map, element_index, control_points);
-        const BSplineElement<Dim> element(patch, element_index,
+        build_element_IDs(IEN_map, ID_map, element_index, ID_values);
+        build_owned_row_mask(ID_values, IEN_map, active_rows);
+        element.reinitialize(patch, element_index,
             control_points, quad, basis_tables);
         if constexpr (DoStiffness && DoMass)
             assemble_local_stiffness_mass_load<Dim>(element, source,
                 local_stiffness, local_mass, local_load);
         else if constexpr (DoStiffness)
-            assemble_local_stiffness_load<Dim>(
-                element, source, local_stiffness, local_load);
+        {
+            if (all_free_rows_are_owned(ID_values, IEN_map))
+                assemble_local_stiffness_load<Dim>(
+                    element, source, local_stiffness, local_load);
+            else
+                assemble_local_stiffness_load_rows<Dim>(element, source,
+                    active_rows, local_stiffness, local_load);
+        }
         else
             assemble_local_mass_load<Dim>(
                 element, source, local_mass, local_load);
@@ -606,11 +849,10 @@ PetscErrorCode assemble_high_order_with_load(
         // Compose the element equation row once. When prescribed coefficients
         // are present, eliminate constrained columns from every free load row
         // before the reduced matrix and vector are scattered.
-        build_element_IDs(IEN_map, ID_map, element_index, ID_values);
         if (dirichlet_coefficients != nullptr)
             for (int row = 0; row < IEN_map.num_local_basis(); ++row)
             {
-                if (ID_values[row] < 0)
+                if (active_rows[row] == 0)
                     continue;
                 for (int column = 0;
                      column < IEN_map.num_local_basis(); ++column)
@@ -632,29 +874,31 @@ PetscErrorCode assemble_high_order_with_load(
         {
             update_statistics(local_stiffness, stiffness->statistics);
             PetscCall(add_local_matrix_with_IDs(
-                stiffness->matrix, local_stiffness, ID_values));
+                stiffness->matrix, local_stiffness, ID_values,
+                IEN_map, row_scratch));
         }
         if constexpr (DoMass)
         {
             update_statistics(local_mass, mass->statistics);
             PetscCall(add_local_matrix_with_IDs(
-                mass->matrix, local_mass, ID_values));
+                mass->matrix, local_mass, ID_values,
+                IEN_map, row_scratch));
         }
         update_statistics(local_load, load->statistics);
         PetscCall(add_local_vector_with_IDs(
-            load->vector, local_load, ID_values));
+            load->vector, local_load, ID_values, IEN_map, row_scratch));
     }
 
     // Finalize every requested PETSc object after the shared traversal.
     if constexpr (DoStiffness)
     {
-        PetscCall(finalize_matrix(stiffness->matrix));
+        PetscCall(finalize_matrix(*stiffness));
         PetscCall(reduce_statistics(
             IEN_map.communicator(), stiffness->statistics));
     }
     if constexpr (DoMass)
     {
-        PetscCall(finalize_matrix(mass->matrix));
+        PetscCall(finalize_matrix(*mass));
         PetscCall(reduce_statistics(
             IEN_map.communicator(), mass->statistics));
     }
@@ -712,20 +956,18 @@ PetscErrorCode assemble_lor_with_load(
     const PetscInt matrix_size = ID_map.num_free_dofs();
     const PetscInt local_size = IEN_map.num_owned_dofs() < 0 ?
         matrix_size : IEN_map.num_owned_dofs();
-    PetscInt nonzeros_per_row = 1;
-    for (int direction = 0; direction < Dim; ++direction)
-        nonzeros_per_row *= 3;
-    nonzeros_per_row = std::min(matrix_size, nonzeros_per_row);
+    const MatrixPreallocation preallocation = tensor_preallocation<Dim>(
+        mesh.node_shape(), lor_adjacency(mesh), ID_map, IEN_map);
     if constexpr (DoStiffness)
     {
         PetscCall(create_matrix(IEN_map.communicator(), local_size,
-            matrix_size, nonzeros_per_row, *stiffness));
+            matrix_size, preallocation, *stiffness));
         PetscCall(validate_matrix_ownership(stiffness->matrix, IEN_map));
     }
     if constexpr (DoMass)
     {
         PetscCall(create_matrix(IEN_map.communicator(), local_size,
-            matrix_size, nonzeros_per_row, *mass));
+            matrix_size, preallocation, *mass));
         PetscCall(validate_matrix_ownership(mass->matrix, IEN_map));
     }
     PetscCall(create_vector(IEN_map.communicator(), local_size,
@@ -736,11 +978,12 @@ PetscErrorCode assemble_lor_with_load(
     const FEMQ1Basis<Dim> ref_basis(quad);
     using FEMElement = std::conditional_t<Dim == 2, FEMQuad4, FEMHex8>;
     std::vector<PetscInt> ID_values(IEN_map.num_local_basis());
+    OwnedRowScratch row_scratch;
     LocalMatrixAssemblyResult local_stiffness;
     LocalMatrixAssemblyResult local_mass;
     LocalVectorAssemblyResult local_load;
-    for (std::size_t cell_index = IEN_map.local_element_begin();
-         cell_index < IEN_map.local_element_end(); ++cell_index)
+    for (std::size_t cell_index = IEN_map.assembly_element_begin();
+         cell_index < IEN_map.assembly_element_end(); ++cell_index)
     {
         const auto phy_nodes =
             gather_lor_nodes(mesh, IEN_map, cell_index);
@@ -761,29 +1004,31 @@ PetscErrorCode assemble_lor_with_load(
         {
             update_statistics(local_stiffness, stiffness->statistics);
             PetscCall(add_local_matrix_with_IDs(
-                stiffness->matrix, local_stiffness, ID_values));
+                stiffness->matrix, local_stiffness, ID_values,
+                IEN_map, row_scratch));
         }
         if constexpr (DoMass)
         {
             update_statistics(local_mass, mass->statistics);
             PetscCall(add_local_matrix_with_IDs(
-                mass->matrix, local_mass, ID_values));
+                mass->matrix, local_mass, ID_values,
+                IEN_map, row_scratch));
         }
         update_statistics(local_load, load->statistics);
         PetscCall(add_local_vector_with_IDs(
-            load->vector, local_load, ID_values));
+            load->vector, local_load, ID_values, IEN_map, row_scratch));
     }
 
     // Finalize all selected matrices and the shared-traversal load vector.
     if constexpr (DoStiffness)
     {
-        PetscCall(finalize_matrix(stiffness->matrix));
+        PetscCall(finalize_matrix(*stiffness));
         PetscCall(reduce_statistics(
             IEN_map.communicator(), stiffness->statistics));
     }
     if constexpr (DoMass)
     {
-        PetscCall(finalize_matrix(mass->matrix));
+        PetscCall(finalize_matrix(*mass));
         PetscCall(reduce_statistics(
             IEN_map.communicator(), mass->statistics));
     }

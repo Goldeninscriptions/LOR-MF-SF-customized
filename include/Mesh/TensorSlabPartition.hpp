@@ -20,9 +20,9 @@ class LORMesh;
 // MPI work/ownership partition for a direction-0-fastest tensor grid. The
 // slowest tensor direction (Dim-1) is divided into contiguous slabs so every
 // rank owns a contiguous ID range without changing lexicographic global_index
-// numbering. High-order elements and LOR cells are partitioned independently
-// because their directional counts differ, but each object is assigned to
-// exactly one rank and both matrices share the same distributed vector layout.
+// numbering. Element/cell work ranges include the minimal support halo needed
+// to assemble every owned row locally; neighboring ranks may therefore visit
+// the same interface element while inserting disjoint matrix rows.
 template <int Dim>
 class TensorSlabPartition
 {
@@ -53,9 +53,8 @@ public:
         return owned_ID_end_ - owned_ID_begin_;
     }
 
-    // Half-open global flat-index intervals for this rank's high-order
-    // elements and LOR cells. Direction 0 varies fastest, so a slow-direction
-    // slab is one contiguous interval and needs no explicit index list.
+    // Half-open nonoverlapping element/cell work intervals used by diagnostics
+    // and error integration, where every object belongs to exactly one rank.
     std::size_t high_element_begin() const noexcept
     {
         return high_element_begin_;
@@ -66,6 +65,26 @@ public:
     }
     std::size_t lor_cell_begin() const noexcept { return lor_cell_begin_; }
     std::size_t lor_cell_end() const noexcept { return lor_cell_end_; }
+
+    // Halo-extended intervals containing every element/cell that contributes
+    // to an owned algebraic row. Assembly visits these ranges but scatters only
+    // owned rows, so interface objects may be recomputed without duplication.
+    std::size_t high_assembly_element_begin() const noexcept
+    {
+        return high_assembly_element_begin_;
+    }
+    std::size_t high_assembly_element_end() const noexcept
+    {
+        return high_assembly_element_end_;
+    }
+    std::size_t lor_assembly_cell_begin() const noexcept
+    {
+        return lor_assembly_cell_begin_;
+    }
+    std::size_t lor_assembly_cell_end() const noexcept
+    {
+        return lor_assembly_cell_end_;
+    }
 
     // Directional shapes retained for diagnostics and consistency checks.
     const Shape &basis_shape() const noexcept { return basis_shape_; }
@@ -86,14 +105,18 @@ private:
     Shape high_element_shape_{};
     Shape lor_cell_shape_{};
 
-    // Contiguous ID ownership and work ranges computed by balanced integer
-    // division; remainders are distributed without dropping any object.
+    // Contiguous ID ownership and halo-extended work ranges computed from the
+    // same balanced free-basis layers.
     int owned_ID_begin_ = 0;
     int owned_ID_end_ = 0;
     std::size_t high_element_begin_ = 0;
     std::size_t high_element_end_ = 0;
     std::size_t lor_cell_begin_ = 0;
     std::size_t lor_cell_end_ = 0;
+    std::size_t high_assembly_element_begin_ = 0;
+    std::size_t high_assembly_element_end_ = 0;
+    std::size_t lor_assembly_cell_begin_ = 0;
+    std::size_t lor_assembly_cell_end_ = 0;
 };
 
 extern template class TensorSlabPartition<2>;

@@ -10,8 +10,8 @@
 | `DistributedPatch.cpp` | 由 root 序列化并广播 refined Patch，在每个 rank 通过构造器重建和验证拓扑 | 一次 refinement、全量 Patch 复制的第一阶段 MPI 实现 |
 | `LORPointSet.cpp` | 验证任意显式 point set；生成 Greville 点；实现逐方向 Greville 初始化的 Demko/Remez 插值、极值搜索与等振荡检查 | 输出参数点给 LORMesh；不计算物理几何 |
 | `LORMesh.cpp` | 保存参数节点；调用 Patch tensor-grid geometry evaluation 得到全部 LOR 物理顶点 | LORIEN 与低阶 Element 读取它 |
-| `TensorSlabPartition.cpp` | 用 `floor(rank*N/P)` 对最慢方向做无重叠 slab 分割；高阶元素、LOR cells 和自由 ID 各自按实际层数均衡划分 | 允许不能整除的规模；保持完整覆盖及连续 PETSc 行所有权 |
-| `IEN.cpp` | 按输入的全局 element/cell index 即时计算高阶 active basis 或 Q1 corner 的 global index | MPI rank 只遍历 Partition 分配的区间，避免复制巨大 IEN 表 |
+| `TensorSlabPartition.cpp` | 用 `floor(rank*N/P)` 对最慢方向做无重叠 slab 分割；另从 owned free-basis layers 推导高阶支撑 halo 和一层 Q1 halo | 误差积分保持唯一覆盖；Assembly 重算少量接口单元以消除远程行插入 |
+| `IEN.cpp` | 按输入的全局 element/cell index 即时计算高阶 active basis 或 Q1 corner 的 global index | MPI rank 的普通遍历使用唯一区间，Assembly 使用 halo 区间，均不复制完整 IEN 表 |
 | `ID.cpp` | 验证约束 global indices；建立 `global_index -> ID` 与自由 `ID -> global_index` | Assembly 用于 Dirichlet 消元和 PETSc 下标；边界系数由独立 lift 保存并供 ErrorAnalysis 恢复 |
 
 `BSplinePatch::uniform_refine` 是 Patch 上的基础 knot-insertion 便利接口；实验驱动器的
