@@ -9,6 +9,8 @@ Assembly 把与方程无关的 Element 数据转换为 Laplace 离散系统，�
 | `DirichletBC.hpp` | 将四条边/六个面上的 boundary `multi_index` 转成分边界及去重后的受约束 `global_index` | 只描述约束拓扑并输出给 `ID`；非零系数由独立 Dirichlet lift 保存 |
 | `LocalAssembly.hpp` | 定义独立的局部矩阵/向量结果，提供三个单项入口和三种含 load 的融合入口 | 只读取 Element 的 `N`、梯度、坐标、权重和 Jacobian determinant |
 | `PreconditionerSide.hpp` | 定义论文默认的左预条件与可选右预条件代数方向 | 被 Solver、IO 与条件数分析共同使用，避免方向标签不一致 |
+| `BandedMassCholesky1D.hpp` | 两类一维质量矩阵、完整带状 Cholesky、因子截断、证书及 `D^T M D` | 不建立稠密逆或稠密系数映射 |
+| `TruncatedCholeskyTensor.hpp` | 仿射 2D/3D tensor 对照与 MPI owned-row `P_k` 装配 | 保持 direction 0 最快；曲边几何明确拒绝 |
 | `GlobalAssembly.hpp` | 定义分布式 PETSc 矩阵/向量结果、高阶/LOR 单项及融合入口、矩阵存储统计，以及显式调用的 SLEPc 条件数分析 | 遍历 IEN 的 assembly halo，但只插入 owned rows；条件数分析不由组装隐式触发 |
 
 `quad_weight` 和 `det_Jac` 在 Element 接口中分开，LocalAssembly 显式计算二者乘积。
@@ -22,6 +24,9 @@ matrix-free 算子接口。若调用者同时需要多个项，可显式选择
 `compute_stiffness_condition_numbers` 是独立且昂贵的后处理入口，只有调用者显式请求
 时才创建四个 SVD 求解和预条件算子；它可分析精确 LOR 逆或直接的
 `diag(K)^{-1}` 左预条件参考算子。
+`compute_generalized_spectral_condition_number` 是独立的 EPS-GHEP 路线，
+求解 `Kx=lambda Px`；其 `lambda_max/lambda_min` 不与上述 SVD 的
+`sigma_max/sigma_min` 混用。
 高阶和 LOR 矩阵都从张量支撑直接计算逐 owned-row 的精确 `d_nnz/o_nnz`，不创建旧
 代码使用的临时 pattern 矩阵。结果同时保存 predicted/used/allocated nnz、PETSc
 malloc 次数、PETSc memory 报告和不含 allocator 开销的可移植最低字节估计。

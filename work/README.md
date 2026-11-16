@@ -45,6 +45,19 @@ TSV。`INNER_RTOLS` 用空格分隔自定义扫描点；`INNER_ATOL` 默认 `1e-
 掩盖相对容差实验。`SWEEP_P`、`SWEEP_N`、`OUTER_RTOL`、`OUTER_ATOL` 和
 `COMPUTE_L2_ERROR` 也可由环境变量覆盖。结果汇总写入独立 TSV，不覆盖普通批处理。
 
+新 tensor 来源通过环境变量传递，不改变 `run_case.sh` 的 8/12 个位置参数：
+
+```bash
+PRECONDITIONER_MATRIX_SOURCE=truncated_cholesky_tensor \
+TRUNC_CHOL_K=2 COMPUTE_TRUNCATION_CERTIFICATE=true \
+COMPUTE_SPECTRAL_CONDITION_NUMBER=true EPS_TOL=1e-8 EPS_NCV=100 \
+./work/run_case.sh 2 input/square_2d.txt k_refine 4 16,16 \
+  greville left_cg_lu results/truncated_p4.log
+```
+
+这些变量及 `EPS_MAX_IT` 会由 `run_batch_common.sh` 传给二维/三维批处理。
+曲边入口必须继续使用默认 `lor_q1`。
+
 该容差扫描显式固定为 `left_gmres_cg`，用于保留左预条件标准 GMRES 对照。PETSc
 对该组合监测预条件残差，宽松且
 随右端项变化的内层 CG 可能导致它先于原方程真实残差收敛；因此不能只按耗时选择

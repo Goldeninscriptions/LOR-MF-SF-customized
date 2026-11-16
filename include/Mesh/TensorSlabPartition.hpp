@@ -38,6 +38,8 @@ public:
     TensorSlabPartition(const BSplinePatch<Dim> &patch,
         const LORMesh<Dim> &lor_mesh, const ID &ID_map,
         MPI_Comm comm = MPI_COMM_WORLD);
+    TensorSlabPartition(const BSplinePatch<Dim> &patch,
+        const ID &ID_map, MPI_Comm comm = MPI_COMM_WORLD);
 
     // MPI communicator, rank, and number of participating ranks.
     MPI_Comm communicator() const noexcept { return comm_; }

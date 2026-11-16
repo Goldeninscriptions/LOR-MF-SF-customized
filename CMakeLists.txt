@@ -42,6 +42,7 @@ add_library(lor_core
   src/Assembly/LexicographicOrdering.cpp
   src/Assembly/DirichletBC.cpp
   src/Assembly/LocalAssembly.cpp
+  src/Assembly/BandedMassCholesky1D.cpp
 )
 
 target_include_directories(lor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -58,6 +59,7 @@ endif()
 
 add_library(lor_petsc
   src/Assembly/GlobalAssembly.cpp
+  src/Assembly/TruncatedCholeskyTensor.cpp
 )
 target_include_directories(lor_petsc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(lor_petsc PUBLIC cxx_std_17)
@@ -86,4 +88,3 @@ if(LOR_BUILD_EXAMPLES)
 endif()
 
 lor_print_build_summary()
-

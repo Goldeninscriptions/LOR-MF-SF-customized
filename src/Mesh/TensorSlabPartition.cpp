@@ -47,8 +47,7 @@ int checked_ID_count(const std::size_t count)
 
 template <int Dim>
 TensorSlabPartition<Dim>::TensorSlabPartition(
-    const BSplinePatch<Dim> &patch, const LORMesh<Dim> &lor_mesh,
-    const ID &ID_map, const MPI_Comm comm)
+    const BSplinePatch<Dim> &patch, const ID &ID_map, const MPI_Comm comm)
     : comm_(comm), basis_shape_(patch.basis_shape())
 {
     // Query the already initialized PETSc communicator and reject invalid
@@ -63,14 +62,10 @@ TensorSlabPartition<Dim>::TensorSlabPartition(
 
     // Record independent high-order and LOR tensor shapes. Their slowest
     // directional counts generally differ even though they share basis IDs.
-    const Shape lor_node_shape = lor_mesh.node_shape();
-    if (lor_node_shape != basis_shape_)
-        throw std::invalid_argument(
-            "LOR nodes must be coefficient-aligned with the B-spline basis");
     for (int direction = 0; direction < Dim; ++direction)
     {
         high_element_shape_[direction] = patch.num_elements(direction);
-        lor_cell_shape_[direction] = lor_node_shape[direction] - 1;
+        lor_cell_shape_[direction] = basis_shape_[direction] - 1;
         if (basis_shape_[direction] <= 2)
             throw std::invalid_argument(
                 "Full Dirichlet MPI partition requires interior basis functions");
@@ -162,6 +157,17 @@ TensorSlabPartition<Dim>::TensorSlabPartition(
     }
     lor_assembly_cell_begin_ = lor_layer_begin * lor_per_layer;
     lor_assembly_cell_end_ = lor_layer_end * lor_per_layer;
+}
+
+template <int Dim>
+TensorSlabPartition<Dim>::TensorSlabPartition(
+    const BSplinePatch<Dim> &patch, const LORMesh<Dim> &lor_mesh,
+    const ID &ID_map, const MPI_Comm comm)
+    : TensorSlabPartition(patch, ID_map, comm)
+{
+    if (lor_mesh.node_shape() != basis_shape_)
+        throw std::invalid_argument(
+            "LOR nodes must be coefficient-aligned with the B-spline basis");
 }
 
 // Emit both paper dimensions from this source-owned template implementation.

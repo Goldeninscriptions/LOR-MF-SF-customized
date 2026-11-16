@@ -28,6 +28,32 @@ KSP 应用方式、SLEPc 条件数和 L2 误差分析。Matrix-free 与 sum fact
 
 当前不支持 NURBS、周期边界、多 patch、MF/SF 算子或从输入文件指定任意边界函数。
 
+## 可选 truncated-Cholesky tensor 预条件矩阵
+
+默认矩阵来源仍是 `lor_q1`，所有既有命令保持原行为。轴对齐仿射
+`square_2d`/`cube_3d` 可显式选择新来源：
+
+```bash
+PRECONDITIONER_MATRIX_SOURCE=truncated_cholesky_tensor \
+TRUNC_CHOL_K=4 COMPUTE_TRUNCATION_CERTIFICATE=true \
+COMPUTE_SPECTRAL_CONDITION_NUMBER=true COMPUTE_CONDITION_NUMBER=true \
+./work/run_case.sh 1 work/input/square_2d.txt k_refine 8 16,16 \
+  greville left_cg_lu work/results/p8_n16_trunc_k4.log
+```
+
+`TRUNC_CHOL_K=auto`（默认）使用 `ceil(p/2)`。新路径要求 `k` 同时严格
+小于两类质量矩阵的实际半带宽，所以 `p=3` 必须显式使用例如
+`TRUNC_CHOL_K=1`。实现先做完整带状 Cholesky，再按边界保护规则截断
+因子并形成 `L_tilde L_tilde^T`；不截断原质量矩阵，也不建立稠密采样映射。
+
+直接调用 driver 时使用
+`-preconditioner_matrix_source`、`-trunc_chol_k`、
+`-compute_truncation_certificate`、`-compute_spectral_condition_number` 以及
+`-eps_tol/-eps_max_it/-eps_ncv`。原 `-compute_condition_number` 仍是 SVD
+奇异值条件数 `kappa_sigma`；EPS 独立报告广义 SPD 问题的
+`kappa_lambda`。新来源会拒绝曲边几何和直接 K-Jacobi/K-GAMG 模式，旧
+Greville/Demko 曲边路径不受影响。
+
 ## 构建
 
 ```bash

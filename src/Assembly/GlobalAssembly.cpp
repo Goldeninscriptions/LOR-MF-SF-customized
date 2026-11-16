@@ -8,6 +8,7 @@
 
 #include <petscksp.h>
 #include <slepcsvd.h>
+#include <slepceps.h>
 
 #include <algorithm>
 #include <array>
@@ -1080,7 +1081,8 @@ PetscErrorCode apply_left_preconditioned_transpose(Mat matrix, Vec x, Vec y)
 PetscErrorCode extreme_singular_value(Mat matrix, const SVDWhich which,
     const char *prefix, const PetscReal tolerance,
     const PetscInt max_iterations,
-    const PetscInt requested_subspace_dimension, PetscReal &sigma)
+    const PetscInt requested_subspace_dimension, PetscReal &sigma,
+    PetscInt &iterations, int &reason_value, bool &converged_result)
 {
     PetscFunctionBeginUser;
     const MPI_Comm comm = PetscObjectComm(
@@ -1123,11 +1125,11 @@ PetscErrorCode extreme_singular_value(Mat matrix, const SVDWhich which,
     SVDConvergedReason reason = SVD_CONVERGED_ITERATING;
     PetscCall(SVDGetConverged(svd, &converged));
     PetscCall(SVDGetConvergedReason(svd, &reason));
-    PetscCheck(converged > 0 && reason > 0, comm,
-        PETSC_ERR_NOT_CONVERGED,
-        "SLEPc singular-value solve with prefix '%s' did not converge",
-        prefix);
-    PetscCall(SVDGetSingularTriplet(svd, 0, &sigma, nullptr, nullptr));
+    PetscCall(SVDGetIterationNumber(svd, &iterations));
+    reason_value = static_cast<int>(reason);
+    converged_result = converged > 0 && reason > 0;
+    if (converged_result)
+        PetscCall(SVDGetSingularTriplet(svd, 0, &sigma, nullptr, nullptr));
     PetscCall(SVDDestroy(&svd));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -1139,15 +1141,18 @@ PetscErrorCode condition_number(Mat matrix, const char *largest_prefix,
     ConditionNumberResult &result)
 {
     PetscFunctionBeginUser;
-    const MPI_Comm comm = PetscObjectComm(
-        reinterpret_cast<PetscObject>(matrix));
+    bool maximum_converged = false;
+    bool minimum_converged = false;
     PetscCall(extreme_singular_value(matrix, SVD_LARGEST, largest_prefix,
-        tolerance, max_iterations, subspace_dimension, result.sigma_max));
+        tolerance, max_iterations, subspace_dimension, result.sigma_max,
+        result.iterations_max, result.reason_max, maximum_converged));
     PetscCall(extreme_singular_value(matrix, SVD_SMALLEST, smallest_prefix,
-        tolerance, max_iterations, subspace_dimension, result.sigma_min));
-    PetscCheck(result.sigma_min > 0.0, comm, PETSC_ERR_PLIB,
-        "SLEPc reported a nonpositive minimum singular value");
-    result.condition_number = result.sigma_max / result.sigma_min;
+        tolerance, max_iterations, subspace_dimension, result.sigma_min,
+        result.iterations_min, result.reason_min, minimum_converged));
+    result.converged = maximum_converged && minimum_converged &&
+        result.sigma_min > 0.0;
+    if (result.converged)
+        result.condition_number = result.sigma_max / result.sigma_min;
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -1271,6 +1276,100 @@ PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
     PetscCall(VecDestroy(&context.diagonal_inverse));
     PetscCall(VecDestroy(&context.work));
     PetscCall(KSPDestroy(&context.lor_solver));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+namespace
+{
+
+PetscErrorCode generalized_extreme_eigenvalue(Mat stiffness,
+    Mat preconditioner, const EPSWhich which, const char *prefix,
+    const PetscReal tolerance, const PetscInt max_iterations,
+    const PetscInt requested_subspace_dimension, PetscReal &eigenvalue,
+    PetscReal &relative_error, PetscInt &iterations, int &reason_value,
+    bool &converged_result)
+{
+    PetscFunctionBeginUser;
+    const MPI_Comm comm = PetscObjectComm(
+        reinterpret_cast<PetscObject>(stiffness));
+    PetscInt size = 0;
+    PetscCall(MatGetSize(stiffness, &size, nullptr));
+    const PetscInt ncv = std::min(size, requested_subspace_dimension);
+    PetscCheck(ncv >= 2, comm, PETSC_ERR_ARG_SIZ,
+        "EPS operator must have dimension at least two");
+    EPS eps = nullptr;
+    PetscCall(EPSCreate(comm, &eps));
+    PetscCall(EPSSetOptionsPrefix(eps, prefix));
+    PetscCall(EPSSetOperators(eps, stiffness, preconditioner));
+    PetscCall(EPSSetProblemType(eps, EPS_GHEP));
+    PetscCall(EPSSetType(eps, EPSKRYLOVSCHUR));
+    PetscCall(EPSSetDimensions(eps, 1, ncv, PETSC_DEFAULT));
+    PetscCall(EPSSetTolerances(eps, tolerance, max_iterations));
+    PetscCall(EPSSetWhichEigenpairs(eps, which));
+    PetscCall(EPSSetFromOptions(eps));
+    PetscCall(EPSSolve(eps));
+    PetscInt converged = 0;
+    EPSConvergedReason reason = EPS_CONVERGED_ITERATING;
+    PetscCall(EPSGetConverged(eps, &converged));
+    PetscCall(EPSGetConvergedReason(eps, &reason));
+    PetscCall(EPSGetIterationNumber(eps, &iterations));
+    reason_value = static_cast<int>(reason);
+    converged_result = converged > 0 && reason > 0;
+    if (converged_result)
+    {
+        PetscScalar value = 0.0;
+        PetscCall(EPSGetEigenvalue(eps, 0, &value, nullptr));
+        eigenvalue = PetscRealPart(value);
+        PetscCall(EPSComputeError(eps, 0, EPS_ERROR_RELATIVE,
+            &relative_error));
+    }
+    PetscCall(EPSDestroy(&eps));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+} // namespace
+
+PetscErrorCode compute_generalized_spectral_condition_number(Mat stiffness,
+    Mat preconditioner, const PetscReal eps_tolerance,
+    const PetscInt max_iterations, const PetscInt subspace_dimension,
+    SpectralConditionNumberResult *result)
+{
+    PetscFunctionBeginUser;
+    const MPI_Comm comm = PetscObjectComm(
+        reinterpret_cast<PetscObject>(stiffness));
+    PetscCheck(result != nullptr, comm, PETSC_ERR_ARG_NULL,
+        "Spectral condition-number result must not be null");
+    PetscCheck(preconditioner != nullptr, comm, PETSC_ERR_ARG_NULL,
+        "Generalized EPS analysis requires a preconditioner matrix");
+    PetscCheck(eps_tolerance > 0.0 && max_iterations > 0 &&
+        subspace_dimension >= 2, comm, PETSC_ERR_ARG_OUTOFRANGE,
+        "EPS tolerance/iteration/subspace controls are invalid");
+    PetscInt rows = 0;
+    PetscInt columns = 0;
+    PetscInt p_rows = 0;
+    PetscInt p_columns = 0;
+    PetscCall(MatGetSize(stiffness, &rows, &columns));
+    PetscCall(MatGetSize(preconditioner, &p_rows, &p_columns));
+    PetscCheck(rows == columns && p_rows == p_columns && rows == p_rows,
+        comm, PETSC_ERR_ARG_SIZ,
+        "K and P must have the same square dimensions for EPS_GHEP");
+    bool maximum_converged = false;
+    bool minimum_converged = false;
+    PetscCall(generalized_extreme_eigenvalue(stiffness, preconditioner,
+        EPS_LARGEST_REAL, "trunc_eps_max_", eps_tolerance,
+        max_iterations, subspace_dimension, result->lambda_max,
+        result->relative_error_max, result->iterations_max,
+        result->reason_max, maximum_converged));
+    PetscCall(generalized_extreme_eigenvalue(stiffness, preconditioner,
+        EPS_SMALLEST_REAL, "trunc_eps_min_", eps_tolerance,
+        max_iterations, subspace_dimension, result->lambda_min,
+        result->relative_error_min, result->iterations_min,
+        result->reason_min, minimum_converged));
+    result->converged = maximum_converged && minimum_converged &&
+        result->lambda_min > 0.0;
+    if (result->converged)
+        result->condition_number =
+            result->lambda_max / result->lambda_min;
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 

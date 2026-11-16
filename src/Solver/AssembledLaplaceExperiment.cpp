@@ -14,6 +14,7 @@
 #include "Assembly/DirichletBC.hpp"
 #include "Assembly/GlobalAssembly.hpp"
 #include "Assembly/LexicographicOrdering.hpp"
+#include "Assembly/TruncatedCholeskyTensor.hpp"
 #include "Element/GaussQuadrature.hpp"
 #include "IO/PatchInput.hpp"
 #include "Mesh/DistributedPatch.hpp"
@@ -28,6 +29,7 @@
 #include "Solver/ManufacturedSolution.hpp"
 
 #include <array>
+#include <algorithm>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -109,6 +111,8 @@ PetscErrorCode run_assembled_laplace_experiment(
     const ExperimentOptions &options, const int root, const MPI_Comm comm)
 {
     PetscFunctionBeginUser;
+    PetscLogDouble case_start = 0.0;
+    PetscCall(PetscTime(&case_start));
 
     // Refine once on root and distribute the refined control net. Manufactured
     // source/exact functions are created later only when a solve is requested.
@@ -166,22 +170,39 @@ PetscErrorCode run_assembled_laplace_experiment(
                     patch.control_point(global_index));
     }
 
-    // Construct coefficient-aligned LOR points and their sampled physical
-    // mesh. This first distributed-Patch stage still replicates LORMesh; local
-    // slab+halo storage is deliberately reserved for the next optimization.
+    const bool uses_preconditioner_matrix =
+        lor_pc_mode_uses_lor_matrix(options.lor_pc);
+    const bool uses_lor_matrix = uses_preconditioner_matrix &&
+        options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::lor_q1;
+
+    // Construct Greville/Demko and Q1 topology only when the selected matrix
+    // source actually consumes it.  The truncated tensor route has its own
+    // one-dimensional data and uses the high-order-only slab constructor.
     std::unique_ptr<LORPointSet<Dim>> lor_points;
-    if (options.lor_points == "greville")
-        lor_points = std::make_unique<GrevillePointSet<Dim>>(patch);
-    else
-        lor_points = std::make_unique<DemkoPointSet<Dim>>(patch);
-    const LORMesh<Dim> lor_mesh(patch, *lor_points);
+    std::unique_ptr<LORMesh<Dim>> lor_mesh;
+    if (uses_lor_matrix)
+    {
+        if (options.lor_points == "greville")
+            lor_points = std::make_unique<GrevillePointSet<Dim>>(patch);
+        else
+            lor_points = std::make_unique<DemkoPointSet<Dim>>(patch);
+        lor_mesh = std::make_unique<LORMesh<Dim>>(patch, *lor_points);
+    }
 
     // Partition high-order elements, LOR cells, and algebraic rows without
     // changing global_index or ID numbering, then bind both on-demand IEN maps.
-    const TensorSlabPartition<Dim> partition(
-        patch, lor_mesh, ID_map, comm);
-    const BSplineIEN<Dim> high_IEN(patch, partition);
-    const LORIEN<Dim> lor_IEN(lor_mesh, partition);
+    std::unique_ptr<TensorSlabPartition<Dim>> partition;
+    if (uses_lor_matrix)
+        partition = std::make_unique<TensorSlabPartition<Dim>>(
+            patch, *lor_mesh, ID_map, comm);
+    else
+        partition = std::make_unique<TensorSlabPartition<Dim>>(
+            patch, ID_map, comm);
+    const BSplineIEN<Dim> high_IEN(patch, *partition);
+    std::unique_ptr<LORIEN<Dim>> lor_IEN;
+    if (uses_lor_matrix)
+        lor_IEN = std::make_unique<LORIEN<Dim>>(*lor_mesh, *partition);
 
     // Print rank-local half-open ranges in rank order for load-balance and
     // public-interface-DOF diagnostics.
@@ -189,19 +210,23 @@ PetscErrorCode run_assembled_laplace_experiment(
         "[rank %d/%d] ID=[%d,%d), high elements=[%zu,%zu), "
         "high assembly halo=[%zu,%zu), LOR cells=[%zu,%zu), "
         "LOR assembly halo=[%zu,%zu)\n",
-        partition.rank(), partition.size(), partition.owned_ID_begin(),
-        partition.owned_ID_end(), partition.high_element_begin(),
-        partition.high_element_end(),
-        partition.high_assembly_element_begin(),
-        partition.high_assembly_element_end(), partition.lor_cell_begin(),
-        partition.lor_cell_end(), partition.lor_assembly_cell_begin(),
-        partition.lor_assembly_cell_end()));
+        partition->rank(), partition->size(), partition->owned_ID_begin(),
+        partition->owned_ID_end(), partition->high_element_begin(),
+        partition->high_element_end(),
+        partition->high_assembly_element_begin(),
+        partition->high_assembly_element_end(), partition->lor_cell_begin(),
+        partition->lor_cell_end(), partition->lor_assembly_cell_begin(),
+        partition->lor_assembly_cell_end()));
     PetscCall(PetscSynchronizedFlush(comm, PETSC_STDOUT));
 
     // Always assemble the high-order stiffness. Fuse load into the traversal
     // only when the user requested the two linear solves.
     GlobalMatrixAssemblyResult high_stiffness;
     GlobalVectorAssemblyResult high_load;
+    PetscCallMPI(MPI_Barrier(comm));
+    PetscLogDouble original_assembly_start = 0.0;
+    PetscLogDouble original_assembly_end = 0.0;
+    PetscCall(PetscTime(&original_assembly_start));
     if (options.compute_solution)
         PetscCall(assemble_global_stiffness_load_with_dirichlet<Dim>(patch,
             high_IEN, ID_map, assembly_quad, assembly_basis, source,
@@ -209,18 +234,36 @@ PetscErrorCode run_assembled_laplace_experiment(
     else
         PetscCall(assemble_global_stiffness<Dim>(patch, high_IEN,
             ID_map, assembly_quad, assembly_basis, &high_stiffness));
+    PetscCall(PetscTime(&original_assembly_end));
+    const PetscLogDouble local_original_assembly_time =
+        original_assembly_end - original_assembly_start;
+    PetscLogDouble original_assembly_time = 0.0;
+    PetscCallMPI(MPI_Allreduce(&local_original_assembly_time,
+        &original_assembly_time, 1, MPI_DOUBLE, MPI_MAX, comm));
 
     // Assemble K_LOR only for configurations whose preconditioner or spectral
     // diagnostic actually consumes it. Direct K reference modes avoid this
     // setup cost while retaining the common partition and error-analysis path.
-    const bool uses_lor_matrix = lor_pc_mode_uses_lor_matrix(options.lor_pc);
     GlobalMatrixAssemblyResult lor_stiffness;
     if (uses_lor_matrix)
     {
         const QuadratureRule1D lor_quad = gauss_legendre_rule(2);
         PetscCall(assemble_global_stiffness<Dim>(
-            lor_mesh, lor_IEN, ID_map, lor_quad, &lor_stiffness));
+            *lor_mesh, *lor_IEN, ID_map, lor_quad, &lor_stiffness));
     }
+    TruncatedCholeskyTensorResult<Dim> truncated_tensor;
+    if (uses_preconditioner_matrix &&
+        options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::truncated_cholesky_tensor)
+    {
+        const int effective_k = options.trunc_chol_k_was_auto ?
+            (patch.degree(0) + 1) / 2 : options.trunc_chol_k;
+        PetscCall(assemble_truncated_cholesky_tensor<Dim>(patch, ID_map,
+            high_stiffness.matrix, effective_k,
+            options.compute_truncation_certificate, &truncated_tensor));
+    }
+    Mat preconditioner_matrix = uses_lor_matrix ? lor_stiffness.matrix :
+        truncated_tensor.preconditioner.matrix;
 
     // Optionally solve the identical high-order system without and with the
     // selected LOR-based or direct-K preconditioner.
@@ -232,7 +275,7 @@ PetscErrorCode run_assembled_laplace_experiment(
             high_load.vector, options.lor_pc, options.tolerances,
             &original_solve));
         PetscCall(solve_with_lor(high_stiffness.matrix,
-            lor_stiffness.matrix, high_load.vector, options.lor_pc,
+            preconditioner_matrix, high_load.vector, options.lor_pc,
             options.inner_pc,
             options.tolerances, options.fixed_jacobi,
             &preconditioned_solve));
@@ -242,8 +285,13 @@ PetscErrorCode run_assembled_laplace_experiment(
     // solutions. No error tables are allocated when this feature is disabled.
     PetscReal original_error = 0.0;
     PetscReal preconditioned_error = 0.0;
+    PetscLogDouble l2_error_time = 0.0;
     if (options.compute_l2_error)
     {
+        PetscCallMPI(MPI_Barrier(comm));
+        PetscLogDouble l2_start = 0.0;
+        PetscLogDouble l2_end = 0.0;
+        PetscCall(PetscTime(&l2_start));
         const QuadratureRule1D error_quad =
             gauss_legendre_rule(patch.degree(0) + 3);
         std::vector<BSplineBasis1D> error_basis;
@@ -257,44 +305,81 @@ PetscErrorCode run_assembled_laplace_experiment(
         PetscCall(compute_l2_error<Dim>(patch, high_IEN, ID_map,
             error_quad, error_basis, preconditioned_solve.solution,
             dirichlet_coefficients, exact, &preconditioned_error));
+        PetscCall(PetscTime(&l2_end));
+        const PetscLogDouble local_l2_time = l2_end - l2_start;
+        PetscCallMPI(MPI_Allreduce(&local_l2_time, &l2_error_time,
+            1, MPI_DOUBLE, MPI_MAX, comm));
     }
 
     // Optionally invoke the independent GlobalAssembly spectral analysis. A
     // disabled condition-number feature creates no SLEPc or factorization data.
     ConditionNumberResult original_condition;
     ConditionNumberResult preconditioned_condition;
+    PetscLogDouble singular_svd_time = 0.0;
     if (options.compute_condition_number)
     {
+        PetscCallMPI(MPI_Barrier(comm));
+        PetscLogDouble analysis_start = 0.0;
+        PetscLogDouble analysis_end = 0.0;
+        PetscCall(PetscTime(&analysis_start));
         const ConditioningPreconditioner spectral_preconditioner =
             options.lor_pc == LORPCMode::left_gmres_k_jacobi ?
             ConditioningPreconditioner::stiffness_jacobi :
             ConditioningPreconditioner::exact_lor;
         PetscCall(compute_stiffness_condition_numbers(
-            high_stiffness.matrix, lor_stiffness.matrix,
+            high_stiffness.matrix, preconditioner_matrix,
             options.preconditioner_side,
             spectral_preconditioner,
             options.svd_tolerance, options.svd_max_iterations,
             options.svd_subspace_dimension, &original_condition,
             &preconditioned_condition));
+        PetscCall(PetscTime(&analysis_end));
+        const PetscLogDouble local_analysis_time =
+            analysis_end - analysis_start;
+        PetscCallMPI(MPI_Allreduce(&local_analysis_time,
+            &singular_svd_time, 1, MPI_DOUBLE, MPI_MAX, comm));
+    }
+
+    SpectralConditionNumberResult spectral_condition;
+    PetscLogDouble spectral_eps_time = 0.0;
+    if (options.compute_spectral_condition_number)
+    {
+        PetscCallMPI(MPI_Barrier(comm));
+        PetscLogDouble analysis_start = 0.0;
+        PetscLogDouble analysis_end = 0.0;
+        PetscCall(PetscTime(&analysis_start));
+        PetscCall(compute_generalized_spectral_condition_number(
+            high_stiffness.matrix, preconditioner_matrix,
+            options.eps_tolerance, options.eps_max_iterations,
+            options.eps_subspace_dimension, &spectral_condition));
+        PetscCall(PetscTime(&analysis_end));
+        const PetscLogDouble local_analysis_time =
+            analysis_end - analysis_start;
+        PetscCallMPI(MPI_Allreduce(&local_analysis_time,
+            &spectral_eps_time, 1, MPI_DOUBLE, MPI_MAX, comm));
     }
 
     // Collect metadata and only the diagnostics whose computations were
     // enabled; root writes a self-describing sparse result record.
     ExperimentResults results;
     results.refinement_mode = options.refinement_mode;
-    results.mpi_ranks = partition.size();
+    results.mpi_ranks = partition->size();
     results.actual_degree = patch.degree(0);
     for (int direction = 0; direction < Dim; ++direction)
         results.actual_elements.push_back(patch.num_elements(direction));
     results.computed_solution = options.compute_solution;
     results.computed_l2_error = options.compute_l2_error;
     results.computed_condition_number = options.compute_condition_number;
+    results.computed_spectral_condition_number =
+        options.compute_spectral_condition_number;
     results.lor_pc = options.lor_pc;
+    results.preconditioner_matrix_source =
+        options.preconditioner_matrix_source;
     results.preconditioner_side = options.preconditioner_side;
     results.inner_pc = options.inner_pc;
     results.tolerances = options.tolerances;
     results.fixed_jacobi = options.fixed_jacobi;
-    results.assembled_lor_matrix = uses_lor_matrix;
+    results.assembled_lor_matrix = uses_preconditioner_matrix;
     results.predicted_nonzeros_K = high_stiffness.predicted_nonzeros;
     results.allocated_nonzeros_K = high_stiffness.allocated_nonzeros;
     results.used_nonzeros_K = high_stiffness.used_nonzeros;
@@ -302,20 +387,53 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.memory_bytes_K = high_stiffness.memory_bytes;
     results.estimated_minimum_bytes_K =
         high_stiffness.estimated_minimum_bytes;
-    if (uses_lor_matrix)
+    if (uses_preconditioner_matrix)
     {
-        results.predicted_nonzeros_lor = lor_stiffness.predicted_nonzeros;
-        results.allocated_nonzeros_lor = lor_stiffness.allocated_nonzeros;
-        results.used_nonzeros_lor = lor_stiffness.used_nonzeros;
-        results.allocation_calls_lor = lor_stiffness.allocation_calls;
-        results.memory_bytes_lor = lor_stiffness.memory_bytes;
+        const GlobalMatrixAssemblyResult &selected_preconditioner =
+            uses_lor_matrix ? lor_stiffness :
+                truncated_tensor.preconditioner;
+        results.predicted_nonzeros_lor =
+            selected_preconditioner.predicted_nonzeros;
+        results.allocated_nonzeros_lor =
+            selected_preconditioner.allocated_nonzeros;
+        results.used_nonzeros_lor = selected_preconditioner.used_nonzeros;
+        results.allocation_calls_lor =
+            selected_preconditioner.allocation_calls;
+        results.memory_bytes_lor = selected_preconditioner.memory_bytes;
         results.estimated_minimum_bytes_lor =
-            lor_stiffness.estimated_minimum_bytes;
+            selected_preconditioner.estimated_minimum_bytes;
     }
     if (options.compute_condition_number)
     {
         results.condition_K = original_condition.condition_number;
         results.condition_lor_K = preconditioned_condition.condition_number;
+        results.singular_condition_converged =
+            preconditioned_condition.converged;
+        results.original_singular_condition_converged =
+            original_condition.converged;
+        results.sigma_min = preconditioned_condition.sigma_min;
+        results.sigma_max = preconditioned_condition.sigma_max;
+        results.svd_iterations_min =
+            preconditioned_condition.iterations_min;
+        results.svd_iterations_max =
+            preconditioned_condition.iterations_max;
+        results.svd_reason_min = preconditioned_condition.reason_min;
+        results.svd_reason_max = preconditioned_condition.reason_max;
+    }
+    if (options.compute_spectral_condition_number)
+    {
+        results.spectral_condition_converged = spectral_condition.converged;
+        results.kappa_lambda = spectral_condition.condition_number;
+        results.lambda_min = spectral_condition.lambda_min;
+        results.lambda_max = spectral_condition.lambda_max;
+        results.lambda_relative_error_min =
+            spectral_condition.relative_error_min;
+        results.lambda_relative_error_max =
+            spectral_condition.relative_error_max;
+        results.eps_iterations_min = spectral_condition.iterations_min;
+        results.eps_iterations_max = spectral_condition.iterations_max;
+        results.eps_reason_min = spectral_condition.reason_min;
+        results.eps_reason_max = spectral_condition.reason_max;
     }
     if (options.compute_solution)
     {
@@ -338,14 +456,79 @@ PetscErrorCode run_assembled_laplace_experiment(
             preconditioned_solve.inner_iterations;
         results.inner_solve_time_lor_K =
             preconditioned_solve.inner_solve_time_seconds;
+        results.reason_K = original_solve.reason;
+        results.reason_lor_K = preconditioned_solve.reason;
     }
     if (options.compute_l2_error)
     {
         results.l2_error_K = original_error;
         results.l2_error_lor_K = preconditioned_error;
     }
+    results.time_original_matrix_assembly_s = original_assembly_time;
+    results.time_spectral_eps_s = spectral_eps_time;
+    results.time_singular_svd_s = singular_svd_time;
+    results.time_l2_error_s = l2_error_time;
+    if (options.preconditioner_matrix_source ==
+        PreconditionerMatrixSource::truncated_cholesky_tensor)
+    {
+        results.trunc_chol_k_was_auto = options.trunc_chol_k_was_auto;
+        results.trunc_chol_k_effective = options.trunc_chol_k_was_auto ?
+            (patch.degree(0) + 1) / 2 : options.trunc_chol_k;
+        results.trunc_chol_original_degree_p = patch.degree(0);
+        results.trunc_chol_mass_degree_q = patch.degree(0) - 1;
+        results.trunc_chol_certificate_computed =
+            options.compute_truncation_certificate;
+        results.trunc_chol_certificate_bound_available =
+            truncated_tensor.certificate_bound_available;
+        results.trunc_chol_theoretical_kappa_lambda_bound =
+            truncated_tensor.theoretical_kappa_lambda_bound;
+        results.tensor_identity_relative_error =
+            truncated_tensor.tensor_identity_relative_error;
+        results.preconditioner_symmetric = truncated_tensor.symmetric;
+        results.preconditioner_minimum_diagonal =
+            truncated_tensor.minimum_diagonal;
+        for (const auto &direction : truncated_tensor.directions)
+        {
+            results.derivative_identity_max_relative_error = std::max(
+                results.derivative_identity_max_relative_error,
+                direction.derivative_identity_relative_error);
+            results.trunc_chol_beta_value_mass.push_back(
+                direction.value_mass.certificate.beta);
+            results.trunc_chol_beta_derivative_mass.push_back(
+                direction.derivative_mass.certificate.beta);
+            results.trunc_chol_beta_below_one.push_back(
+                direction.value_mass.certificate.beta_below_one &&
+                direction.derivative_mass.certificate.beta_below_one);
+            results.trunc_chol_dropped_entries +=
+                direction.value_mass.dropped_factor_entries +
+                direction.derivative_mass.dropped_factor_entries;
+            results.trunc_chol_complete_factor_nonzeros +=
+                direction.value_mass.complete_factor_nonzeros +
+                direction.derivative_mass.complete_factor_nonzeros;
+            results.trunc_chol_truncated_factor_nonzeros +=
+                direction.value_mass.truncated_factor_nonzeros +
+                direction.derivative_mass.truncated_factor_nonzeros;
+        }
+        results.time_1d_mass_assembly_s =
+            truncated_tensor.time_1d_mass_assembly_seconds;
+        results.time_1d_full_cholesky_s =
+            truncated_tensor.time_1d_full_cholesky_seconds;
+        results.time_1d_factor_truncation_s =
+            truncated_tensor.time_1d_factor_truncation_seconds;
+        results.time_truncation_certificate_s =
+            truncated_tensor.time_truncation_certificate_seconds;
+        results.time_1d_reduced_operators_s =
+            truncated_tensor.time_1d_reduced_operators_seconds;
+        results.time_tensor_pc_assembly_s =
+            truncated_tensor.time_tensor_assembly_seconds;
+    }
+    PetscLogDouble case_end = 0.0;
+    PetscCall(PetscTime(&case_end));
+    const PetscLogDouble local_case_time = case_end - case_start;
+    PetscCallMPI(MPI_Allreduce(&local_case_time,
+        &results.time_case_total_s, 1, MPI_DOUBLE, MPI_MAX, comm));
     std::string output_error;
-    if (partition.rank() == root)
+    if (partition->rank() == root)
         try
         {
             write_experiment_results(options.output_file, results);
@@ -357,7 +540,7 @@ PetscErrorCode run_assembled_laplace_experiment(
 
     // Propagate a root filesystem failure but postpone throwing until all
     // ranks have collectively destroyed their PETSc objects.
-    broadcast_root_error(output_error, root, partition.rank(), comm);
+    broadcast_root_error(output_error, root, partition->rank(), comm);
 
     // Print one concise run summary only after every rank knows output
     // succeeded; PetscPrintf emits it through the communicator's rank zero.
@@ -365,13 +548,16 @@ PetscErrorCode run_assembled_laplace_experiment(
     {
         PetscCall(PetscPrintf(comm,
             "Completed MPI ranks=%d, refinement=%s, actual p=%d, actual elements=(",
-            partition.size(), options.refinement_mode.c_str(), patch.degree(0)));
+            partition->size(), options.refinement_mode.c_str(), patch.degree(0)));
         for (int direction = 0; direction < Dim; ++direction)
             PetscCall(PetscPrintf(comm, "%s%d", direction == 0 ? "" : ",",
                 patch.num_elements(direction)));
         PetscCall(PetscPrintf(comm, "), mode=%s, side=%s",
             lor_pc_mode_name(options.lor_pc),
             preconditioner_side_name(options.preconditioner_side)));
+        PetscCall(PetscPrintf(comm, ", matrix_source=%s",
+            preconditioner_matrix_source_name(
+                options.preconditioner_matrix_source)));
         if (options.lor_pc == LORPCMode::left_gmres_cg ||
             options.lor_pc == LORPCMode::right_gmres_cg ||
             options.lor_pc == LORPCMode::right_fgmres_cg)
@@ -398,9 +584,9 @@ PetscErrorCode run_assembled_laplace_experiment(
             results.allocated_nonzeros_K, results.allocation_calls_K,
             results.estimated_minimum_bytes_K / (1024.0 * 1024.0),
             results.memory_bytes_K / (1024.0 * 1024.0)));
-        if (uses_lor_matrix)
+        if (uses_preconditioner_matrix)
             PetscCall(PetscPrintf(comm,
-                "  K_LOR storage: predicted_nnz=%" PetscInt_FMT
+                "  P storage: predicted_nnz=%" PetscInt_FMT
                 ", used_nnz=%.0f, allocated_nnz=%.0f, mallocs=%.0f, "
                 "minimum=%.3f MiB, PETSc_reported=%.3f MiB\n",
                 results.predicted_nonzeros_lor, results.used_nonzeros_lor,
@@ -410,22 +596,65 @@ PetscErrorCode run_assembled_laplace_experiment(
                 results.memory_bytes_lor / (1024.0 * 1024.0)));
         else
             PetscCall(PetscPrintf(comm,
-                "  K_LOR storage: not assembled for direct-K mode\n"));
+                "  P storage: not assembled for direct-K mode\n"));
         // Distinguish the ideal exact-LOR spectral operator from the actual
         // algorithm applying an exact, variable, or fixed approximate inverse.
         const char *ideal_operator =
             options.lor_pc == LORPCMode::left_gmres_k_jacobi ?
             "D_K^{-1}K" :
-            (options.preconditioner_side == PreconditionerSide::left ?
-                "K_LOR^{-1}K" : "KK_LOR^{-1}");
+            (options.preconditioner_matrix_source ==
+                PreconditionerMatrixSource::truncated_cholesky_tensor ?
+                (options.preconditioner_side == PreconditionerSide::left ?
+                    "P_k^{-1}K" : "KP_k^{-1}") :
+                (options.preconditioner_side == PreconditionerSide::left ?
+                    "K_LOR^{-1}K" : "KK_LOR^{-1}"));
         const char *solve_label = lor_pc_mode_name(options.lor_pc);
         if (options.compute_condition_number)
-            PetscCall(PetscPrintf(comm,
-                "  cond_2(K) = %.12e\n"
-                "  cond_2(%s) = %.12e\n",
-                static_cast<double>(results.condition_K),
+        {
+            PetscCall(PetscPrintf(comm, "  SVD status: K=%s, %s=%s\n",
+                results.original_singular_condition_converged ?
+                    "converged" : "not_converged",
                 ideal_operator,
-                static_cast<double>(results.condition_lor_K)));
+                results.singular_condition_converged ?
+                    "converged" : "not_converged"));
+            if (results.original_singular_condition_converged)
+                PetscCall(PetscPrintf(comm, "  cond_2(K) = %.12e\n",
+                    static_cast<double>(results.condition_K)));
+            if (results.singular_condition_converged)
+                PetscCall(PetscPrintf(comm, "  cond_2(%s) = %.12e\n",
+                    ideal_operator,
+                    static_cast<double>(results.condition_lor_K)));
+        }
+        if (options.compute_spectral_condition_number)
+        {
+            PetscCall(PetscPrintf(comm,
+                "  EPS Kx=lambda Px: status=%s, time=%.6e s\n",
+                results.spectral_condition_converged ?
+                    "converged" : "not_converged",
+                static_cast<double>(results.time_spectral_eps_s)));
+            if (results.spectral_condition_converged)
+                PetscCall(PetscPrintf(comm,
+                    "    lambda_min=%.12e, lambda_max=%.12e, "
+                    "kappa_lambda=%.12e\n",
+                    static_cast<double>(results.lambda_min),
+                    static_cast<double>(results.lambda_max),
+                    static_cast<double>(results.kappa_lambda)));
+        }
+        if (options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::truncated_cholesky_tensor)
+            PetscCall(PetscPrintf(comm,
+                "  truncated tensor: k=%d, tensor_identity=%.6e, "
+                "1D_derivative_identity=%.6e, dropped=%zu, symmetric=%s, "
+                "min_diagonal=%.6e, certificate_bound=%s\n",
+                results.trunc_chol_k_effective,
+                static_cast<double>(results.tensor_identity_relative_error),
+                static_cast<double>(
+                    results.derivative_identity_max_relative_error),
+                results.trunc_chol_dropped_entries,
+                results.preconditioner_symmetric ? "true" : "false",
+                static_cast<double>(results.preconditioner_minimum_diagonal),
+                results.trunc_chol_certificate_bound_available ?
+                    "available" : "unavailable"));
         if (options.compute_solution)
         {
             PetscCall(PetscPrintf(comm,
@@ -488,6 +717,7 @@ PetscErrorCode run_assembled_laplace_experiment(
     // Release all PETSc-owned result objects after output and post-processing.
     PetscCall(destroy_linear_solve_result(&preconditioned_solve));
     PetscCall(destroy_linear_solve_result(&original_solve));
+    PetscCall(destroy_global_matrix(&truncated_tensor.preconditioner));
     PetscCall(destroy_global_matrix(&lor_stiffness));
     PetscCall(destroy_global_vector(&high_load));
     PetscCall(destroy_global_matrix(&high_stiffness));

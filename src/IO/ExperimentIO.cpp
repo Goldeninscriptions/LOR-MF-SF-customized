@@ -34,6 +34,25 @@ std::vector<int> parse_elements(const std::string &text)
 
 } // namespace
 
+PreconditionerMatrixSource parse_preconditioner_matrix_source(
+    const std::string &name)
+{
+    if (name == "lor_q1")
+        return PreconditionerMatrixSource::lor_q1;
+    if (name == "truncated_cholesky_tensor")
+        return PreconditionerMatrixSource::truncated_cholesky_tensor;
+    throw std::invalid_argument(
+        "-preconditioner_matrix_source must be lor_q1 or "
+        "truncated_cholesky_tensor");
+}
+
+const char *preconditioner_matrix_source_name(
+    const PreconditionerMatrixSource source) noexcept
+{
+    return source == PreconditionerMatrixSource::lor_q1 ?
+        "lor_q1" : "truncated_cholesky_tensor";
+}
+
 ExperimentOptions read_experiment_options(const int dimension)
 {
     // Allocate fixed PETSc option buffers and track the three required inputs.
@@ -46,6 +65,8 @@ ExperimentOptions read_experiment_options(const int dimension)
     char side[16] = "left";
     char inner_pc[16] = "jacobi";
     char point_set[32] = "greville";
+    char matrix_source[64] = "lor_q1";
+    char truncation_bandwidth[32] = "auto";
     PetscBool geometry_set = PETSC_FALSE;
     PetscBool degree_set = PETSC_FALSE;
     PetscBool elements_set = PETSC_FALSE;
@@ -60,6 +81,8 @@ ExperimentOptions read_experiment_options(const int dimension)
     PetscBool compute_solution = PETSC_TRUE;
     PetscBool compute_l2_error = PETSC_TRUE;
     PetscBool compute_condition_number = PETSC_FALSE;
+    PetscBool compute_spectral_condition_number = PETSC_FALSE;
+    PetscBool compute_truncation_certificate = PETSC_TRUE;
 
     // Read refinement, discretization, LOR, and output selections.
     PetscOptionsGetString(nullptr, nullptr, "-geometry", geometry,
@@ -79,12 +102,24 @@ ExperimentOptions read_experiment_options(const int dimension)
         sizeof(inner_pc), &inner_pc_set);
     PetscOptionsGetString(nullptr, nullptr, "-lor_points", point_set,
         sizeof(point_set), nullptr);
+    PetscOptionsGetString(nullptr, nullptr, "-preconditioner_matrix_source",
+        matrix_source, sizeof(matrix_source), nullptr);
+    PetscBool truncation_bandwidth_set = PETSC_FALSE;
+    PetscOptionsGetString(nullptr, nullptr, "-trunc_chol_k",
+        truncation_bandwidth, sizeof(truncation_bandwidth),
+        &truncation_bandwidth_set);
     PetscOptionsGetBool(nullptr, nullptr, "-compute_solution",
         &compute_solution, nullptr);
     PetscOptionsGetBool(nullptr, nullptr, "-compute_l2_error",
         &compute_l2_error, nullptr);
     PetscOptionsGetBool(nullptr, nullptr, "-compute_condition_number",
         &compute_condition_number, nullptr);
+    PetscOptionsGetBool(nullptr, nullptr,
+        "-compute_spectral_condition_number",
+        &compute_spectral_condition_number, nullptr);
+    PetscOptionsGetBool(nullptr, nullptr,
+        "-compute_truncation_certificate",
+        &compute_truncation_certificate, nullptr);
 
     // Transfer validated primitive strings into the typed option record.
     if (!geometry_set || !degree_set || !elements_set)
@@ -105,6 +140,20 @@ ExperimentOptions read_experiment_options(const int dimension)
         throw std::invalid_argument(
             "-refinement must be p_refine, h_refine, or k_refine");
     options.lor_pc = parse_lor_pc_mode(mode);
+    options.preconditioner_matrix_source =
+        parse_preconditioner_matrix_source(matrix_source);
+    options.trunc_chol_k_was_auto =
+        !truncation_bandwidth_set ||
+        std::string(truncation_bandwidth) == "auto";
+    if (!options.trunc_chol_k_was_auto)
+    {
+        const std::string text = truncation_bandwidth;
+        std::size_t consumed = 0;
+        options.trunc_chol_k = std::stoi(text, &consumed);
+        if (consumed != text.size() || options.trunc_chol_k < 0)
+            throw std::invalid_argument(
+                "-trunc_chol_k must be auto or a nonnegative integer");
+    }
     const bool uses_inner_cg =
         options.lor_pc == LORPCMode::left_gmres_cg ||
         options.lor_pc == LORPCMode::right_gmres_cg ||
@@ -126,6 +175,10 @@ ExperimentOptions read_experiment_options(const int dimension)
     options.compute_l2_error = compute_l2_error == PETSC_TRUE;
     options.compute_condition_number =
         compute_condition_number == PETSC_TRUE;
+    options.compute_spectral_condition_number =
+        compute_spectral_condition_number == PETSC_TRUE;
+    options.compute_truncation_certificate =
+        compute_truncation_certificate == PETSC_TRUE;
     if (options.compute_l2_error && !options.compute_solution)
         throw std::invalid_argument(
             "-compute_l2_error true requires -compute_solution true");
@@ -136,6 +189,32 @@ ExperimentOptions read_experiment_options(const int dimension)
         throw std::invalid_argument(
             "K-GAMG modes do not support -compute_condition_number true; "
             "use physical residual and L2 error diagnostics");
+    const bool uses_direct_k = !lor_pc_mode_uses_lor_matrix(options.lor_pc);
+    if (options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::truncated_cholesky_tensor &&
+        uses_direct_k)
+        throw std::invalid_argument(
+            "-preconditioner_matrix_source truncated_cholesky_tensor conflicts "
+            "with a direct K-Jacobi/K-GAMG lor_pc mode");
+    if (uses_direct_k && options.compute_spectral_condition_number)
+        throw std::invalid_argument(
+            "-compute_spectral_condition_number requires an assembled "
+            "preconditioner matrix and is unavailable for direct K modes");
+    if (options.preconditioner_matrix_source ==
+        PreconditionerMatrixSource::truncated_cholesky_tensor)
+    {
+        if (options.degree <= 1)
+            throw std::invalid_argument(
+                "truncated_cholesky_tensor requires p>=2; p=1 has no "
+                "truncatable derivative mass bandwidth");
+        const int effective_k = options.trunc_chol_k_was_auto ?
+            (options.degree + 1) / 2 : options.trunc_chol_k;
+        if (effective_k >= options.degree - 1)
+            throw std::invalid_argument(
+                "The requested/default trunc_chol_k is not strictly smaller "
+                "than derivative mass half-bandwidth p-1; for p=2 or p=3 "
+                "specify a smaller explicit -trunc_chol_k");
+    }
 
     // Apply any optional outer/inner KSP and SVD stopping-control overrides.
     PetscOptionsGetReal(nullptr, nullptr, "-outer_rtol",
@@ -160,6 +239,8 @@ ExperimentOptions read_experiment_options(const int dimension)
         &options.fixed_jacobi.omega, &fixed_omega_set);
     PetscOptionsGetReal(nullptr, nullptr, "-svd_tol",
         &options.svd_tolerance, nullptr);
+    PetscOptionsGetReal(nullptr, nullptr, "-eps_tol",
+        &options.eps_tolerance, nullptr);
 
     // Reject parameters that do not belong to the selected complete scheme;
     // this prevents result metadata from implying inactive nested algorithms.
@@ -193,6 +274,10 @@ ExperimentOptions read_experiment_options(const int dimension)
         &options.svd_max_iterations, nullptr);
     PetscOptionsGetInt(nullptr, nullptr, "-svd_ncv",
         &options.svd_subspace_dimension, nullptr);
+    PetscOptionsGetInt(nullptr, nullptr, "-eps_max_it",
+        &options.eps_max_iterations, nullptr);
+    PetscOptionsGetInt(nullptr, nullptr, "-eps_ncv",
+        &options.eps_subspace_dimension, nullptr);
     if (options.compute_condition_number)
     {
         if (!(options.svd_tolerance > 0.0))
@@ -201,6 +286,15 @@ ExperimentOptions read_experiment_options(const int dimension)
             throw std::invalid_argument("-svd_max_it must be positive");
         if (options.svd_subspace_dimension < 2)
             throw std::invalid_argument("-svd_ncv must be at least two");
+    }
+    if (options.compute_spectral_condition_number)
+    {
+        if (!(options.eps_tolerance > 0.0))
+            throw std::invalid_argument("-eps_tol must be positive");
+        if (options.eps_max_iterations < 1)
+            throw std::invalid_argument("-eps_max_it must be positive");
+        if (options.eps_subspace_dimension < 2)
+            throw std::invalid_argument("-eps_ncv must be at least two");
     }
     return options;
 }
@@ -269,6 +363,9 @@ void write_experiment_results(const std::string &filename,
     // numerical fields belonging to computations that did not run.
     output << std::boolalpha
            << "lor_pc = " << lor_pc_mode_name(results.lor_pc) << '\n'
+           << "preconditioner_matrix_source = "
+           << preconditioner_matrix_source_name(
+                results.preconditioner_matrix_source) << '\n'
            << "preconditioner_side = "
            << preconditioner_side_name(results.preconditioner_side) << '\n';
     const bool uses_inner_cg =
@@ -282,7 +379,61 @@ void write_experiment_results(const std::string &filename,
            << "compute_l2_error = " << results.computed_l2_error << '\n'
            << "compute_condition_number = "
            << results.computed_condition_number << '\n'
+           << "compute_spectral_condition_number = "
+           << results.computed_spectral_condition_number << '\n'
            << std::scientific << std::setprecision(16);
+
+    if (results.preconditioner_matrix_source ==
+        PreconditionerMatrixSource::truncated_cholesky_tensor)
+    {
+        output << "trunc_chol_k_requested = "
+               << (results.trunc_chol_k_was_auto ? "auto" :
+                   std::to_string(results.trunc_chol_k_effective)) << '\n'
+               << "trunc_chol_k_effective = "
+               << results.trunc_chol_k_effective << '\n'
+               << "trunc_chol_original_degree_p = "
+               << results.trunc_chol_original_degree_p << '\n'
+               << "trunc_chol_mass_degree_q = "
+               << results.trunc_chol_mass_degree_q << '\n'
+               << "trunc_chol_boundary_preservation = conservative_w_layers"
+               << '\n'
+               << "trunc_chol_dropped_entries = "
+               << results.trunc_chol_dropped_entries << '\n'
+               << "trunc_chol_nnz_complete_factors = "
+               << results.trunc_chol_complete_factor_nonzeros << '\n'
+               << "trunc_chol_nnz_truncated_factors = "
+               << results.trunc_chol_truncated_factor_nonzeros << '\n'
+               << "trunc_chol_certificate_computed = "
+               << results.trunc_chol_certificate_computed << '\n';
+        for (std::size_t direction = 0;
+             direction < results.trunc_chol_beta_value_mass.size();
+             ++direction)
+            output << "trunc_chol_beta_direction_" << direction
+                   << "_value_mass = "
+                   << results.trunc_chol_beta_value_mass[direction] << '\n'
+                   << "trunc_chol_beta_direction_" << direction
+                   << "_derivative_mass = "
+                   << results.trunc_chol_beta_derivative_mass[direction]
+                   << '\n'
+                   << "trunc_chol_beta_direction_" << direction
+                   << "_below_one = "
+                   << results.trunc_chol_beta_below_one[direction] << '\n';
+        output << "trunc_chol_certificate_status = "
+               << (results.trunc_chol_certificate_bound_available ?
+                   "beta_below_one" : "bound_unavailable") << '\n';
+        if (results.trunc_chol_certificate_bound_available)
+            output << "trunc_chol_theoretical_kappa_lambda_bound = "
+                   << results.trunc_chol_theoretical_kappa_lambda_bound
+                   << '\n';
+        output << "tensor_identity_relative_error = "
+               << results.tensor_identity_relative_error << '\n'
+               << "derivative_identity_max_relative_error = "
+               << results.derivative_identity_max_relative_error << '\n'
+               << "preconditioner_symmetric = "
+               << results.preconditioner_symmetric << '\n'
+               << "preconditioner_minimum_diagonal = "
+               << results.preconditioner_minimum_diagonal << '\n';
+    }
 
     // Preserve the actual stopping policy beside every computed solution so
     // performance and error changes can be attributed to the correct sweep.
@@ -314,6 +465,7 @@ void write_experiment_results(const std::string &filename,
     // Record predicted tensor structure and PETSc's post-assembly storage so
     // remote batches can detect reallocations and memory regressions.
     output << "predicted_nnz(K) = " << results.predicted_nonzeros_K << '\n'
+           << "nnz_K = " << results.used_nonzeros_K << '\n'
            << "used_nnz(K) = " << results.used_nonzeros_K << '\n'
            << "allocated_nnz(K) = " << results.allocated_nonzeros_K << '\n'
            << "allocation_calls(K) = " << results.allocation_calls_K << '\n'
@@ -333,19 +485,85 @@ void write_experiment_results(const std::string &filename,
                << "memory_bytes(K_LOR) = "
                << results.memory_bytes_lor << '\n'
                << "estimated_minimum_bytes(K_LOR) = "
-               << results.estimated_minimum_bytes_lor << '\n';
+               << results.estimated_minimum_bytes_lor << '\n'
+               << "nnz_P = " << results.used_nonzeros_lor << '\n'
+               << "memory_bytes_P = " << results.memory_bytes_lor << '\n';
+    output << "memory_bytes_K = " << results.memory_bytes_K << '\n'
+           << "time_original_matrix_assembly_s = "
+           << results.time_original_matrix_assembly_s << '\n'
+           << "time_1d_mass_assembly_s = "
+           << results.time_1d_mass_assembly_s << '\n'
+           << "time_1d_full_cholesky_s = "
+           << results.time_1d_full_cholesky_s << '\n'
+           << "time_1d_factor_truncation_s = "
+           << results.time_1d_factor_truncation_s << '\n'
+           << "time_truncation_certificate_s = "
+           << results.time_truncation_certificate_s << '\n'
+           << "time_1d_reduced_operators_s = "
+           << results.time_1d_reduced_operators_s << '\n'
+           << "time_tensor_pc_assembly_s = "
+           << results.time_tensor_pc_assembly_s << '\n'
+           << "time_spectral_eps_s = "
+           << results.time_spectral_eps_s << '\n'
+           << "time_singular_svd_s = "
+           << results.time_singular_svd_s << '\n'
+           << "time_l2_error_s = " << results.time_l2_error_s << '\n'
+           << "time_case_total_s = " << results.time_case_total_s << '\n';
     // Keep the ideal exact-LOR spectral operator separate from the actual
     // algorithm label used by iterative solve and error diagnostics.
     const bool left =
         results.preconditioner_side == PreconditionerSide::left;
     const char *ideal_operator =
         results.lor_pc == LORPCMode::left_gmres_k_jacobi ?
-        "D_K^{-1}K" : (left ? "K_LOR^{-1}K" : "KK_LOR^{-1}");
+        "D_K^{-1}K" :
+        (results.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::truncated_cholesky_tensor ?
+            (left ? "P_k^{-1}K" : "KP_k^{-1}") :
+            (left ? "K_LOR^{-1}K" : "KK_LOR^{-1}"));
     const char *solve_label = lor_pc_mode_name(results.lor_pc);
     if (results.computed_condition_number)
-        output << "cond_2(K) = " << results.condition_K << '\n'
-               << "cond_2(" << ideal_operator << ") = "
-               << results.condition_lor_K << '\n';
+    {
+        output << "svd_status = "
+               << (results.singular_condition_converged ?
+                   "converged" : "not_converged") << '\n'
+               << "svd_status_K = "
+               << (results.original_singular_condition_converged ?
+                   "converged" : "not_converged") << '\n'
+               << "svd_iterations_min = "
+               << results.svd_iterations_min << '\n'
+               << "svd_iterations_max = "
+               << results.svd_iterations_max << '\n'
+               << "svd_reason_min = " << results.svd_reason_min << '\n'
+               << "svd_reason_max = " << results.svd_reason_max << '\n';
+        if (results.original_singular_condition_converged)
+            output << "cond_2(K) = " << results.condition_K << '\n';
+        if (results.singular_condition_converged)
+            output << "cond_2(" << ideal_operator << ") = "
+                   << results.condition_lor_K << '\n'
+                   << "kappa_sigma = " << results.condition_lor_K << '\n'
+                   << "sigma_min = " << results.sigma_min << '\n'
+                   << "sigma_max = " << results.sigma_max << '\n';
+    }
+    if (results.computed_spectral_condition_number)
+    {
+        output << "eigensolver_status = "
+               << (results.spectral_condition_converged ?
+                   "converged" : "not_converged") << '\n'
+               << "eps_iterations_min = "
+               << results.eps_iterations_min << '\n'
+               << "eps_iterations_max = "
+               << results.eps_iterations_max << '\n'
+               << "eps_reason_min = " << results.eps_reason_min << '\n'
+               << "eps_reason_max = " << results.eps_reason_max << '\n';
+        if (results.spectral_condition_converged)
+            output << "kappa_lambda = " << results.kappa_lambda << '\n'
+                   << "lambda_min = " << results.lambda_min << '\n'
+                   << "lambda_max = " << results.lambda_max << '\n'
+                   << "eps_relative_error_min = "
+                   << results.lambda_relative_error_min << '\n'
+                   << "eps_relative_error_max = "
+                   << results.lambda_relative_error_max << '\n';
+    }
     if (results.computed_solution)
     {
         output << "iterations(K) = " << results.iterations_K << '\n'
@@ -365,7 +583,22 @@ void write_experiment_results(const std::string &filename,
                << "residual(" << solve_label << ") = "
                << results.residual_lor_K << '\n'
                << "relative_residual(" << solve_label << ") = "
-               << results.relative_residual_lor_K << '\n';
+               << results.relative_residual_lor_K << '\n'
+               << "outer_iterations = " << results.iterations_lor_K << '\n'
+               << "pc_applications = "
+               << results.pc_applications_lor_K << '\n'
+               << "inner_iterations_total = "
+               << results.inner_iterations_lor_K << '\n'
+               << "relative_true_residual = "
+               << results.relative_residual_lor_K << '\n'
+               << "ksp_reason = "
+               << static_cast<int>(results.reason_lor_K) << '\n'
+               << "time_pc_ksp_setup_s = "
+               << results.setup_time_lor_K << '\n'
+               << "time_outer_solve_s = "
+               << results.outer_solve_time_lor_K << '\n'
+               << "time_pc_apply_total_s = "
+               << results.inner_solve_time_lor_K << '\n';
         if (results.lor_pc == LORPCMode::left_gmres_cg ||
             results.lor_pc == LORPCMode::right_gmres_cg ||
             results.lor_pc == LORPCMode::right_fgmres_cg)
@@ -406,7 +639,8 @@ void write_experiment_results(const std::string &filename,
     if (results.computed_l2_error)
         output << "L2_error(K) = " << results.l2_error_K << '\n'
                << "L2_error(" << solve_label << ") = "
-               << results.l2_error_lor_K << '\n';
+               << results.l2_error_lor_K << '\n'
+               << "l2_error = " << results.l2_error_lor_K << '\n';
 }
 
 // Emit fixed-dimensional option adapters used by the one runtime driver.

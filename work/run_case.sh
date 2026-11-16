@@ -10,6 +10,10 @@ set -euo pipefail
 # Alternative exact-LU research mode (uncomment to use as a command):
 # ./run_case.sh 8 input/square_2d.txt k_refine 5 16,16 greville left_cg_lu \
 #     results/p5_n16x16_left_cg_lu.log 1e-10 1e-12 1e-10 1e-10
+# Optional tensor source keeps the same positional protocol:
+# PRECONDITIONER_MATRIX_SOURCE=truncated_cholesky_tensor TRUNC_CHOL_K=2 \
+#   COMPUTE_SPECTRAL_CONDITION_NUMBER=true ./run_case.sh 1 \
+#   input/square_2d.txt k_refine 4 16,16 greville left_cg_lu results/trunc.log
 
 if [[ $# -ne 8 && $# -ne 12 ]]; then
   echo "Usage: $0 MPI_RANK GEOMETRY_FILE REFINEMENT P N_TUPLE LOR_POINTS LOR_PC OUTPUT_FILE [OUTER_RTOL OUTER_ATOL INNER_RTOL INNER_ATOL]" >&2
@@ -183,16 +187,33 @@ inner_max_it=${INNER_MAX_IT:-$inner_max_it}
 svd_tol=${SVD_TOL:-1.0e-8}
 svd_max_it=${SVD_MAX_IT:-100000}
 svd_ncv=${SVD_NCV:-100}
+eps_tol=${EPS_TOL:-1.0e-8}
+eps_max_it=${EPS_MAX_IT:-100000}
+eps_ncv=${EPS_NCV:-100}
+
+preconditioner_matrix_source=${PRECONDITIONER_MATRIX_SOURCE:-lor_q1}
+trunc_chol_k=${TRUNC_CHOL_K:-auto}
+compute_truncation_certificate=${COMPUTE_TRUNCATION_CERTIFICATE:-true}
+case "$preconditioner_matrix_source" in
+  lor_q1|truncated_cholesky_tensor) ;;
+  *) echo "PRECONDITIONER_MATRIX_SOURCE must be lor_q1 or truncated_cholesky_tensor" >&2; exit 2 ;;
+esac
+if [[ "$trunc_chol_k" != auto ]] && ! [[ "$trunc_chol_k" =~ ^[0-9]+$ ]]; then
+  echo "TRUNC_CHOL_K must be auto or a nonnegative integer" >&2
+  exit 2
+fi
 
 # Independent experiment features. Environment variables make the single-case
 # launcher configurable without lengthening its positional interface.
 compute_solution=${COMPUTE_SOLUTION:-true}
 compute_l2_error=${COMPUTE_L2_ERROR:-true}
 compute_condition_number=${COMPUTE_CONDITION_NUMBER:-false}
+compute_spectral_condition_number=${COMPUTE_SPECTRAL_CONDITION_NUMBER:-false}
 for feature_value in \
-  "$compute_solution" "$compute_l2_error" "$compute_condition_number"; do
+  "$compute_solution" "$compute_l2_error" "$compute_condition_number" \
+  "$compute_spectral_condition_number" "$compute_truncation_certificate"; do
   if [[ "$feature_value" != "true" && "$feature_value" != "false" ]]; then
-    echo "COMPUTE_SOLUTION, COMPUTE_L2_ERROR, and COMPUTE_CONDITION_NUMBER must be true or false" >&2
+    echo "COMPUTE_* feature switches must be true or false" >&2
     exit 2
   fi
 done
@@ -227,9 +248,13 @@ common_options=(
   -lor_points "$lor_points"
   -lor_pc "$lor_pc"
   -preconditioner_side "$preconditioner_side"
+  -preconditioner_matrix_source "$preconditioner_matrix_source"
+  -trunc_chol_k "$trunc_chol_k"
+  -compute_truncation_certificate "$compute_truncation_certificate"
   -compute_solution "$compute_solution"
   -compute_l2_error "$compute_l2_error"
   -compute_condition_number "$compute_condition_number"
+  -compute_spectral_condition_number "$compute_spectral_condition_number"
   -outer_rtol "$outer_rtol"
   -outer_atol "$outer_atol"
   -outer_dtol "$outer_dtol"
@@ -237,6 +262,9 @@ common_options=(
   -svd_tol "$svd_tol"
   -svd_max_it "$svd_max_it"
   -svd_ncv "$svd_ncv"
+  -eps_tol "$eps_tol"
+  -eps_max_it "$eps_max_it"
+  -eps_ncv "$eps_ncv"
   -output "$output_file"
 )
 
@@ -269,5 +297,5 @@ if [[ "$uses_inner_cg" == true ]]; then
 elif [[ "$uses_fixed_jacobi" == true ]]; then
   scheme_log=" fixed_jacobi_steps=$fixed_jacobi_steps fixed_jacobi_omega=$fixed_jacobi_omega"
 fi
-echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side${scheme_log} solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_dtol=$outer_dtol outer_max_it=$outer_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side matrix_source=$preconditioner_matrix_source trunc_k=$trunc_chol_k certificate=$compute_truncation_certificate${scheme_log} solve=$compute_solution L2=$compute_l2_error condition_svd=$compute_condition_number condition_eps=$compute_spectral_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_dtol=$outer_dtol outer_max_it=$outer_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv eps_tol=$eps_tol eps_max_it=$eps_max_it eps_ncv=$eps_ncv"
 "$mpi_launcher" -n "$mpi_ranks" "$driver" "${common_options[@]}"

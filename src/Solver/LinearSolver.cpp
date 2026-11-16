@@ -9,6 +9,7 @@ namespace
 
 enum class ShellApplyKind
 {
+    exact_lu,
     inner_cg,
     fixed_jacobi
 };
@@ -64,10 +65,12 @@ PetscErrorCode apply_lor_shell(PC pc, Vec residual, Vec correction)
     PetscLogDouble end = 0.0;
     PetscCall(PetscTime(&start));
     PetscInt iterations = 0;
-    if (context->kind == ShellApplyKind::inner_cg)
+    if (context->kind == ShellApplyKind::inner_cg ||
+        context->kind == ShellApplyKind::exact_lu)
     {
         PetscCall(KSPSolve(context->inner_ksp, residual, correction));
-        PetscCall(KSPGetIterationNumber(context->inner_ksp, &iterations));
+        if (context->kind == ShellApplyKind::inner_cg)
+            PetscCall(KSPGetIterationNumber(context->inner_ksp, &iterations));
     }
     else
     {
@@ -140,7 +143,7 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     const bool use_k_gamg =
         mode == LORPCMode::left_gmres_k_gamg ||
         mode == LORPCMode::right_gmres_k_gamg;
-    const bool use_shell = use_inner_cg || use_fixed_jacobi;
+    const bool use_shell = use_exact_lu || use_inner_cg || use_fixed_jacobi;
     const bool use_fgmres = apply_preconditioner &&
         mode == LORPCMode::right_fgmres_cg;
     const bool use_gmres = mode != LORPCMode::left_cg_lu;
@@ -158,8 +161,7 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     // variable inner solve. The unpreconditioned baseline remains GMRES.
     KSP ksp = nullptr;
     PetscCall(KSPCreate(comm, &ksp));
-    PetscCall(KSPSetOperators(ksp, stiffness,
-        apply_preconditioner && use_exact_lu ? lor_stiffness : stiffness));
+    PetscCall(KSPSetOperators(ksp, stiffness, stiffness));
     PetscCall(KSPSetType(ksp, use_fgmres ? KSPFGMRES :
         (use_gmres ? KSPGMRES : KSPCG)));
     if (use_gmres)
@@ -196,7 +198,22 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
         PetscCall(PCSetType(pc, PCSHELL));
         PetscCall(PetscNew(&shell_context));
         shell_context->lor_stiffness = lor_stiffness;
-        if (use_inner_cg)
+        if (use_exact_lu)
+        {
+            // Wrap the exact factor application so its call count and nested
+            // wall time are available just like the iterative shell modes.
+            shell_context->kind = ShellApplyKind::exact_lu;
+            PetscCall(KSPCreate(comm, &shell_context->inner_ksp));
+            PetscCall(KSPSetOperators(shell_context->inner_ksp,
+                lor_stiffness, lor_stiffness));
+            PetscCall(KSPSetType(shell_context->inner_ksp, KSPPREONLY));
+            PC exact_pc = nullptr;
+            PetscCall(KSPGetPC(shell_context->inner_ksp, &exact_pc));
+            PetscCall(PCSetType(exact_pc, PCLU));
+            PetscCall(KSPSetErrorIfNotConverged(
+                shell_context->inner_ksp, PETSC_TRUE));
+        }
+        else if (use_inner_cg)
         {
             // Configure A1/legacy variable inner CG and its reusable algebraic
             // Jacobi or GAMG preconditioner.

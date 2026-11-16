@@ -18,3 +18,8 @@ target_link_libraries(assembled_driver PRIVATE lor_solver)
 add_executable(case_planner case_planner.cpp)
 target_link_libraries(case_planner PRIVATE lor_core)
 
+add_executable(truncated_cholesky_1d_test truncated_cholesky_1d_test.cpp)
+target_link_libraries(truncated_cholesky_1d_test PRIVATE lor_core)
+
+enable_testing()
+add_test(NAME truncated_cholesky_1d COMMAND truncated_cholesky_1d_test)

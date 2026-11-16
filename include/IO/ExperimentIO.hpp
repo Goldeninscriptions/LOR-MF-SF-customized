@@ -12,6 +12,17 @@
 namespace lor
 {
 
+enum class PreconditionerMatrixSource
+{
+    lor_q1,
+    truncated_cholesky_tensor
+};
+
+PreconditionerMatrixSource parse_preconditioner_matrix_source(
+    const std::string &name);
+const char *preconditioner_matrix_source_name(
+    PreconditionerMatrixSource source) noexcept;
+
 struct ExperimentOptions
 {
     // Geometry description read by GeometryInput and result-file target.
@@ -31,6 +42,11 @@ struct ExperimentOptions
     // inner_pc is meaningful only for the three modes ending in _cg; the
     // default mode instead uses a fixed weighted-Jacobi polynomial inverse.
     std::string lor_points = "greville";
+    PreconditionerMatrixSource preconditioner_matrix_source =
+        PreconditionerMatrixSource::lor_q1;
+    int trunc_chol_k = -1; // -1 means auto = ceil(p/2).
+    bool trunc_chol_k_was_auto = true;
+    bool compute_truncation_certificate = true;
     LORPCMode lor_pc = LORPCMode::left_gmres_fixed_jacobi;
     PreconditionerSide preconditioner_side = PreconditionerSide::left;
     InnerPCMode inner_pc = InnerPCMode::jacobi;
@@ -41,6 +57,7 @@ struct ExperimentOptions
     bool compute_solution = true;
     bool compute_l2_error = true;
     bool compute_condition_number = false;
+    bool compute_spectral_condition_number = false;
 
     // KSP stopping controls and independent SLEPc singular-value controls.
     // Inner tolerances apply only to *_cg, and fixed_jacobi applies only to
@@ -50,6 +67,9 @@ struct ExperimentOptions
     PetscReal svd_tolerance = 1.0e-8;
     PetscInt svd_max_iterations = 100000;
     PetscInt svd_subspace_dimension = 100;
+    PetscReal eps_tolerance = 1.0e-8;
+    PetscInt eps_max_iterations = 100000;
+    PetscInt eps_subspace_dimension = 100;
 };
 
 // Self-describing experiment record used by both direct and batch workflows.
@@ -69,12 +89,33 @@ struct ExperimentResults
     bool computed_solution = false;
     bool computed_l2_error = false;
     bool computed_condition_number = false;
+    bool computed_spectral_condition_number = false;
 
     // Preconditioner application and side used consistently by the solve and
     // labels. inner_pc is emitted as metadata only for a *_cg configuration.
     LORPCMode lor_pc = LORPCMode::left_gmres_fixed_jacobi;
     PreconditionerSide preconditioner_side = PreconditionerSide::left;
     InnerPCMode inner_pc = InnerPCMode::jacobi;
+    PreconditionerMatrixSource preconditioner_matrix_source =
+        PreconditionerMatrixSource::lor_q1;
+
+    bool trunc_chol_k_was_auto = true;
+    int trunc_chol_k_effective = -1;
+    int trunc_chol_original_degree_p = 0;
+    int trunc_chol_mass_degree_q = 0;
+    std::vector<double> trunc_chol_beta_value_mass;
+    std::vector<double> trunc_chol_beta_derivative_mass;
+    std::vector<bool> trunc_chol_beta_below_one;
+    std::size_t trunc_chol_dropped_entries = 0;
+    std::size_t trunc_chol_complete_factor_nonzeros = 0;
+    std::size_t trunc_chol_truncated_factor_nonzeros = 0;
+    bool trunc_chol_certificate_computed = false;
+    bool trunc_chol_certificate_bound_available = false;
+    PetscReal trunc_chol_theoretical_kappa_lambda_bound = 0.0;
+    PetscReal tensor_identity_relative_error = 0.0;
+    PetscReal derivative_identity_max_relative_error = 0.0;
+    bool preconditioner_symmetric = false;
+    PetscReal preconditioner_minimum_diagonal = 0.0;
 
     // Actual outer and inner KSP stopping controls used by this run. Keeping
     // them in the result record makes tolerance-sweep files self-describing.
@@ -123,6 +164,42 @@ struct ExperimentResults
     PetscInt pc_applications_lor_K = 0;
     PetscInt inner_iterations_lor_K = 0;
     PetscLogDouble inner_solve_time_lor_K = 0.0;
+    KSPConvergedReason reason_K = KSP_CONVERGED_ITERATING;
+    KSPConvergedReason reason_lor_K = KSP_CONVERGED_ITERATING;
+
+    // New source-independent and truncated-source phase timings. MPI phases
+    // are rank-maximum wall times.
+    PetscLogDouble time_original_matrix_assembly_s = 0.0;
+    PetscLogDouble time_1d_mass_assembly_s = 0.0;
+    PetscLogDouble time_1d_full_cholesky_s = 0.0;
+    PetscLogDouble time_1d_factor_truncation_s = 0.0;
+    PetscLogDouble time_truncation_certificate_s = 0.0;
+    PetscLogDouble time_1d_reduced_operators_s = 0.0;
+    PetscLogDouble time_tensor_pc_assembly_s = 0.0;
+    PetscLogDouble time_spectral_eps_s = 0.0;
+    PetscLogDouble time_singular_svd_s = 0.0;
+    PetscLogDouble time_l2_error_s = 0.0;
+    PetscLogDouble time_case_total_s = 0.0;
+
+    bool spectral_condition_converged = false;
+    PetscReal kappa_lambda = 0.0;
+    PetscReal lambda_min = 0.0;
+    PetscReal lambda_max = 0.0;
+    PetscReal lambda_relative_error_min = 0.0;
+    PetscReal lambda_relative_error_max = 0.0;
+    PetscInt eps_iterations_min = 0;
+    PetscInt eps_iterations_max = 0;
+    int eps_reason_min = 0;
+    int eps_reason_max = 0;
+
+    bool singular_condition_converged = false;
+    bool original_singular_condition_converged = false;
+    PetscReal sigma_min = 0.0;
+    PetscReal sigma_max = 0.0;
+    PetscInt svd_iterations_min = 0;
+    PetscInt svd_iterations_max = 0;
+    int svd_reason_min = 0;
+    int svd_reason_max = 0;
 };
 
 // Read the experiment command line after PETSc/SLEPc initialization.

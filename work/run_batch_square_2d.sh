@@ -101,6 +101,13 @@ maximum_mpi_ranks=${MAX_MPI_RANKS:-}
 compute_solution=true
 compute_l2_error=true
 compute_condition_number=false
+preconditioner_matrix_source=${PRECONDITIONER_MATRIX_SOURCE:-lor_q1}
+trunc_chol_k=${TRUNC_CHOL_K:-auto}
+compute_truncation_certificate=${COMPUTE_TRUNCATION_CERTIFICATE:-true}
+compute_spectral_condition_number=${COMPUTE_SPECTRAL_CONDITION_NUMBER:-false}
+eps_tol=${EPS_TOL:-1.0e-8}
+eps_max_it=${EPS_MAX_IT:-100000}
+eps_ncv=${EPS_NCV:-100}
 
 svd_tol="1.0e-8"
 svd_max_it="100000"

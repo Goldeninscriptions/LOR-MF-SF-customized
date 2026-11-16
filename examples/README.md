@@ -151,3 +151,12 @@ row pointers 的可移植下界，`memory_bytes` 是当前 PETSc 实现的报告
 高阶系统 `K u=F`；LOR 系统只作为预条件器，不作为另一个 PDE 解进行误差比较。
 质量矩阵接口仍由 Assembly 提供，但该 Laplace Driver 不请求它，因此运行时不会
 产生高阶或 LOR 质量矩阵。
+
+`truncated_cholesky_1d_test` 是快速验收测试，覆盖
+`(p,k)=(3,1),(4,2),(8,4)`，核对 `D^T M^(p-1) D`、完整 Cholesky
+重构、截断质量/刚度 SPD 和证书：
+
+```bash
+ctest --test-dir build --output-on-failure
+./build/truncated_cholesky_1d_test
+```

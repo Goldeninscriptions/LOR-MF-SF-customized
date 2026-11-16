@@ -39,6 +39,13 @@ inner_atol=${inner_atol:-${INNER_ATOL:-1.0e-10}}
 inner_max_it=${inner_max_it:-${INNER_MAX_IT:-10000}}
 fixed_jacobi_steps=${fixed_jacobi_steps:-${FIXED_JACOBI_STEPS:-4}}
 fixed_jacobi_omega=${fixed_jacobi_omega:-${FIXED_JACOBI_OMEGA:-0.6666666666666667}}
+preconditioner_matrix_source=${preconditioner_matrix_source:-${PRECONDITIONER_MATRIX_SOURCE:-lor_q1}}
+trunc_chol_k=${trunc_chol_k:-${TRUNC_CHOL_K:-auto}}
+compute_truncation_certificate=${compute_truncation_certificate:-${COMPUTE_TRUNCATION_CERTIFICATE:-true}}
+compute_spectral_condition_number=${compute_spectral_condition_number:-${COMPUTE_SPECTRAL_CONDITION_NUMBER:-false}}
+eps_tol=${eps_tol:-${EPS_TOL:-1.0e-8}}
+eps_max_it=${eps_max_it:-${EPS_MAX_IT:-100000}}
+eps_ncv=${eps_ncv:-${EPS_NCV:-100}}
 
 mkdir -p "$result_dir" "$console_dir"
 
@@ -61,9 +68,10 @@ fi
 
 # Reject inconsistent feature selections before creating any result files.
 for feature_value in \
-  "$compute_solution" "$compute_l2_error" "$compute_condition_number"; do
+  "$compute_solution" "$compute_l2_error" "$compute_condition_number" \
+  "$compute_spectral_condition_number" "$compute_truncation_certificate"; do
   if [[ "$feature_value" != "true" && "$feature_value" != "false" ]]; then
-    echo "compute_solution, compute_l2_error, and compute_condition_number must be true or false" >&2
+    echo "compute feature switches must be true or false" >&2
     exit 2
   fi
 done
@@ -172,7 +180,7 @@ for degree in "${degrees[@]}"; do
   for element_tuple in "${element_cases[@]}"; do
     mpi_ranks=${planned_ranks[$plan_index]}
     plan_index=$((plan_index + 1))
-    echo "  mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side settings=[$scheme_settings] solve=$compute_solution L2=$compute_l2_error condition=$compute_condition_number svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv"
+    echo "  mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side source=$preconditioner_matrix_source trunc_k=$trunc_chol_k settings=[$scheme_settings] solve=$compute_solution L2=$compute_l2_error condition_svd=$compute_condition_number condition_eps=$compute_spectral_condition_number"
   done
 done
 
@@ -219,6 +227,11 @@ for degree in "${degrees[@]}"; do
       OUTER_DTOL="$outer_dtol" OUTER_MAX_IT="$outer_max_it" \
       COMPUTE_SOLUTION="$compute_solution" COMPUTE_L2_ERROR="$compute_l2_error" \
       COMPUTE_CONDITION_NUMBER="$compute_condition_number" \
+      PRECONDITIONER_MATRIX_SOURCE="$preconditioner_matrix_source" \
+      TRUNC_CHOL_K="$trunc_chol_k" \
+      COMPUTE_TRUNCATION_CERTIFICATE="$compute_truncation_certificate" \
+      COMPUTE_SPECTRAL_CONDITION_NUMBER="$compute_spectral_condition_number" \
+      EPS_TOL="$eps_tol" EPS_MAX_IT="$eps_max_it" EPS_NCV="$eps_ncv" \
       SVD_TOL="$svd_tol" SVD_MAX_IT="$svd_max_it" SVD_NCV="$svd_ncv" \
       "$script_dir/run_case.sh" "$mpi_ranks" "$geometry_file" "$refinement" "$degree" \
       "$element_tuple" "$lor_points" "$lor_pc" "$result_file" \

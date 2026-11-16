@@ -78,6 +78,28 @@ struct ConditionNumberResult
     PetscReal sigma_min = 0.0;
     PetscReal sigma_max = 0.0;
     PetscReal condition_number = 0.0;
+    PetscInt iterations_min = 0;
+    PetscInt iterations_max = 0;
+    int reason_min = 0;
+    int reason_max = 0;
+    bool converged = false;
+};
+
+// Generalized Hermitian-definite extremes K x = lambda P x.  This is the
+// eigenvalue spectral condition number and is intentionally distinct from the
+// singular-value condition number above.
+struct SpectralConditionNumberResult
+{
+    PetscReal lambda_min = 0.0;
+    PetscReal lambda_max = 0.0;
+    PetscReal condition_number = 0.0;
+    PetscReal relative_error_min = 0.0;
+    PetscReal relative_error_max = 0.0;
+    PetscInt iterations_min = 0;
+    PetscInt iterations_max = 0;
+    int reason_min = 0;
+    int reason_max = 0;
+    bool converged = false;
 };
 
 // Exact inverse used by the optional preconditioned spectral analysis. The
@@ -101,6 +123,10 @@ PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
     PetscInt max_iterations, PetscInt subspace_dimension,
     ConditionNumberResult *original,
     ConditionNumberResult *preconditioned);
+
+PetscErrorCode compute_generalized_spectral_condition_number(Mat stiffness,
+    Mat preconditioner, PetscReal eps_tolerance, PetscInt max_iterations,
+    PetscInt subspace_dimension, SpectralConditionNumberResult *result);
 
 // Assemble only the high-order B-spline stiffness matrix.
 template <int Dim>
