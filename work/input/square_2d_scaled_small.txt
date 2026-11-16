@@ -1,0 +1,11 @@
+# Axis-aligned rectangle with the same topology as square_2d.txt but a
+# 1e-6 physical length scale.  Used to guard scale-independent sparsity.
+dimension = 2
+
+knot_vector_1 = {0, 0, 1, 1}
+knot_vector_2 = {0, 0, 1, 1}
+
+control_points = {
+  (0,0): (0,0), (1,0): (0.000002,0),
+  (0,1): (0,0.000001), (1,1): (0.000002,0.000001)
+}

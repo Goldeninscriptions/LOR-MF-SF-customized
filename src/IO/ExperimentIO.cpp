@@ -83,6 +83,7 @@ ExperimentOptions read_experiment_options(const int dimension)
     PetscBool compute_condition_number = PETSC_FALSE;
     PetscBool compute_spectral_condition_number = PETSC_FALSE;
     PetscBool compute_truncation_certificate = PETSC_TRUE;
+    PetscBool verify_tensor_identity = PETSC_FALSE;
 
     // Read refinement, discretization, LOR, and output selections.
     PetscOptionsGetString(nullptr, nullptr, "-geometry", geometry,
@@ -120,6 +121,10 @@ ExperimentOptions read_experiment_options(const int dimension)
     PetscOptionsGetBool(nullptr, nullptr,
         "-compute_truncation_certificate",
         &compute_truncation_certificate, nullptr);
+    PetscOptionsGetBool(nullptr, nullptr, "-verify_tensor_identity",
+        &verify_tensor_identity, nullptr);
+    PetscOptionsGetReal(nullptr, nullptr, "-trunc_chol_max_memory_bytes",
+        &options.trunc_chol_max_memory_bytes, nullptr);
 
     // Transfer validated primitive strings into the typed option record.
     if (!geometry_set || !degree_set || !elements_set)
@@ -179,6 +184,11 @@ ExperimentOptions read_experiment_options(const int dimension)
         compute_spectral_condition_number == PETSC_TRUE;
     options.compute_truncation_certificate =
         compute_truncation_certificate == PETSC_TRUE;
+    options.verify_tensor_identity = verify_tensor_identity == PETSC_TRUE;
+    if (!(options.trunc_chol_max_memory_bytes > 0.0) ||
+        !std::isfinite(options.trunc_chol_max_memory_bytes))
+        throw std::invalid_argument(
+            "-trunc_chol_max_memory_bytes must be finite and positive");
     if (options.compute_l2_error && !options.compute_solution)
         throw std::invalid_argument(
             "-compute_l2_error true requires -compute_solution true");
@@ -405,10 +415,11 @@ void write_experiment_results(const std::string &filename,
                << results.trunc_chol_truncated_factor_nonzeros << '\n'
                << "trunc_chol_certificate_computed = "
                << results.trunc_chol_certificate_computed << '\n';
-        for (std::size_t direction = 0;
-             direction < results.trunc_chol_beta_value_mass.size();
-             ++direction)
-            output << "trunc_chol_beta_direction_" << direction
+        if (results.trunc_chol_certificate_computed)
+            for (std::size_t direction = 0;
+                 direction < results.trunc_chol_beta_value_mass.size();
+                 ++direction)
+                output << "trunc_chol_beta_direction_" << direction
                    << "_value_mass = "
                    << results.trunc_chol_beta_value_mass[direction] << '\n'
                    << "trunc_chol_beta_direction_" << direction
@@ -417,22 +428,51 @@ void write_experiment_results(const std::string &filename,
                    << '\n'
                    << "trunc_chol_beta_direction_" << direction
                    << "_below_one = "
-                   << results.trunc_chol_beta_below_one[direction] << '\n';
+                   << results.trunc_chol_beta_below_one[direction] << '\n'
+                   << "trunc_chol_certificate_direction_" << direction
+                   << "_value_maximum_row_sum = "
+                   << results.trunc_chol_certificate_value_maximum_row_sum[direction]
+                   << '\n'
+                   << "trunc_chol_certificate_direction_" << direction
+                   << "_value_maximum_column_sum = "
+                   << results.trunc_chol_certificate_value_maximum_column_sum[direction]
+                   << '\n'
+                   << "trunc_chol_certificate_direction_" << direction
+                   << "_derivative_maximum_row_sum = "
+                   << results.trunc_chol_certificate_derivative_maximum_row_sum[direction]
+                   << '\n'
+                   << "trunc_chol_certificate_direction_" << direction
+                   << "_derivative_maximum_column_sum = "
+                   << results.trunc_chol_certificate_derivative_maximum_column_sum[direction]
+                   << '\n';
         output << "trunc_chol_certificate_status = "
-               << (results.trunc_chol_certificate_bound_available ?
-                   "beta_below_one" : "bound_unavailable") << '\n';
+               << (!results.trunc_chol_certificate_computed ?
+                   "not_computed" :
+                   (results.trunc_chol_certificate_bound_available ?
+                    "computed_beta_below_one" :
+                    "computed_bound_unavailable")) << '\n';
         if (results.trunc_chol_certificate_bound_available)
             output << "trunc_chol_theoretical_kappa_lambda_bound = "
                    << results.trunc_chol_theoretical_kappa_lambda_bound
                    << '\n';
-        output << "tensor_identity_relative_error = "
-               << results.tensor_identity_relative_error << '\n'
-               << "derivative_identity_max_relative_error = "
+        output << "tensor_identity_verification_status = "
+               << (!results.tensor_identity_verification_computed ?
+                   "not_computed" :
+                   (results.tensor_identity_verification_passed ?
+                    "passed" : "failed")) << '\n';
+        if (results.tensor_identity_verification_computed)
+            output << "tensor_identity_relative_error = "
+                   << results.tensor_identity_relative_error << '\n';
+        output << "derivative_identity_max_relative_error = "
                << results.derivative_identity_max_relative_error << '\n'
                << "preconditioner_symmetric = "
                << results.preconditioner_symmetric << '\n'
                << "preconditioner_minimum_diagonal = "
-               << results.preconditioner_minimum_diagonal << '\n';
+               << results.preconditioner_minimum_diagonal << '\n'
+               << "trunc_chol_conservative_memory_estimate_bytes = "
+               << results.trunc_chol_conservative_memory_estimate_bytes << '\n'
+               << "trunc_chol_memory_limit_bytes = "
+               << results.trunc_chol_memory_limit_bytes << '\n';
     }
 
     // Preserve the actual stopping policy beside every computed solution so
@@ -503,6 +543,8 @@ void write_experiment_results(const std::string &filename,
            << results.time_1d_reduced_operators_s << '\n'
            << "time_tensor_pc_assembly_s = "
            << results.time_tensor_pc_assembly_s << '\n'
+           << "time_tensor_identity_verification_s = "
+           << results.time_tensor_identity_verification_s << '\n'
            << "time_spectral_eps_s = "
            << results.time_spectral_eps_s << '\n'
            << "time_singular_svd_s = "

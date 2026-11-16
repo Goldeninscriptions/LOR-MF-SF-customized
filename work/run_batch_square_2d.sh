@@ -100,7 +100,7 @@ maximum_mpi_ranks=${MAX_MPI_RANKS:-}
 
 compute_solution=true
 compute_l2_error=true
-compute_condition_number=false
+compute_condition_number=${COMPUTE_CONDITION_NUMBER:-false}
 preconditioner_matrix_source=${PRECONDITIONER_MATRIX_SOURCE:-lor_q1}
 trunc_chol_k=${TRUNC_CHOL_K:-auto}
 compute_truncation_certificate=${COMPUTE_TRUNCATION_CERTIFICATE:-true}

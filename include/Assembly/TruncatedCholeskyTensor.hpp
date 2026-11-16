@@ -17,6 +17,10 @@ struct TruncatedCholeskyTensorResult
     std::array<double, Dim> physical_lengths{};
     std::array<double, Dim> gamma{};
     double tensor_identity_relative_error = 0.0;
+    bool tensor_identity_verification_computed = false;
+    bool tensor_identity_verification_passed = false;
+    double conservative_memory_estimate_bytes = 0.0;
+    double memory_limit_bytes = 0.0;
     bool symmetric = false;
     double minimum_diagonal = 0.0;
     double theoretical_kappa_lambda_bound = 0.0;
@@ -27,6 +31,7 @@ struct TruncatedCholeskyTensorResult
     double time_truncation_certificate_seconds = 0.0;
     double time_1d_reduced_operators_seconds = 0.0;
     double time_tensor_assembly_seconds = 0.0;
+    double time_tensor_identity_verification_seconds = 0.0;
 };
 
 // Validate an axis-aligned affine geometry, build both one-dimensional mass
@@ -36,14 +41,15 @@ template <int Dim>
 PetscErrorCode assemble_truncated_cholesky_tensor(
     const BSplinePatch<Dim> &patch, const ID &ID_map,
     Mat high_order_stiffness, int truncation_half_bandwidth,
-    bool compute_certificate,
+    bool compute_certificate, bool verify_tensor_identity,
+    PetscLogDouble maximum_memory_bytes,
     TruncatedCholeskyTensorResult<Dim> *result);
 
 extern template PetscErrorCode assemble_truncated_cholesky_tensor<2>(
-    const BSplinePatch<2> &, const ID &, Mat, int, bool,
+    const BSplinePatch<2> &, const ID &, Mat, int, bool, bool, PetscLogDouble,
     TruncatedCholeskyTensorResult<2> *);
 extern template PetscErrorCode assemble_truncated_cholesky_tensor<3>(
-    const BSplinePatch<3> &, const ID &, Mat, int, bool,
+    const BSplinePatch<3> &, const ID &, Mat, int, bool, bool, PetscLogDouble,
     TruncatedCholeskyTensorResult<3> *);
 
 } // namespace lor

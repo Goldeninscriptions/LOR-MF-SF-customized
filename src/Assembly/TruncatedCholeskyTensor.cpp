@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -144,13 +145,52 @@ std::map<PetscInt, double> tensor_row(const TensorIndex<Dim> &row,
         accumulate_tensor_product<Dim>(0, row, matrices, column,
             gamma[derivative_direction], free_ordering, result);
     }
-    const double threshold = 64.0 * std::numeric_limits<double>::epsilon();
     for (auto iterator = result.begin(); iterator != result.end(); )
-        if (std::abs(iterator->second) <= threshold)
+        if (iterator->second == 0.0)
             iterator = result.erase(iterator);
         else
             ++iterator;
     return result;
+}
+
+std::uint64_t checked_add(const std::uint64_t left,
+    const std::uint64_t right)
+{
+    if (right > std::numeric_limits<std::uint64_t>::max() - left)
+        throw std::overflow_error("Tensor nonzero estimate overflowed uint64_t");
+    return left + right;
+}
+
+std::uint64_t checked_multiply(const std::uint64_t left,
+    const std::uint64_t right)
+{
+    if (left != 0 && right >
+        std::numeric_limits<std::uint64_t>::max() / left)
+        throw std::overflow_error("Tensor nonzero estimate overflowed uint64_t");
+    return left * right;
+}
+
+template <int Dim>
+std::uint64_t tensor_row_nonzero_upper_bound(
+    const TensorIndex<Dim> &row,
+    const std::array<TruncatedDirectionResult1D, Dim> &directions)
+{
+    std::uint64_t sum = 0;
+    for (int derivative_direction = 0;
+         derivative_direction < Dim; ++derivative_direction)
+    {
+        std::uint64_t product = 1;
+        for (int direction = 0; direction < Dim; ++direction)
+        {
+            const auto &matrix = direction == derivative_direction ?
+                directions[direction].approximate_stiffness :
+                directions[direction].value_mass.approximate_mass;
+            product = checked_multiply(product,
+                static_cast<std::uint64_t>(matrix.rows[row[direction]].size()));
+        }
+        sum = checked_add(sum, product);
+    }
+    return sum;
 }
 
 template <int Dim>
@@ -212,7 +252,8 @@ template <int Dim>
 PetscErrorCode assemble_truncated_cholesky_tensor(
     const BSplinePatch<Dim> &patch, const ID &ID_map,
     Mat high_order_stiffness, const int truncation_half_bandwidth,
-    const bool compute_certificate,
+    const bool compute_certificate, const bool verify_identity,
+    const PetscLogDouble maximum_memory_bytes,
     TruncatedCholeskyTensorResult<Dim> *result)
 {
     PetscFunctionBeginUser;
@@ -223,6 +264,9 @@ PetscErrorCode assemble_truncated_cholesky_tensor(
     PetscCheck(result->preconditioner.matrix == nullptr, comm,
         PETSC_ERR_ARG_WRONGSTATE,
         "Truncated tensor result already owns a matrix");
+    PetscCheck(maximum_memory_bytes > 0.0 &&
+        std::isfinite(maximum_memory_bytes), comm, PETSC_ERR_ARG_OUTOFRANGE,
+        "Truncated tensor memory limit must be finite and positive");
     try
     {
         result->physical_lengths = validate_affine_axis_aligned(patch);
@@ -277,14 +321,6 @@ PetscErrorCode assemble_truncated_cholesky_tensor(
                     "ID ordering is incompatible with tensor assembly");
         }
 
-        result->tensor_identity_relative_error = verify_tensor_identity<Dim>(
-            high_order_stiffness, result->directions, result->gamma,
-            free_ordering);
-        PetscCheck(result->tensor_identity_relative_error < 5.0e-11,
-            comm, PETSC_ERR_PLIB,
-            "Untruncated tensor stiffness disagrees with assembled K (relative Frobenius error %.6e)",
-            result->tensor_identity_relative_error);
-
         PetscInt local_rows = 0;
         PetscInt local_columns = 0;
         PetscInt global_rows = 0;
@@ -297,44 +333,123 @@ PetscErrorCode assemble_truncated_cholesky_tensor(
         PetscInt end = 0;
         PetscCall(MatGetOwnershipRange(high_order_stiffness, &begin, &end));
 
-        const auto tensor_start = Clock::now();
-        std::vector<std::map<PetscInt, double>> local_entries(local_rows);
-        std::vector<PetscInt> diagonal(local_rows, 0);
-        std::vector<PetscInt> off_diagonal(local_rows, 0);
-        PetscInt local_nonzeros = 0;
+        // This overflow-safe structural preflight precedes all tensor-row map
+        // construction.  It intentionally overcounts overlaps among the Dim
+        // Kronecker summands and accounts for both AIJ storage and one
+        // transient std::map row on every rank.
+        std::uint64_t local_upper = 0;
+        std::uint64_t local_maximum_row = 0;
         for (PetscInt row = begin; row < end; ++row)
         {
-            auto &entries = local_entries[row - begin];
-            entries = tensor_row<Dim>(free_ordering.multi_index(row),
+            const std::uint64_t row_upper = tensor_row_nonzero_upper_bound<Dim>(
+                free_ordering.multi_index(row), result->directions);
+            PetscCheck(row_upper <= static_cast<std::uint64_t>(
+                std::numeric_limits<PetscInt>::max()), comm, PETSC_ERR_SUP,
+                "A tensor row upper bound exceeds the PetscInt range");
+            local_upper = checked_add(local_upper, row_upper);
+            local_maximum_row = std::max(local_maximum_row, row_upper);
+        }
+        int comm_size = 1;
+        PetscCallMPI(MPI_Comm_size(comm, &comm_size));
+        PetscCheck(local_upper <= std::numeric_limits<std::uint64_t>::max() /
+            static_cast<std::uint64_t>(comm_size), comm, PETSC_ERR_SUP,
+            "Tensor nonzero estimate is too large for an MPI sum");
+        std::uint64_t global_upper = 0;
+        std::uint64_t global_transient_upper = 0;
+        PetscCallMPI(MPI_Allreduce(&local_upper, &global_upper, 1,
+            MPI_UINT64_T, MPI_SUM, comm));
+        PetscCallMPI(MPI_Allreduce(&local_maximum_row,
+            &global_transient_upper, 1, MPI_UINT64_T, MPI_SUM, comm));
+        const long double aij_lower =
+            static_cast<long double>(global_upper) *
+                (sizeof(PetscScalar) + sizeof(PetscInt)) +
+            static_cast<long double>(2) *
+                (static_cast<long double>(global_rows) + 1.0L) *
+                sizeof(PetscInt);
+        constexpr std::size_t map_node_estimate =
+            sizeof(std::pair<const PetscInt, double>) + 4 * sizeof(void *);
+        const long double conservative = aij_lower +
+            static_cast<long double>(global_upper) * sizeof(PetscInt) +
+            static_cast<long double>(global_transient_upper) *
+                map_node_estimate +
+            static_cast<long double>(4) *
+                (static_cast<long double>(global_rows) + comm_size) *
+                sizeof(PetscInt);
+        PetscCheck(conservative <=
+            std::numeric_limits<PetscLogDouble>::max(), comm, PETSC_ERR_SUP,
+            "Tensor memory estimate overflowed PetscLogDouble");
+        result->conservative_memory_estimate_bytes =
+            static_cast<PetscLogDouble>(conservative);
+        result->memory_limit_bytes = maximum_memory_bytes;
+        PetscCheck(result->conservative_memory_estimate_bytes <=
+            maximum_memory_bytes, comm, PETSC_ERR_MEM,
+            "Truncated tensor preflight conservative estimate %.3f MiB exceeds configured limit %.3f MiB; no tensor rows or PETSc matrix were allocated",
+            result->conservative_memory_estimate_bytes / (1024.0 * 1024.0),
+            maximum_memory_bytes / (1024.0 * 1024.0));
+
+        if (verify_identity)
+        {
+            const auto verification_start = Clock::now();
+            result->tensor_identity_relative_error =
+                verify_tensor_identity<Dim>(high_order_stiffness,
+                    result->directions, result->gamma, free_ordering);
+            const double local_verification_seconds =
+                std::chrono::duration<double>(Clock::now() -
+                    verification_start).count();
+            PetscCallMPI(MPI_Allreduce(&local_verification_seconds,
+                &result->time_tensor_identity_verification_seconds, 1,
+                MPI_DOUBLE, MPI_MAX, comm));
+            result->tensor_identity_verification_computed = true;
+            result->tensor_identity_verification_passed =
+                result->tensor_identity_relative_error < 5.0e-11;
+            PetscCheck(result->tensor_identity_verification_passed,
+                comm, PETSC_ERR_PLIB,
+                "Untruncated tensor stiffness disagrees with assembled K (relative Frobenius error %.6e)",
+                result->tensor_identity_relative_error);
+        }
+
+        const auto tensor_start = Clock::now();
+        std::vector<PetscInt> diagonal(local_rows, 0);
+        std::vector<PetscInt> off_diagonal(local_rows, 0);
+        std::uint64_t local_nonzeros = 0;
+        for (PetscInt row = begin; row < end; ++row)
+        {
+            const auto entries = tensor_row<Dim>(free_ordering.multi_index(row),
                 result->directions, result->gamma, true, free_ordering);
             for (const auto &entry : entries)
                 if (entry.first >= begin && entry.first < end)
                     ++diagonal[row - begin];
                 else
                     ++off_diagonal[row - begin];
-            local_nonzeros += static_cast<PetscInt>(entries.size());
+            local_nonzeros = checked_add(local_nonzeros,
+                static_cast<std::uint64_t>(entries.size()));
         }
-        PetscCallMPI(MPI_Allreduce(&local_nonzeros,
-            &result->preconditioner.predicted_nonzeros, 1,
-            MPIU_INT, MPI_SUM, comm));
+        PetscCheck(local_nonzeros <= std::numeric_limits<std::uint64_t>::max() /
+            static_cast<std::uint64_t>(comm_size), comm, PETSC_ERR_SUP,
+            "Exact tensor nonzero count is too large for an MPI sum");
+        std::uint64_t global_nonzeros = 0;
+        PetscCallMPI(MPI_Allreduce(&local_nonzeros, &global_nonzeros, 1,
+            MPI_UINT64_T, MPI_SUM, comm));
+        PetscCheck(global_nonzeros <= static_cast<std::uint64_t>(
+            std::numeric_limits<PetscInt>::max()), comm, PETSC_ERR_SUP,
+            "Exact tensor nonzero count exceeds the PetscInt range");
+        result->preconditioner.predicted_nonzeros =
+            static_cast<PetscInt>(global_nonzeros);
         result->preconditioner.estimated_minimum_bytes =
             static_cast<PetscLogDouble>(
                 result->preconditioner.predicted_nonzeros) *
                 (sizeof(PetscScalar) + sizeof(PetscInt)) +
-            static_cast<PetscLogDouble>(2 * (global_rows + 1)) *
+            2.0 * (static_cast<PetscLogDouble>(global_rows) + 1.0) *
                 sizeof(PetscInt);
-        constexpr PetscLogDouble maximum_estimated_bytes =
-            64.0 * 1024.0 * 1024.0 * 1024.0;
-        PetscCheck(result->preconditioner.estimated_minimum_bytes <=
-            maximum_estimated_bytes, comm, PETSC_ERR_MEM,
-            "Estimated P_k sparse storage exceeds 64 GiB; refusing allocation");
         PetscCall(PetscPrintf(comm,
             "[truncated tensor allocation] rows=%" PetscInt_FMT
             ", predicted_nnz=%" PetscInt_FMT
-            ", estimated_minimum=%.3f MiB\n",
+            ", estimated_minimum=%.3f MiB, conservative_preflight=%.3f MiB, limit=%.3f MiB\n",
             global_rows, result->preconditioner.predicted_nonzeros,
             result->preconditioner.estimated_minimum_bytes /
-                (1024.0 * 1024.0)));
+                (1024.0 * 1024.0),
+            result->conservative_memory_estimate_bytes / (1024.0 * 1024.0),
+            maximum_memory_bytes / (1024.0 * 1024.0)));
         PetscCall(MatCreateAIJ(comm, local_rows, local_columns,
             global_rows, global_columns, 0, diagonal.data(),
             0, off_diagonal.data(), &result->preconditioner.matrix));
@@ -346,7 +461,8 @@ PetscErrorCode assemble_truncated_cholesky_tensor(
             MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_TRUE));
         for (PetscInt row = begin; row < end; ++row)
         {
-            const auto &entries = local_entries[row - begin];
+            const auto entries = tensor_row<Dim>(free_ordering.multi_index(row),
+                result->directions, result->gamma, true, free_ordering);
             std::vector<PetscInt> columns;
             std::vector<PetscScalar> values;
             columns.reserve(entries.size());
@@ -420,10 +536,10 @@ PetscErrorCode assemble_truncated_cholesky_tensor(
 }
 
 template PetscErrorCode assemble_truncated_cholesky_tensor<2>(
-    const BSplinePatch<2> &, const ID &, Mat, int, bool,
+    const BSplinePatch<2> &, const ID &, Mat, int, bool, bool, PetscLogDouble,
     TruncatedCholeskyTensorResult<2> *);
 template PetscErrorCode assemble_truncated_cholesky_tensor<3>(
-    const BSplinePatch<3> &, const ID &, Mat, int, bool,
+    const BSplinePatch<3> &, const ID &, Mat, int, bool, bool, PetscLogDouble,
     TruncatedCholeskyTensorResult<3> *);
 
 } // namespace lor

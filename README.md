@@ -48,11 +48,16 @@ COMPUTE_SPECTRAL_CONDITION_NUMBER=true COMPUTE_CONDITION_NUMBER=true \
 
 直接调用 driver 时使用
 `-preconditioner_matrix_source`、`-trunc_chol_k`、
-`-compute_truncation_certificate`、`-compute_spectral_condition_number` 以及
+`-compute_truncation_certificate`、`-verify_tensor_identity`、
+`-trunc_chol_max_memory_bytes`、`-compute_spectral_condition_number` 以及
 `-eps_tol/-eps_max_it/-eps_ncv`。原 `-compute_condition_number` 仍是 SVD
 奇异值条件数 `kappa_sigma`；EPS 独立报告广义 SPD 问题的
 `kappa_lambda`。新来源会拒绝曲边几何和直接 K-Jacobi/K-GAMG 模式，旧
 Greville/Demko 曲边路径不受影响。
+
+`-verify_tensor_identity` 默认关闭；开启时会独立计时并将完整（未截断）
+Kronecker 刚度与装配的高阶 `K` 对照。内存上限默认 64 GiB；程序会在构造任何
+逐行临时 map 或 PETSc `P` 之前，用包含 AIJ 与临时结构的保守估计执行预检。
 
 ## 构建
 

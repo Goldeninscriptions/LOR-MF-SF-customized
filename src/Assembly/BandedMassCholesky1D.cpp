@@ -4,6 +4,7 @@
 #include "Element/GaussQuadrature.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -361,25 +362,33 @@ SparseMatrix1D difference_mass_stiffness(const SparseMatrix1D &mass,
             alpha[row] = original_degree / denominator;
     }
     std::vector<std::map<int, double>> accumulated(free_size);
-    for (int row = 0; row < free_size; ++row)
+
+    // Each derivative-space row z_j depends on at most two retained control
+    // coefficients. Traverse the actual nonzeros of M and scatter the at-most
+    // four products D(j,:)^T M(j,l) D(l,:) instead of scanning all free
+    // row/column pairs.
+    const auto derivative_row = [&alpha, free_size](const int derivative) {
+        std::array<std::pair<int, double>, 2> entries{{{-1, 0.0}, {-1, 0.0}}};
+        int count = 0;
+        // z_j contains +alpha_j*c_{j+1}.
+        if (derivative < free_size)
+            entries[count++] = {derivative, alpha[derivative]};
+        // z_j contains -alpha_j*c_j; c_j is free only for j>=1.
+        if (derivative > 0 && derivative - 1 < free_size)
+            entries[count++] = {derivative - 1, -alpha[derivative]};
+        return std::make_pair(entries, count);
+    };
+    for (int mass_row = 0; mass_row < mass.size(); ++mass_row)
     {
-        const int coefficient_row = row + 1;
-        const std::pair<int, double> row_d[2] = {
-            {coefficient_row - 1, alpha[coefficient_row - 1]},
-            {coefficient_row, -alpha[coefficient_row]}};
-        for (int column = 0; column < free_size; ++column)
+        const auto left = derivative_row(mass_row);
+        for (const auto &mass_entry : mass.rows[mass_row])
         {
-            const int coefficient_column = column + 1;
-            const std::pair<int, double> column_d[2] = {
-                {coefficient_column - 1, alpha[coefficient_column - 1]},
-                {coefficient_column, -alpha[coefficient_column]}};
-            double entry = 0.0;
-            for (const auto &left : row_d)
-                for (const auto &right : column_d)
-                    entry += left.second * mass.value(
-                        left.first, right.first) * right.second;
-            if (entry != 0.0)
-                accumulated[row][column] = entry;
+            const auto right = derivative_row(mass_entry.first);
+            for (int i = 0; i < left.second; ++i)
+                for (int j = 0; j < right.second; ++j)
+                    accumulated[left.first[i].first][right.first[j].first] +=
+                        left.first[i].second * mass_entry.second *
+                        right.first[j].second;
         }
     }
     SparseMatrix1D result;
@@ -552,13 +561,30 @@ double relative_frobenius_difference(const SparseMatrix1D &first,
     long double difference = 0.0;
     long double reference = 0.0;
     for (int row = 0; row < first.size(); ++row)
-        for (int column = 0; column < first.size(); ++column)
+    {
+        const auto &left = first.rows[row];
+        const auto &right = second.rows[row];
+        std::size_t i = 0;
+        std::size_t j = 0;
+        while (i < left.size() || j < right.size())
         {
-            const long double a = first.value(row, column);
-            const long double delta = a - second.value(row, column);
+            long double a = 0.0;
+            long double b = 0.0;
+            if (j == right.size() ||
+                (i < left.size() && left[i].first < right[j].first))
+                a = left[i++].second;
+            else if (i == left.size() || right[j].first < left[i].first)
+                b = right[j++].second;
+            else
+            {
+                a = left[i++].second;
+                b = right[j++].second;
+            }
+            const long double delta = a - b;
             difference += delta * delta;
             reference += a * a;
         }
+    }
     return std::sqrt(static_cast<double>(difference /
         std::max(reference, std::numeric_limits<long double>::min())));
 }

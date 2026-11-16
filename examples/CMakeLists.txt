@@ -23,3 +23,9 @@ target_link_libraries(truncated_cholesky_1d_test PRIVATE lor_core)
 
 enable_testing()
 add_test(NAME truncated_cholesky_1d COMMAND truncated_cholesky_1d_test)
+find_program(LOR_MPIEXEC_EXECUTABLE NAMES mpirun mpiexec REQUIRED)
+add_test(NAME truncated_tensor_integration
+  COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/truncated_tensor_integration_test.sh
+          $<TARGET_FILE:assembled_driver> ${LOR_MPIEXEC_EXECUTABLE}
+          ${CMAKE_CURRENT_LIST_DIR}/..)
+set_tests_properties(truncated_tensor_integration PROPERTIES TIMEOUT 120)

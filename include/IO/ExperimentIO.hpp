@@ -47,6 +47,9 @@ struct ExperimentOptions
     int trunc_chol_k = -1; // -1 means auto = ceil(p/2).
     bool trunc_chol_k_was_auto = true;
     bool compute_truncation_certificate = true;
+    bool verify_tensor_identity = false;
+    PetscLogDouble trunc_chol_max_memory_bytes =
+        64.0 * 1024.0 * 1024.0 * 1024.0;
     LORPCMode lor_pc = LORPCMode::left_gmres_fixed_jacobi;
     PreconditionerSide preconditioner_side = PreconditionerSide::left;
     InnerPCMode inner_pc = InnerPCMode::jacobi;
@@ -105,6 +108,10 @@ struct ExperimentResults
     int trunc_chol_mass_degree_q = 0;
     std::vector<double> trunc_chol_beta_value_mass;
     std::vector<double> trunc_chol_beta_derivative_mass;
+    std::vector<double> trunc_chol_certificate_value_maximum_row_sum;
+    std::vector<double> trunc_chol_certificate_value_maximum_column_sum;
+    std::vector<double> trunc_chol_certificate_derivative_maximum_row_sum;
+    std::vector<double> trunc_chol_certificate_derivative_maximum_column_sum;
     std::vector<bool> trunc_chol_beta_below_one;
     std::size_t trunc_chol_dropped_entries = 0;
     std::size_t trunc_chol_complete_factor_nonzeros = 0;
@@ -113,6 +120,10 @@ struct ExperimentResults
     bool trunc_chol_certificate_bound_available = false;
     PetscReal trunc_chol_theoretical_kappa_lambda_bound = 0.0;
     PetscReal tensor_identity_relative_error = 0.0;
+    bool tensor_identity_verification_computed = false;
+    bool tensor_identity_verification_passed = false;
+    PetscLogDouble trunc_chol_conservative_memory_estimate_bytes = 0.0;
+    PetscLogDouble trunc_chol_memory_limit_bytes = 0.0;
     PetscReal derivative_identity_max_relative_error = 0.0;
     bool preconditioner_symmetric = false;
     PetscReal preconditioner_minimum_diagonal = 0.0;
@@ -176,6 +187,7 @@ struct ExperimentResults
     PetscLogDouble time_truncation_certificate_s = 0.0;
     PetscLogDouble time_1d_reduced_operators_s = 0.0;
     PetscLogDouble time_tensor_pc_assembly_s = 0.0;
+    PetscLogDouble time_tensor_identity_verification_s = 0.0;
     PetscLogDouble time_spectral_eps_s = 0.0;
     PetscLogDouble time_singular_svd_s = 0.0;
     PetscLogDouble time_l2_error_s = 0.0;

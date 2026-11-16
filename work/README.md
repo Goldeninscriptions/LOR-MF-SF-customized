@@ -56,6 +56,10 @@ COMPUTE_SPECTRAL_CONDITION_NUMBER=true EPS_TOL=1e-8 EPS_NCV=100 \
 ```
 
 这些变量及 `EPS_MAX_IT` 会由 `run_batch_common.sh` 传给二维/三维批处理。
+`VERIFY_TENSOR_IDENTITY=true` 可开启独立张量恒等式验证；
+`TRUNC_CHOL_MAX_MEMORY_BYTES` 设置装配前的保守内存上限（默认 64 GiB）。
+二维和三维批处理中的 `COMPUTE_CONDITION_NUMBER`、EPS/SVD 开关均可由环境变量
+覆盖，并已编码进结果文件名以避免不同配置互相覆盖。
 曲边入口必须继续使用默认 `lor_q1`。
 
 该容差扫描显式固定为 `left_gmres_cg`，用于保留左预条件标准 GMRES 对照。PETSc

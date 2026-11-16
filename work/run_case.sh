@@ -74,18 +74,20 @@ fi
 newer_build_input=$(find \
   "$project_dir/include" \
   "$project_dir/src" \
-  "$project_dir/examples" \
   "$project_dir/conf" \
   -type f \
   \( -name '*.hpp' -o -name '*.cpp' -o -name 'CMakeLists.txt' -o -name '*.cmake' \) \
   -newer "$driver" -print -quit)
-if [[ -n "$newer_build_input" || "$project_dir/CMakeLists.txt" -nt "$driver" ]]; then
-  echo "Stale executable: $driver" >&2
-  if [[ -n "$newer_build_input" ]]; then
-    echo "Newer build input: $newer_build_input" >&2
-  else
-    echo "Newer build input: $project_dir/CMakeLists.txt" >&2
+for build_input in "$project_dir/CMakeLists.txt" \
+                   "$project_dir/examples/CMakeLists.txt" \
+                   "$project_dir/examples/assembled_driver.cpp"; do
+  if [[ -z "$newer_build_input" && "$build_input" -nt "$driver" ]]; then
+    newer_build_input=$build_input
   fi
+done
+if [[ -n "$newer_build_input" ]]; then
+  echo "Stale executable: $driver" >&2
+  echo "Newer build input: $newer_build_input" >&2
   echo "Rebuild with: cmake --build $project_dir/build -j" >&2
   exit 3
 fi
@@ -194,6 +196,8 @@ eps_ncv=${EPS_NCV:-100}
 preconditioner_matrix_source=${PRECONDITIONER_MATRIX_SOURCE:-lor_q1}
 trunc_chol_k=${TRUNC_CHOL_K:-auto}
 compute_truncation_certificate=${COMPUTE_TRUNCATION_CERTIFICATE:-true}
+verify_tensor_identity=${VERIFY_TENSOR_IDENTITY:-false}
+trunc_chol_max_memory_bytes=${TRUNC_CHOL_MAX_MEMORY_BYTES:-68719476736}
 case "$preconditioner_matrix_source" in
   lor_q1|truncated_cholesky_tensor) ;;
   *) echo "PRECONDITIONER_MATRIX_SOURCE must be lor_q1 or truncated_cholesky_tensor" >&2; exit 2 ;;
@@ -201,6 +205,19 @@ esac
 if [[ "$trunc_chol_k" != auto ]] && ! [[ "$trunc_chol_k" =~ ^[0-9]+$ ]]; then
   echo "TRUNC_CHOL_K must be auto or a nonnegative integer" >&2
   exit 2
+fi
+if ! [[ "$trunc_chol_max_memory_bytes" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+   [[ "$trunc_chol_max_memory_bytes" == 0 ]]; then
+  echo "TRUNC_CHOL_MAX_MEMORY_BYTES must be positive" >&2
+  exit 2
+fi
+if [[ "$preconditioner_matrix_source" == truncated_cholesky_tensor ]]; then
+  effective_trunc_chol_k=$trunc_chol_k
+  [[ "$effective_trunc_chol_k" == auto ]] && effective_trunc_chol_k=$(( (degree + 1) / 2 ))
+  if (( degree <= 1 || effective_trunc_chol_k >= degree - 1 )); then
+    echo "Invalid truncated-Cholesky case: p=$degree requested_k=$trunc_chol_k effective_k=$effective_trunc_chol_k must satisfy k < p-1" >&2
+    exit 2
+  fi
 fi
 
 # Independent experiment features. Environment variables make the single-case
@@ -217,6 +234,10 @@ for feature_value in \
     exit 2
   fi
 done
+if [[ "$verify_tensor_identity" != true && "$verify_tensor_identity" != false ]]; then
+  echo "VERIFY_TENSOR_IDENTITY must be true or false" >&2
+  exit 2
+fi
 if [[ "$compute_l2_error" == "true" && "$compute_solution" != "true" ]]; then
   echo "COMPUTE_L2_ERROR=true requires COMPUTE_SOLUTION=true" >&2
   exit 2
@@ -251,6 +272,8 @@ common_options=(
   -preconditioner_matrix_source "$preconditioner_matrix_source"
   -trunc_chol_k "$trunc_chol_k"
   -compute_truncation_certificate "$compute_truncation_certificate"
+  -verify_tensor_identity "$verify_tensor_identity"
+  -trunc_chol_max_memory_bytes "$trunc_chol_max_memory_bytes"
   -compute_solution "$compute_solution"
   -compute_l2_error "$compute_l2_error"
   -compute_condition_number "$compute_condition_number"
@@ -297,5 +320,5 @@ if [[ "$uses_inner_cg" == true ]]; then
 elif [[ "$uses_fixed_jacobi" == true ]]; then
   scheme_log=" fixed_jacobi_steps=$fixed_jacobi_steps fixed_jacobi_omega=$fixed_jacobi_omega"
 fi
-echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side matrix_source=$preconditioner_matrix_source trunc_k=$trunc_chol_k certificate=$compute_truncation_certificate${scheme_log} solve=$compute_solution L2=$compute_l2_error condition_svd=$compute_condition_number condition_eps=$compute_spectral_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_dtol=$outer_dtol outer_max_it=$outer_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv eps_tol=$eps_tol eps_max_it=$eps_max_it eps_ncv=$eps_ncv"
+echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side matrix_source=$preconditioner_matrix_source trunc_k=$trunc_chol_k verify_tensor=$verify_tensor_identity memory_limit_bytes=$trunc_chol_max_memory_bytes certificate=$compute_truncation_certificate${scheme_log} solve=$compute_solution L2=$compute_l2_error condition_svd=$compute_condition_number condition_eps=$compute_spectral_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_dtol=$outer_dtol outer_max_it=$outer_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv eps_tol=$eps_tol eps_max_it=$eps_max_it eps_ncv=$eps_ncv"
 "$mpi_launcher" -n "$mpi_ranks" "$driver" "${common_options[@]}"

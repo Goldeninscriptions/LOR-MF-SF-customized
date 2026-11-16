@@ -42,10 +42,25 @@ fixed_jacobi_omega=${fixed_jacobi_omega:-${FIXED_JACOBI_OMEGA:-0.666666666666666
 preconditioner_matrix_source=${preconditioner_matrix_source:-${PRECONDITIONER_MATRIX_SOURCE:-lor_q1}}
 trunc_chol_k=${trunc_chol_k:-${TRUNC_CHOL_K:-auto}}
 compute_truncation_certificate=${compute_truncation_certificate:-${COMPUTE_TRUNCATION_CERTIFICATE:-true}}
+verify_tensor_identity=${verify_tensor_identity:-${VERIFY_TENSOR_IDENTITY:-false}}
+trunc_chol_max_memory_bytes=${trunc_chol_max_memory_bytes:-${TRUNC_CHOL_MAX_MEMORY_BYTES:-68719476736}}
 compute_spectral_condition_number=${compute_spectral_condition_number:-${COMPUTE_SPECTRAL_CONDITION_NUMBER:-false}}
 eps_tol=${eps_tol:-${EPS_TOL:-1.0e-8}}
 eps_max_it=${eps_max_it:-${EPS_MAX_IT:-100000}}
 eps_ncv=${eps_ncv:-${EPS_NCV:-100}}
+
+case "$preconditioner_matrix_source" in
+  lor_q1|truncated_cholesky_tensor) ;;
+  *) echo "preconditioner_matrix_source must be lor_q1 or truncated_cholesky_tensor" >&2; exit 2 ;;
+esac
+if [[ "$trunc_chol_k" != auto ]] && ! [[ "$trunc_chol_k" =~ ^[0-9]+$ ]]; then
+  echo "trunc_chol_k must be auto or a nonnegative integer" >&2
+  exit 2
+fi
+if [[ "$verify_tensor_identity" != true && "$verify_tensor_identity" != false ]]; then
+  echo "verify_tensor_identity must be true or false" >&2
+  exit 2
+fi
 
 mkdir -p "$result_dir" "$console_dir"
 
@@ -149,6 +164,19 @@ if [[ "$compute_condition_number" == "true" && "$lor_pc" == *_k_gamg ]]; then
   exit 2
 fi
 
+# Reject every invalid automatic/explicit bandwidth before rank planning or
+# result-file creation.  In particular p=3, k=auto is an intentional error.
+if [[ "$preconditioner_matrix_source" == truncated_cholesky_tensor ]]; then
+  for degree in "${degrees[@]}"; do
+    effective_k=$trunc_chol_k
+    [[ "$effective_k" == auto ]] && effective_k=$(( (degree + 1) / 2 ))
+    if (( degree <= 1 || effective_k >= degree - 1 )); then
+      echo "Invalid truncated-Cholesky batch case: p=$degree requested_k=$trunc_chol_k effective_k=$effective_k must satisfy k < p-1" >&2
+      exit 2
+    fi
+  done
+fi
+
 # Reuse the production refinement and ID path in the serial planner, retaining
 # one exact free-DOF-based MPI recommendation for every case in traversal order.
 for degree in "${degrees[@]}"; do
@@ -180,7 +208,9 @@ for degree in "${degrees[@]}"; do
   for element_tuple in "${element_cases[@]}"; do
     mpi_ranks=${planned_ranks[$plan_index]}
     plan_index=$((plan_index + 1))
-    echo "  mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side source=$preconditioner_matrix_source trunc_k=$trunc_chol_k settings=[$scheme_settings] solve=$compute_solution L2=$compute_l2_error condition_svd=$compute_condition_number condition_eps=$compute_spectral_condition_number"
+    effective_k=$trunc_chol_k
+    [[ "$effective_k" == auto ]] && effective_k=$(( (degree + 1) / 2 ))
+    echo "  mpi_ranks=$mpi_ranks refinement=$refinement p=$degree n=($element_tuple) point_set=$lor_points mode=$lor_pc side=$preconditioner_side source=$preconditioner_matrix_source trunc_k_requested=$trunc_chol_k trunc_k_effective=$effective_k settings=[$scheme_settings] solve=$compute_solution L2=$compute_l2_error condition_svd=$compute_condition_number condition_eps=$compute_spectral_condition_number verify_tensor=$verify_tensor_identity"
   done
 done
 
@@ -190,7 +220,7 @@ if [[ ${BATCH_DRY_RUN:-0} == 1 ]]; then
   exit 0
 fi
 
-printf 'case\tstatus\tmpi_ranks\trefinement\tp\tn\tpoint_set\tlor_pc\tpreconditioner_side\tscheme_settings\tcompute_solution\tcompute_l2_error\tcompute_condition_number\tsvd_tol\tsvd_max_it\tsvd_ncv\telapsed_s\tresult\tconsole\n' > "$summary_file"
+printf 'case\tstatus\tmpi_ranks\trefinement\tp\tn\tpoint_set\tlor_pc\tpreconditioner_side\tmatrix_source\tk_requested\tk_effective\tscheme_settings\tcompute_solution\tcompute_l2_error\tcompute_svd\tcompute_eps\tsvd_tol\tsvd_max_it\tsvd_ncv\teps_tol\teps_max_it\teps_ncv\tverify_tensor\tcertificate\telapsed_s\tresult\tconsole\n' > "$summary_file"
 
 plan_index=0
 for degree in "${degrees[@]}"; do
@@ -199,7 +229,9 @@ for degree in "${degrees[@]}"; do
     plan_index=$((plan_index + 1))
     case_number=$((case_number + 1))
     element_tag=${element_tuple//,/x}
-    stem="mpi${mpi_ranks}_${refinement}_p${degree}_n${element_tag}_${lor_points}_${lor_pc}_${preconditioner_side}_${setting_tag}_solve${compute_solution}_l2${compute_l2_error}_cond${compute_condition_number}"
+    effective_k=$trunc_chol_k
+    [[ "$effective_k" == auto ]] && effective_k=$(( (degree + 1) / 2 ))
+    stem="mpi${mpi_ranks}_${refinement}_p${degree}_n${element_tag}_${lor_points}_${lor_pc}_${preconditioner_side}_${setting_tag}_src${preconditioner_matrix_source}_k${trunc_chol_k}_solve${compute_solution}_l2${compute_l2_error}_svd${compute_condition_number}_eps${compute_spectral_condition_number}_verify${verify_tensor_identity}"
     result_file="$result_dir/${stem}.log"
     console_file="$console_dir/${stem}.console.log"
     case_start=$(date +%s)
@@ -230,6 +262,8 @@ for degree in "${degrees[@]}"; do
       PRECONDITIONER_MATRIX_SOURCE="$preconditioner_matrix_source" \
       TRUNC_CHOL_K="$trunc_chol_k" \
       COMPUTE_TRUNCATION_CERTIFICATE="$compute_truncation_certificate" \
+      VERIFY_TENSOR_IDENTITY="$verify_tensor_identity" \
+      TRUNC_CHOL_MAX_MEMORY_BYTES="$trunc_chol_max_memory_bytes" \
       COMPUTE_SPECTRAL_CONDITION_NUMBER="$compute_spectral_condition_number" \
       EPS_TOL="$eps_tol" EPS_MAX_IT="$eps_max_it" EPS_NCV="$eps_ncv" \
       SVD_TOL="$svd_tol" SVD_MAX_IT="$svd_max_it" SVD_NCV="$svd_ncv" \
@@ -244,12 +278,18 @@ for degree in "${degrees[@]}"; do
 
     case_end=$(date +%s)
     elapsed=$((case_end-case_start))
-    printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n' \
-      "$case_number" "$status" "$mpi_ranks" "$refinement" "$degree" "$element_tuple" \
-      "$lor_points" "$lor_pc" "$preconditioner_side" "$scheme_settings" "$compute_solution" "$compute_l2_error" \
-      "$compute_condition_number" "$svd_tol" "$svd_max_it" "$svd_ncv" \
-      "$elapsed" "$result_file" "$console_file" \
-      >> "$summary_file"
+    {
+      printf '%s\t' "$case_number" "$status" "$mpi_ranks" "$refinement" \
+        "$degree" "$element_tuple" "$lor_points" "$lor_pc" \
+        "$preconditioner_side" "$preconditioner_matrix_source" \
+        "$trunc_chol_k" "$effective_k" "$scheme_settings" \
+        "$compute_solution" "$compute_l2_error" \
+        "$compute_condition_number" "$compute_spectral_condition_number" \
+        "$svd_tol" "$svd_max_it" "$svd_ncv" \
+        "$eps_tol" "$eps_max_it" "$eps_ncv" "$verify_tensor_identity" \
+        "$compute_truncation_certificate" "$elapsed" "$result_file"
+      printf '%s\n' "$console_file"
+    } >> "$summary_file"
     echo "[$case_number/$total] $status in $elapsed s; result=$result_file"
   done
 done

@@ -260,10 +260,21 @@ PetscErrorCode run_assembled_laplace_experiment(
             (patch.degree(0) + 1) / 2 : options.trunc_chol_k;
         PetscCall(assemble_truncated_cholesky_tensor<Dim>(patch, ID_map,
             high_stiffness.matrix, effective_k,
-            options.compute_truncation_certificate, &truncated_tensor));
+            options.compute_truncation_certificate,
+            options.verify_tensor_identity,
+            options.trunc_chol_max_memory_bytes, &truncated_tensor));
     }
     Mat preconditioner_matrix = uses_lor_matrix ? lor_stiffness.matrix :
         truncated_tensor.preconditioner.matrix;
+
+    // Test/debug-only PETSc viewers.  They are inert unless their explicit
+    // options are supplied and let the integration test form an independent
+    // dense generalized eigensystem and dense SVD on a small matrix.
+    PetscCall(MatViewFromOptions(high_stiffness.matrix, nullptr,
+        "-dense_reference_K_view"));
+    if (preconditioner_matrix != nullptr)
+        PetscCall(MatViewFromOptions(preconditioner_matrix, nullptr,
+            "-dense_reference_P_view"));
 
     // Optionally solve the identical high-order system without and with the
     // selected LOR-based or direct-K preconditioner.
@@ -484,6 +495,14 @@ PetscErrorCode run_assembled_laplace_experiment(
             truncated_tensor.theoretical_kappa_lambda_bound;
         results.tensor_identity_relative_error =
             truncated_tensor.tensor_identity_relative_error;
+        results.tensor_identity_verification_computed =
+            truncated_tensor.tensor_identity_verification_computed;
+        results.tensor_identity_verification_passed =
+            truncated_tensor.tensor_identity_verification_passed;
+        results.trunc_chol_conservative_memory_estimate_bytes =
+            truncated_tensor.conservative_memory_estimate_bytes;
+        results.trunc_chol_memory_limit_bytes =
+            truncated_tensor.memory_limit_bytes;
         results.preconditioner_symmetric = truncated_tensor.symmetric;
         results.preconditioner_minimum_diagonal =
             truncated_tensor.minimum_diagonal;
@@ -492,13 +511,24 @@ PetscErrorCode run_assembled_laplace_experiment(
             results.derivative_identity_max_relative_error = std::max(
                 results.derivative_identity_max_relative_error,
                 direction.derivative_identity_relative_error);
-            results.trunc_chol_beta_value_mass.push_back(
-                direction.value_mass.certificate.beta);
-            results.trunc_chol_beta_derivative_mass.push_back(
-                direction.derivative_mass.certificate.beta);
-            results.trunc_chol_beta_below_one.push_back(
-                direction.value_mass.certificate.beta_below_one &&
-                direction.derivative_mass.certificate.beta_below_one);
+            if (options.compute_truncation_certificate)
+            {
+                results.trunc_chol_beta_value_mass.push_back(
+                    direction.value_mass.certificate.beta);
+                results.trunc_chol_beta_derivative_mass.push_back(
+                    direction.derivative_mass.certificate.beta);
+                results.trunc_chol_beta_below_one.push_back(
+                    direction.value_mass.certificate.beta_below_one &&
+                    direction.derivative_mass.certificate.beta_below_one);
+                results.trunc_chol_certificate_value_maximum_row_sum.push_back(
+                    direction.value_mass.certificate.maximum_row_sum);
+                results.trunc_chol_certificate_value_maximum_column_sum.push_back(
+                    direction.value_mass.certificate.maximum_column_sum);
+                results.trunc_chol_certificate_derivative_maximum_row_sum.push_back(
+                    direction.derivative_mass.certificate.maximum_row_sum);
+                results.trunc_chol_certificate_derivative_maximum_column_sum.push_back(
+                    direction.derivative_mass.certificate.maximum_column_sum);
+            }
             results.trunc_chol_dropped_entries +=
                 direction.value_mass.dropped_factor_entries +
                 direction.derivative_mass.dropped_factor_entries;
@@ -521,6 +551,8 @@ PetscErrorCode run_assembled_laplace_experiment(
             truncated_tensor.time_1d_reduced_operators_seconds;
         results.time_tensor_pc_assembly_s =
             truncated_tensor.time_tensor_assembly_seconds;
+        results.time_tensor_identity_verification_s =
+            truncated_tensor.time_tensor_identity_verification_seconds;
     }
     PetscLogDouble case_end = 0.0;
     PetscCall(PetscTime(&case_end));
@@ -643,11 +675,14 @@ PetscErrorCode run_assembled_laplace_experiment(
         if (options.preconditioner_matrix_source ==
             PreconditionerMatrixSource::truncated_cholesky_tensor)
             PetscCall(PetscPrintf(comm,
-                "  truncated tensor: k=%d, tensor_identity=%.6e, "
+                "  truncated tensor: k=%d, tensor_identity_status=%s, "
                 "1D_derivative_identity=%.6e, dropped=%zu, symmetric=%s, "
                 "min_diagonal=%.6e, certificate_bound=%s\n",
                 results.trunc_chol_k_effective,
-                static_cast<double>(results.tensor_identity_relative_error),
+                !results.tensor_identity_verification_computed ?
+                    "not_computed" :
+                    (results.tensor_identity_verification_passed ?
+                        "passed" : "failed"),
                 static_cast<double>(
                     results.derivative_identity_max_relative_error),
                 results.trunc_chol_dropped_entries,
