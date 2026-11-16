@@ -20,6 +20,7 @@ enum class LORPCMode
     left_gmres_cg,
     right_gmres_cg,
     right_fgmres_cg,
+    right_fgmres_amg,
     left_gmres_k_jacobi,
     left_gmres_k_gamg,
     right_gmres_k_gamg,
@@ -74,16 +75,20 @@ struct LinearSolveResult
     // Jacobi steps. Both remain zero for every non-shell preconditioner.
     PetscInt pc_applications = 0;
     PetscInt inner_iterations = 0;
+    PetscInt maximum_inner_iterations = 0;
+    PetscInt failed_inner_applications = 0;
+    KSPConvergedReason last_inner_reason = KSP_CONVERGED_ITERATING;
 
     // Maximum-rank wall times in seconds. setup_time_seconds measures explicit
     // KSP/PC setup; outer_solve_time_seconds measures the complete outer
     // KSPSolve and therefore includes every nested preconditioner application.
     PetscLogDouble setup_time_seconds = 0.0;
+    PetscLogDouble preconditioner_setup_time_seconds = 0.0;
     PetscLogDouble outer_solve_time_seconds = 0.0;
 
-    // Maximum-rank sum of time spent inside all inner CG solves or fixed
-    // Jacobi applications. It is nested within outer_solve_time_seconds, not
-    // additional elapsed time, and remains zero for non-shell preconditioners.
+    // Maximum-rank sum of time spent inside all inner CG solves, AMG/LU
+    // applications, or fixed Jacobi applications. It is nested within
+    // outer_solve_time_seconds rather than additional elapsed time.
     PetscLogDouble inner_solve_time_seconds = 0.0;
 
     // Common physical residual ||F-Ku||_2 recomputed after convergence.

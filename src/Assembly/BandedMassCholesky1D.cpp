@@ -279,12 +279,14 @@ TruncationCertificate1D certificate(const LowerBandFactor &complete,
 
 TruncatedMassResult1D build_mass(const int degree,
     const std::vector<double> &knots, const bool remove_endpoints,
-    const int truncation_half_bandwidth, const bool compute_certificate)
+    const int truncation_half_bandwidth, const bool compute_certificate,
+    const bool boundary_protection)
 {
     TruncatedMassResult1D result;
     result.degree = degree;
     result.boundary_dofs_removed = remove_endpoints;
     result.truncation_half_bandwidth = truncation_half_bandwidth;
+    result.boundary_protection = boundary_protection;
     auto start = Clock::now();
     SymmetricBandMatrix1D mass = assemble_mass(
         degree, knots, remove_endpoints);
@@ -309,7 +311,11 @@ TruncatedMassResult1D build_mass(const int degree,
         for (int column = std::max(0,
                  row - complete.half_bandwidth); column <= row; ++column)
             if (complete.value(row, column) != 0.0)
+            {
                 ++result.complete_factor_nonzeros;
+                result.complete_factor_half_bandwidth = std::max(
+                    result.complete_factor_half_bandwidth, row - column);
+            }
 
     start = Clock::now();
     LowerBandFactor truncated = complete;
@@ -323,8 +329,10 @@ TruncatedMassResult1D build_mass(const int degree,
                 truncated.size - 1 - row <= boundary_width;
             const bool column_boundary = column <= boundary_width ||
                 truncated.size - 1 - column <= boundary_width;
+            const bool protected_entry = boundary_protection &&
+                (row_boundary || column_boundary);
             if (row - column > truncation_half_bandwidth &&
-                !row_boundary && !column_boundary &&
+                !protected_entry &&
                 truncated.value(row, column) != 0.0)
             {
                 truncated.lower(row, column) = 0.0;
@@ -332,6 +340,12 @@ TruncatedMassResult1D build_mass(const int degree,
                 --result.truncated_factor_nonzeros;
             }
         }
+    for (int row = 0; row < truncated.size; ++row)
+        for (int column = std::max(0,
+                 row - truncated.half_bandwidth); column <= row; ++column)
+            if (truncated.value(row, column) != 0.0)
+                result.truncated_factor_half_bandwidth = std::max(
+                    result.truncated_factor_half_bandwidth, row - column);
     result.approximate_mass = factor_product(truncated);
     result.truncation_seconds = elapsed_seconds(start);
     const SparseMatrix1D reconstructed = factor_product(complete);
@@ -519,7 +533,8 @@ std::size_t SparseMatrix1D::nonzeros() const noexcept
 
 TruncatedDirectionResult1D build_truncated_direction_1d(
     const int original_degree, const std::vector<double> &original_knots,
-    const int truncation_half_bandwidth, const bool compute_certificate)
+    const int truncation_half_bandwidth, const bool compute_certificate,
+    const bool boundary_protection)
 {
     if (original_degree <= 1)
         throw std::invalid_argument(
@@ -531,14 +546,14 @@ TruncatedDirectionResult1D build_truncated_direction_1d(
     result.num_original_basis =
         static_cast<int>(original_knots.size()) - original_degree - 1;
     result.value_mass = build_mass(original_degree, original_knots, true,
-        truncation_half_bandwidth, compute_certificate);
+        truncation_half_bandwidth, compute_certificate, boundary_protection);
     if (original_knots.size() < 3)
         throw std::invalid_argument("Original knot vector cannot be trimmed");
     const std::vector<double> derivative_knots(
         original_knots.begin() + 1, original_knots.end() - 1);
     result.derivative_mass = build_mass(original_degree - 1,
         derivative_knots, false, truncation_half_bandwidth,
-        compute_certificate);
+        compute_certificate, boundary_protection);
     const auto start = Clock::now();
     result.exact_stiffness = difference_mass_stiffness(
         result.derivative_mass.exact_mass, original_degree, original_knots);

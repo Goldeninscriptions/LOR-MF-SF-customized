@@ -16,7 +16,7 @@ KSP 应用方式、SLEPc 条件数和 L2 误差分析。Matrix-free 与 sum fact
 - MPI 方向切片并行组装、分布式 PETSc 矩阵/向量和并行 KSP；
 - 张量支撑驱动的精确 MPIAIJ 逐行预分配、owned-row halo 组装和矩阵存储日志；
 - 几何文件与 p/h/k refinement 仅在 rank 0 执行，refined Patch 广播重建；
-- 九个完整求解方案的名称同时编码预条件方向、外层方法和预条件器；默认
+- 十个完整求解方案的名称同时编码预条件方向、外层方法和预条件器；默认
   `left_gmres_fixed_jacobi` 是固定线性映射；
 - 三个 `*_cg` 方案的内层 CG 可选择 legacy `jacobi` 或 PETSc `gamg`；
 - 求解输出同时记录 setup、完整外层时间，以及嵌套预条件操作的调用数、
@@ -59,6 +59,17 @@ Greville/Demko 曲边路径不受影响。
 Kronecker 刚度与装配的高阶 `K` 对照。内存上限默认 64 GiB；程序会在构造任何
 逐行临时 map 或 PETSc `P` 之前，用包含 AIJ 与临时结构的保守估计执行预检。
 
+`-trunc_chol_boundary_protection true|false` 默认 `true`，保持原边界保护规则；
+设为 `false` 时，值空间和导数空间的 Cholesky 因子均严格截断到半带宽 `k`，
+对角元始终保留。结果文件逐方向记录原质量矩阵半带宽、完整/截断因子的实际最大
+非零半带宽、因子 nnz 与删除数。
+
+`right_fgmres_amg` 是 AMG-only 逆作用：右 FGMRES 的每次预条件调用在已组装的
+预条件矩阵 `P` 上执行一次复用的 `KSPPREONLY+PCGAMG`，不会启动内层 CG。它与
+`right_fgmres_cg -inner_pc gamg`（CG+GAMG）是不同算法。
+`-compute_unpreconditioned_solution false` 可只求预条件系统，同时继续计算该解的
+真实残差和物理域 L² 误差；默认仍为 `true`，兼容历史运行。
+
 ## 构建
 
 ```bash
@@ -96,7 +107,7 @@ BATCH_DRY_RUN=1 ./work/run_batch_square_2d.sh
 ./work/run_batch_square_2d.sh
 ```
 
-每个几何批处理脚本都列出了九个完整求解方案。需要方案 A1 时，在脚本配置区注释
+每个旧几何批处理脚本都列出了原有求解方案。需要方案 A1 时，在脚本配置区注释
 当前 `left_gmres_fixed_jacobi` 块，并取消注释 `right_fgmres_cg` 块及其内层参数。
 
 另外两个几何分别使用 `run_batch_cube_3d.sh` 和
@@ -133,7 +144,7 @@ COMPUTE_CONDITION_NUMBER=false \
 默认关闭以避免普通批次隐式执行昂贵的四次 SVD。
 
 位置参数 `LOR_PC` 接受 `left_cg_lu`、`right_gmres_lu`、`left_gmres_cg`、
-`right_gmres_cg`、`right_fgmres_cg`、作为参考的 `left_gmres_k_jacobi`、
+`right_gmres_cg`、`right_fgmres_cg`、`right_fgmres_amg`、作为参考的 `left_gmres_k_jacobi`、
 `left_gmres_k_gamg`、`right_gmres_k_gamg` 和默认的
 `left_gmres_fixed_jacobi`。两个 K-GAMG 模式直接在高阶 K 上构造一次 AMG 层次，
 不组装 K_LOR；方向由名称唯一确定，结果仍会记录
@@ -148,7 +159,7 @@ fixed 字段，固定 Jacobi 也没有 inner CG 字段。
 三个 `*_cg` 方案的样例默认写为 `inner_pc="jacobi"`；要使用 PETSc GAMG，将所选
 方案块中的值改成 `inner_pc="gamg"`。
 
-九个批处理方案块都显式列出 `outer_rtol`、`outer_atol`、`outer_dtol` 和
+旧批处理方案块都显式列出 `outer_rtol`、`outer_atol`、`outer_dtol` 和
 `outer_max_it`。这些值由公共执行器传给单算例，不再只能依赖 `run_case.sh` 的隐藏默认值。
 
 GAMG 层次在 setup 阶段构造一次并在所有内层调用中复用。性能比较应使用
@@ -159,6 +170,50 @@ L2 误差。
 结果中的 `outer_solve_time_seconds` 是完整外层 `KSPSolve` 时间，已经包含其间所有
 内层 CG 调用；`inner_solve_time_seconds` 是这段时间内内层求解的累计子成本，二者
 不能相加。MPI 计时采用所有 ranks 中的最大 wall time，代表该阶段的关键路径。
+
+## Truncated-Cholesky 二维/三维 sweep
+
+两个新入口默认只生成计划，不启动数值求解：
+
+```bash
+RUN_ID=tc2d-trial BATCH_DRY_RUN=1 ./work/run_trunc_chol_sweep_2d.sh
+RUN_ID=tc3d-trial BATCH_DRY_RUN=1 ./work/run_trunc_chol_sweep_3d.sh
+```
+
+检查对应 run 目录的 `manifest.tsv` 后，由用户手动使用相同 `RUN_ID` 正式运行：
+
+```bash
+RUN_ID=tc2d-trial BATCH_DRY_RUN=0 ./work/run_trunc_chol_sweep_2d.sh
+RUN_ID=tc3d-trial BATCH_DRY_RUN=0 ./work/run_trunc_chol_sweep_3d.sh
+```
+
+二维默认覆盖 `p=4..8` 与 `n=4..1024` 的九个网格，三维覆盖 `p=4..8` 与
+`n=4..64` 的五个网格。默认 `SOLVER_MODES="cg_gamg amg"`、
+`BOUNDARY_PROTECTION_MODES="true false"`；可用求解方式为
+`lu left_gmres_cg_jacobi right_gmres_cg_jacobi cg_jacobi cg_gamg amg`。
+前两个普通 GMRES 名称分别映射到左/右 GMRES + 内层 CG/Jacobi；`cg_jacobi`
+则保留为右 FGMRES + 内层 CG/Jacobi。`P_VALUES`、`N_VALUES` 可供用户先做小规模过滤，
+未设置时不会删减规定的完整列表。
+
+左普通 GMRES + 内层 CG/Jacobi 的专用扫描可显式选择：
+
+```bash
+RUN_ID=left-gmres-cg-jacobi-2d SOLVER_MODES="left_gmres_cg_jacobi" \
+  BATCH_DRY_RUN=1 ./work/run_trunc_chol_sweep_2d.sh
+RUN_ID=left-gmres-cg-jacobi-3d SOLVER_MODES="left_gmres_cg_jacobi" \
+  BATCH_DRY_RUN=1 ./work/run_trunc_chol_sweep_3d.sh
+```
+
+左预条件普通 GMRES 的内部停止准则可能使用预条件残差；分析结果时应以输出中对
+原方程重新计算的 `relative_true_residual` 和物理域 L² 误差为准。
+
+每个 run 目录包含 `manifest.tsv`、稳定的一行一案例 `summary.tsv`、`cases/`、
+`logs/` 和配置哈希成功标记。`RESUME=1` 只跳过结果存在且哈希一致的成功案例；
+失败、超时及残缺结果可重试。内存预检拒绝记录为 `skipped_memory`。正式 sweep
+默认关闭无预条件基线、EPS、SVD 和张量恒等式验证，并按案例顺序执行以避免聚合
+内存峰值。外层求解时间已经包含 PC 应用时间，不可与应用累计时间再次相加。
+`trunc_chol_conservative_memory_estimate_bytes` 是张量预条件矩阵及其装配临时结构的
+保守预检值，不代表整个进程（尤其是高阶 `K`、GAMG 层次或 LU 因子）的全局峰值。
 
 ## 顶层文件和目录
 

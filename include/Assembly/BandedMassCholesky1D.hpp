@@ -56,6 +56,9 @@ struct TruncatedMassResult1D
     int size = 0;
     int original_half_bandwidth = 0;
     int truncation_half_bandwidth = 0;
+    int complete_factor_half_bandwidth = 0;
+    int truncated_factor_half_bandwidth = 0;
+    bool boundary_protection = true;
     bool boundary_dofs_removed = false;
     SparseMatrix1D exact_mass;
     SparseMatrix1D approximate_mass;
@@ -88,7 +91,8 @@ struct TruncatedDirectionResult1D
 // knot vector, then factor, truncate, certify, and form D^T M D.
 TruncatedDirectionResult1D build_truncated_direction_1d(
     int original_degree, const std::vector<double> &original_knots,
-    int truncation_half_bandwidth, bool compute_certificate);
+    int truncation_half_bandwidth, bool compute_certificate,
+    bool boundary_protection = true);
 
 // Small diagnostics used by the standalone verification executable.
 double relative_frobenius_difference(

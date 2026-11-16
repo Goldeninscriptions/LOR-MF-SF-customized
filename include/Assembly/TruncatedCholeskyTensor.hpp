@@ -31,25 +31,27 @@ struct TruncatedCholeskyTensorResult
     double time_truncation_certificate_seconds = 0.0;
     double time_1d_reduced_operators_seconds = 0.0;
     double time_tensor_assembly_seconds = 0.0;
+    double time_tensor_memory_preflight_seconds = 0.0;
     double time_tensor_identity_verification_seconds = 0.0;
 };
 
 // Validate an axis-aligned affine geometry, build both one-dimensional mass
-// families in every direction, verify the untruncated tensor identity against
-// the assembled K, and assemble P_k directly into owned PETSc AIJ rows.
+// families in every direction, optionally verify the untruncated tensor
+// identity against the assembled K, and assemble P_k directly into owned
+// PETSc AIJ rows.
 template <int Dim>
 PetscErrorCode assemble_truncated_cholesky_tensor(
     const BSplinePatch<Dim> &patch, const ID &ID_map,
     Mat high_order_stiffness, int truncation_half_bandwidth,
     bool compute_certificate, bool verify_tensor_identity,
-    PetscLogDouble maximum_memory_bytes,
+    bool boundary_protection, PetscLogDouble maximum_memory_bytes,
     TruncatedCholeskyTensorResult<Dim> *result);
 
 extern template PetscErrorCode assemble_truncated_cholesky_tensor<2>(
-    const BSplinePatch<2> &, const ID &, Mat, int, bool, bool, PetscLogDouble,
+    const BSplinePatch<2> &, const ID &, Mat, int, bool, bool, bool, PetscLogDouble,
     TruncatedCholeskyTensorResult<2> *);
 extern template PetscErrorCode assemble_truncated_cholesky_tensor<3>(
-    const BSplinePatch<3> &, const ID &, Mat, int, bool, bool, PetscLogDouble,
+    const BSplinePatch<3> &, const ID &, Mat, int, bool, bool, bool, PetscLogDouble,
     TruncatedCholeskyTensorResult<3> *);
 
 } // namespace lor

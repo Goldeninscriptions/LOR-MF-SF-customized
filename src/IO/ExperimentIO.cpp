@@ -79,11 +79,13 @@ ExperimentOptions read_experiment_options(const int dimension)
     PetscBool fixed_steps_set = PETSC_FALSE;
     PetscBool fixed_omega_set = PETSC_FALSE;
     PetscBool compute_solution = PETSC_TRUE;
+    PetscBool compute_unpreconditioned_solution = PETSC_TRUE;
     PetscBool compute_l2_error = PETSC_TRUE;
     PetscBool compute_condition_number = PETSC_FALSE;
     PetscBool compute_spectral_condition_number = PETSC_FALSE;
     PetscBool compute_truncation_certificate = PETSC_TRUE;
     PetscBool verify_tensor_identity = PETSC_FALSE;
+    PetscBool trunc_chol_boundary_protection = PETSC_TRUE;
 
     // Read refinement, discretization, LOR, and output selections.
     PetscOptionsGetString(nullptr, nullptr, "-geometry", geometry,
@@ -111,6 +113,9 @@ ExperimentOptions read_experiment_options(const int dimension)
         &truncation_bandwidth_set);
     PetscOptionsGetBool(nullptr, nullptr, "-compute_solution",
         &compute_solution, nullptr);
+    PetscOptionsGetBool(nullptr, nullptr,
+        "-compute_unpreconditioned_solution",
+        &compute_unpreconditioned_solution, nullptr);
     PetscOptionsGetBool(nullptr, nullptr, "-compute_l2_error",
         &compute_l2_error, nullptr);
     PetscOptionsGetBool(nullptr, nullptr, "-compute_condition_number",
@@ -123,6 +128,9 @@ ExperimentOptions read_experiment_options(const int dimension)
         &compute_truncation_certificate, nullptr);
     PetscOptionsGetBool(nullptr, nullptr, "-verify_tensor_identity",
         &verify_tensor_identity, nullptr);
+    PetscOptionsGetBool(nullptr, nullptr,
+        "-trunc_chol_boundary_protection",
+        &trunc_chol_boundary_protection, nullptr);
     PetscOptionsGetReal(nullptr, nullptr, "-trunc_chol_max_memory_bytes",
         &options.trunc_chol_max_memory_bytes, nullptr);
 
@@ -177,6 +185,8 @@ ExperimentOptions read_experiment_options(const int dimension)
     if (options.lor_points != "greville" && options.lor_points != "demko")
         throw std::invalid_argument("-lor_points must be greville or demko");
     options.compute_solution = compute_solution == PETSC_TRUE;
+    options.compute_unpreconditioned_solution =
+        compute_unpreconditioned_solution == PETSC_TRUE;
     options.compute_l2_error = compute_l2_error == PETSC_TRUE;
     options.compute_condition_number =
         compute_condition_number == PETSC_TRUE;
@@ -185,6 +195,8 @@ ExperimentOptions read_experiment_options(const int dimension)
     options.compute_truncation_certificate =
         compute_truncation_certificate == PETSC_TRUE;
     options.verify_tensor_identity = verify_tensor_identity == PETSC_TRUE;
+    options.trunc_chol_boundary_protection =
+        trunc_chol_boundary_protection == PETSC_TRUE;
     if (!(options.trunc_chol_max_memory_bytes > 0.0) ||
         !std::isfinite(options.trunc_chol_max_memory_bytes))
         throw std::invalid_argument(
@@ -362,6 +374,7 @@ void write_experiment_results(const std::string &filename,
     output << "refinement = " << results.refinement_mode << '\n'
            << "mpi_ranks = " << results.mpi_ranks << '\n'
            << "p = " << results.actual_degree << '\n'
+           << "total_free_dofs = " << results.total_free_dofs << '\n'
            << "n = (";
     for (std::size_t direction = 0;
          direction < results.actual_elements.size(); ++direction)
@@ -386,6 +399,11 @@ void write_experiment_results(const std::string &filename,
         output << "inner_pc = " << inner_pc_mode_name(results.inner_pc)
                << '\n';
     output << "compute_solution = " << results.computed_solution << '\n'
+           << "compute_unpreconditioned_solution = "
+           << results.computed_unpreconditioned_solution << '\n'
+           << "unpreconditioned_solution_status = "
+           << (results.computed_unpreconditioned_solution ?
+               "computed" : "not_computed") << '\n'
            << "compute_l2_error = " << results.computed_l2_error << '\n'
            << "compute_condition_number = "
            << results.computed_condition_number << '\n'
@@ -405,8 +423,11 @@ void write_experiment_results(const std::string &filename,
                << results.trunc_chol_original_degree_p << '\n'
                << "trunc_chol_mass_degree_q = "
                << results.trunc_chol_mass_degree_q << '\n'
-               << "trunc_chol_boundary_preservation = conservative_w_layers"
-               << '\n'
+               << "trunc_chol_boundary_protection = "
+               << results.trunc_chol_boundary_protection << '\n'
+               << "trunc_chol_boundary_preservation = "
+               << (results.trunc_chol_boundary_protection ?
+                   "conservative_w_layers" : "strict_k_band") << '\n'
                << "trunc_chol_dropped_entries = "
                << results.trunc_chol_dropped_entries << '\n'
                << "trunc_chol_nnz_complete_factors = "
@@ -415,6 +436,57 @@ void write_experiment_results(const std::string &filename,
                << results.trunc_chol_truncated_factor_nonzeros << '\n'
                << "trunc_chol_certificate_computed = "
                << results.trunc_chol_certificate_computed << '\n';
+        for (std::size_t direction = 0;
+             direction < results.trunc_chol_value_original_half_bandwidth.size();
+             ++direction)
+            output << "trunc_chol_direction_" << direction
+                   << "_value_original_half_bandwidth = "
+                   << results.trunc_chol_value_original_half_bandwidth[direction]
+                   << '\n'
+                   << "trunc_chol_direction_" << direction
+                   << "_value_complete_factor_half_bandwidth = "
+                   << results.trunc_chol_value_complete_factor_half_bandwidth[direction]
+                   << '\n'
+                   << "trunc_chol_direction_" << direction
+                   << "_value_truncated_factor_half_bandwidth = "
+                   << results.trunc_chol_value_truncated_factor_half_bandwidth[direction]
+                   << '\n'
+                   << "trunc_chol_direction_" << direction
+                   << "_value_complete_factor_nnz = "
+                   << results.trunc_chol_value_complete_factor_nonzeros[direction]
+                   << '\n'
+                   << "trunc_chol_direction_" << direction
+                   << "_value_truncated_factor_nnz = "
+                   << results.trunc_chol_value_truncated_factor_nonzeros[direction]
+                   << '\n'
+                   << "trunc_chol_direction_" << direction
+                   << "_value_dropped_factor_entries = "
+                   << results.trunc_chol_value_dropped_factor_entries[direction]
+                   << '\n'
+                   << "trunc_chol_direction_" << direction
+                   << "_derivative_original_half_bandwidth = "
+                   << results.trunc_chol_derivative_original_half_bandwidth[direction]
+                   << '\n'
+                   << "trunc_chol_direction_" << direction
+                   << "_derivative_complete_factor_half_bandwidth = "
+                   << results.trunc_chol_derivative_complete_factor_half_bandwidth[direction]
+                   << '\n'
+                   << "trunc_chol_direction_" << direction
+                   << "_derivative_truncated_factor_half_bandwidth = "
+                   << results.trunc_chol_derivative_truncated_factor_half_bandwidth[direction]
+                   << '\n'
+                   << "trunc_chol_direction_" << direction
+                   << "_derivative_complete_factor_nnz = "
+                   << results.trunc_chol_derivative_complete_factor_nonzeros[direction]
+                   << '\n'
+                   << "trunc_chol_direction_" << direction
+                   << "_derivative_truncated_factor_nnz = "
+                   << results.trunc_chol_derivative_truncated_factor_nonzeros[direction]
+                   << '\n'
+                   << "trunc_chol_direction_" << direction
+                   << "_derivative_dropped_factor_entries = "
+                   << results.trunc_chol_derivative_dropped_factor_entries[direction]
+                   << '\n';
         if (results.trunc_chol_certificate_computed)
             for (std::size_t direction = 0;
                  direction < results.trunc_chol_beta_value_mass.size();
@@ -543,6 +615,8 @@ void write_experiment_results(const std::string &filename,
            << results.time_1d_reduced_operators_s << '\n'
            << "time_tensor_pc_assembly_s = "
            << results.time_tensor_pc_assembly_s << '\n'
+           << "time_tensor_memory_preflight_s = "
+           << results.time_tensor_memory_preflight_s << '\n'
            << "time_tensor_identity_verification_s = "
            << results.time_tensor_identity_verification_s << '\n'
            << "time_spectral_eps_s = "
@@ -563,6 +637,25 @@ void write_experiment_results(const std::string &filename,
             (left ? "P_k^{-1}K" : "KP_k^{-1}") :
             (left ? "K_LOR^{-1}K" : "KK_LOR^{-1}"));
     const char *solve_label = lor_pc_mode_name(results.lor_pc);
+    const char *outer_ksp_type = results.lor_pc == LORPCMode::left_cg_lu ?
+        "cg" :
+        ((results.lor_pc == LORPCMode::right_fgmres_cg ||
+          results.lor_pc == LORPCMode::right_fgmres_amg) ?
+            "fgmres" : "gmres");
+    const char *inverse_application =
+        (results.lor_pc == LORPCMode::left_cg_lu ||
+         results.lor_pc == LORPCMode::right_gmres_lu) ? "lu" :
+        (results.lor_pc == LORPCMode::right_fgmres_amg ? "amg" :
+         (uses_inner_cg ?
+            (results.inner_pc == InnerPCMode::jacobi ?
+                "cg_jacobi" : "cg_gamg") :
+            (results.lor_pc == LORPCMode::left_gmres_fixed_jacobi ?
+                "fixed_jacobi" : "direct_K_pc")));
+    output << "outer_ksp_type = " << outer_ksp_type << '\n'
+           << "inverse_application_mode = " << inverse_application << '\n';
+    if (!results.computed_condition_number)
+        output << "svd_status = not_computed\n"
+               << "svd_status_K = not_computed\n";
     if (results.computed_condition_number)
     {
         output << "svd_status = "
@@ -586,6 +679,8 @@ void write_experiment_results(const std::string &filename,
                    << "sigma_min = " << results.sigma_min << '\n'
                    << "sigma_max = " << results.sigma_max << '\n';
     }
+    if (!results.computed_spectral_condition_number)
+        output << "eigensolver_status = not_computed\n";
     if (results.computed_spectral_condition_number)
     {
         output << "eigensolver_status = "
@@ -608,20 +703,25 @@ void write_experiment_results(const std::string &filename,
     }
     if (results.computed_solution)
     {
-        output << "iterations(K) = " << results.iterations_K << '\n'
-               << "iterations(" << solve_label << ") = "
+        if (results.computed_unpreconditioned_solution)
+            output << "iterations(K) = " << results.iterations_K << '\n'
+                   << "setup_time_seconds(K) = "
+                   << results.setup_time_K << '\n'
+                   << "outer_solve_time_seconds(K) = "
+                   << results.outer_solve_time_K << '\n'
+                   << "residual(K) = " << results.residual_K << '\n'
+                   << "relative_residual(K) = "
+                   << results.relative_residual_K << '\n'
+                   << "ksp_reason(K) = "
+                   << static_cast<int>(results.reason_K) << '\n';
+        output << "iterations(" << solve_label << ") = "
                << results.iterations_lor_K << '\n'
-               << "setup_time_seconds(K) = "
-               << results.setup_time_K << '\n'
-               << "outer_solve_time_seconds(K) = "
-               << results.outer_solve_time_K << '\n'
                << "setup_time_seconds(" << solve_label << ") = "
                << results.setup_time_lor_K << '\n'
+               << "preconditioner_setup_time_seconds(" << solve_label
+               << ") = " << results.preconditioner_setup_time_lor_K << '\n'
                << "outer_solve_time_seconds(" << solve_label
                << ") = " << results.outer_solve_time_lor_K << '\n'
-               << "residual(K) = " << results.residual_K << '\n'
-               << "relative_residual(K) = "
-               << results.relative_residual_K << '\n'
                << "residual(" << solve_label << ") = "
                << results.residual_lor_K << '\n'
                << "relative_residual(" << solve_label << ") = "
@@ -629,14 +729,12 @@ void write_experiment_results(const std::string &filename,
                << "outer_iterations = " << results.iterations_lor_K << '\n'
                << "pc_applications = "
                << results.pc_applications_lor_K << '\n'
-               << "inner_iterations_total = "
-               << results.inner_iterations_lor_K << '\n'
                << "relative_true_residual = "
                << results.relative_residual_lor_K << '\n'
                << "ksp_reason = "
                << static_cast<int>(results.reason_lor_K) << '\n'
                << "time_pc_ksp_setup_s = "
-               << results.setup_time_lor_K << '\n'
+               << results.preconditioner_setup_time_lor_K << '\n'
                << "time_outer_solve_s = "
                << results.outer_solve_time_lor_K << '\n'
                << "time_pc_apply_total_s = "
@@ -654,18 +752,54 @@ void write_experiment_results(const std::string &filename,
                     applications : 0.0;
             const double average_time = applications > 0.0 ?
                 results.inner_solve_time_lor_K / applications : 0.0;
-            output << "pc_applications(" << solve_label << ") = "
+            output << "inner_iterations_total = "
+                   << results.inner_iterations_lor_K << '\n'
+                   << "pc_applications(" << solve_label << ") = "
                    << results.pc_applications_lor_K << '\n'
                    << "inner_iterations_total(" << solve_label
                    << ") = " << results.inner_iterations_lor_K << '\n'
                    << "inner_iterations_average(" << solve_label
                    << ") = " << average_iterations << '\n'
+                   << "inner_iterations_maximum(" << solve_label
+                   << ") = " << results.maximum_inner_iterations_lor_K << '\n'
+                   << "inner_failed_applications(" << solve_label
+                   << ") = " << results.failed_inner_applications_lor_K << '\n'
+                   << "inner_last_reason(" << solve_label
+                   << ") = " << static_cast<int>(
+                        results.last_inner_reason_lor_K) << '\n'
                    << "inner_solve_time_seconds(" << solve_label
                    << ") = " << results.inner_solve_time_lor_K << '\n'
                    << "inner_solve_time_average_seconds("
                    << solve_label << ") = "
                    << average_time << '\n';
         }
+        else if (results.lor_pc == LORPCMode::right_fgmres_amg)
+        {
+            const double applications = static_cast<double>(
+                results.pc_applications_lor_K);
+            const double average_time = applications > 0.0 ?
+                results.inner_solve_time_lor_K / applications : 0.0;
+            output << "inner_iterations_status = not_applicable\n"
+                   << "inner_cg_iterations_status = not_applicable\n"
+                   << "amg_vcycle_applications = "
+                   << results.pc_applications_lor_K << '\n'
+                   << "amg_setup_time_seconds = "
+                   << results.preconditioner_setup_time_lor_K << '\n'
+                   << "amg_apply_time_seconds = "
+                   << results.inner_solve_time_lor_K << '\n'
+                   << "amg_apply_time_average_seconds = "
+                   << average_time << '\n';
+        }
+        else if (results.lor_pc == LORPCMode::left_cg_lu ||
+                 results.lor_pc == LORPCMode::right_gmres_lu)
+            output << "inner_iterations_status = not_applicable\n"
+                   << "inner_cg_iterations_status = not_applicable\n"
+                   << "lu_triangular_solve_applications = "
+                   << results.pc_applications_lor_K << '\n'
+                   << "lu_factor_setup_time_seconds = "
+                   << results.preconditioner_setup_time_lor_K << '\n'
+                   << "lu_apply_time_seconds = "
+                   << results.inner_solve_time_lor_K << '\n';
         else if (results.lor_pc == LORPCMode::left_gmres_fixed_jacobi)
         {
             // Scheme B reports deterministic polynomial work separately from
@@ -679,10 +813,15 @@ void write_experiment_results(const std::string &filename,
         }
     }
     if (results.computed_l2_error)
-        output << "L2_error(K) = " << results.l2_error_K << '\n'
-               << "L2_error(" << solve_label << ") = "
+    {
+        if (results.computed_unpreconditioned_solution)
+            output << "L2_error(K) = " << results.l2_error_K << '\n';
+        else
+            output << "L2_error(K)_status = not_computed\n";
+        output << "L2_error(" << solve_label << ") = "
                << results.l2_error_lor_K << '\n'
                << "l2_error = " << results.l2_error_lor_K << '\n';
+    }
 }
 
 // Emit fixed-dimensional option adapters used by the one runtime driver.

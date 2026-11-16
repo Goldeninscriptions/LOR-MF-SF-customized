@@ -262,6 +262,7 @@ PetscErrorCode run_assembled_laplace_experiment(
             high_stiffness.matrix, effective_k,
             options.compute_truncation_certificate,
             options.verify_tensor_identity,
+            options.trunc_chol_boundary_protection,
             options.trunc_chol_max_memory_bytes, &truncated_tensor));
     }
     Mat preconditioner_matrix = uses_lor_matrix ? lor_stiffness.matrix :
@@ -282,9 +283,10 @@ PetscErrorCode run_assembled_laplace_experiment(
     LinearSolveResult preconditioned_solve;
     if (options.compute_solution)
     {
-        PetscCall(solve_unpreconditioned(high_stiffness.matrix,
-            high_load.vector, options.lor_pc, options.tolerances,
-            &original_solve));
+        if (options.compute_unpreconditioned_solution)
+            PetscCall(solve_unpreconditioned(high_stiffness.matrix,
+                high_load.vector, options.lor_pc, options.tolerances,
+                &original_solve));
         PetscCall(solve_with_lor(high_stiffness.matrix,
             preconditioner_matrix, high_load.vector, options.lor_pc,
             options.inner_pc,
@@ -310,9 +312,10 @@ PetscErrorCode run_assembled_laplace_experiment(
         for (int direction = 0; direction < Dim; ++direction)
             error_basis.emplace_back(patch.degree(direction),
                 patch.knots(direction), error_quad.points);
-        PetscCall(compute_l2_error<Dim>(patch, high_IEN, ID_map,
-            error_quad, error_basis, original_solve.solution,
-            dirichlet_coefficients, exact, &original_error));
+        if (options.compute_unpreconditioned_solution)
+            PetscCall(compute_l2_error<Dim>(patch, high_IEN, ID_map,
+                error_quad, error_basis, original_solve.solution,
+                dirichlet_coefficients, exact, &original_error));
         PetscCall(compute_l2_error<Dim>(patch, high_IEN, ID_map,
             error_quad, error_basis, preconditioned_solve.solution,
             dirichlet_coefficients, exact, &preconditioned_error));
@@ -376,9 +379,12 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.refinement_mode = options.refinement_mode;
     results.mpi_ranks = partition->size();
     results.actual_degree = patch.degree(0);
+    results.total_free_dofs = ID_map.num_free_dofs();
     for (int direction = 0; direction < Dim; ++direction)
         results.actual_elements.push_back(patch.num_elements(direction));
     results.computed_solution = options.compute_solution;
+    results.computed_unpreconditioned_solution =
+        options.compute_solution && options.compute_unpreconditioned_solution;
     results.computed_l2_error = options.compute_l2_error;
     results.computed_condition_number = options.compute_condition_number;
     results.computed_spectral_condition_number =
@@ -448,16 +454,20 @@ PetscErrorCode run_assembled_laplace_experiment(
     }
     if (options.compute_solution)
     {
-        results.iterations_K = original_solve.iterations;
+        if (options.compute_unpreconditioned_solution)
+        {
+            results.iterations_K = original_solve.iterations;
+            results.residual_K = original_solve.residual_norm;
+            results.relative_residual_K = original_solve.relative_residual_norm;
+            results.setup_time_K = original_solve.setup_time_seconds;
+            results.outer_solve_time_K =
+                original_solve.outer_solve_time_seconds;
+            results.reason_K = original_solve.reason;
+        }
         results.iterations_lor_K = preconditioned_solve.iterations;
-        results.residual_K = original_solve.residual_norm;
-        results.relative_residual_K = original_solve.relative_residual_norm;
         results.residual_lor_K = preconditioned_solve.residual_norm;
         results.relative_residual_lor_K =
             preconditioned_solve.relative_residual_norm;
-        results.setup_time_K = original_solve.setup_time_seconds;
-        results.outer_solve_time_K =
-            original_solve.outer_solve_time_seconds;
         results.setup_time_lor_K = preconditioned_solve.setup_time_seconds;
         results.outer_solve_time_lor_K =
             preconditioned_solve.outer_solve_time_seconds;
@@ -465,14 +475,22 @@ PetscErrorCode run_assembled_laplace_experiment(
             preconditioned_solve.pc_applications;
         results.inner_iterations_lor_K =
             preconditioned_solve.inner_iterations;
+        results.maximum_inner_iterations_lor_K =
+            preconditioned_solve.maximum_inner_iterations;
+        results.failed_inner_applications_lor_K =
+            preconditioned_solve.failed_inner_applications;
+        results.last_inner_reason_lor_K =
+            preconditioned_solve.last_inner_reason;
         results.inner_solve_time_lor_K =
             preconditioned_solve.inner_solve_time_seconds;
-        results.reason_K = original_solve.reason;
+        results.preconditioner_setup_time_lor_K =
+            preconditioned_solve.preconditioner_setup_time_seconds;
         results.reason_lor_K = preconditioned_solve.reason;
     }
     if (options.compute_l2_error)
     {
-        results.l2_error_K = original_error;
+        if (options.compute_unpreconditioned_solution)
+            results.l2_error_K = original_error;
         results.l2_error_lor_K = preconditioned_error;
     }
     results.time_original_matrix_assembly_s = original_assembly_time;
@@ -487,6 +505,8 @@ PetscErrorCode run_assembled_laplace_experiment(
             (patch.degree(0) + 1) / 2 : options.trunc_chol_k;
         results.trunc_chol_original_degree_p = patch.degree(0);
         results.trunc_chol_mass_degree_q = patch.degree(0) - 1;
+        results.trunc_chol_boundary_protection =
+            options.trunc_chol_boundary_protection;
         results.trunc_chol_certificate_computed =
             options.compute_truncation_certificate;
         results.trunc_chol_certificate_bound_available =
@@ -508,6 +528,30 @@ PetscErrorCode run_assembled_laplace_experiment(
             truncated_tensor.minimum_diagonal;
         for (const auto &direction : truncated_tensor.directions)
         {
+            results.trunc_chol_value_original_half_bandwidth.push_back(
+                direction.value_mass.original_half_bandwidth);
+            results.trunc_chol_value_complete_factor_half_bandwidth.push_back(
+                direction.value_mass.complete_factor_half_bandwidth);
+            results.trunc_chol_value_truncated_factor_half_bandwidth.push_back(
+                direction.value_mass.truncated_factor_half_bandwidth);
+            results.trunc_chol_derivative_original_half_bandwidth.push_back(
+                direction.derivative_mass.original_half_bandwidth);
+            results.trunc_chol_derivative_complete_factor_half_bandwidth.push_back(
+                direction.derivative_mass.complete_factor_half_bandwidth);
+            results.trunc_chol_derivative_truncated_factor_half_bandwidth.push_back(
+                direction.derivative_mass.truncated_factor_half_bandwidth);
+            results.trunc_chol_value_complete_factor_nonzeros.push_back(
+                direction.value_mass.complete_factor_nonzeros);
+            results.trunc_chol_value_truncated_factor_nonzeros.push_back(
+                direction.value_mass.truncated_factor_nonzeros);
+            results.trunc_chol_value_dropped_factor_entries.push_back(
+                direction.value_mass.dropped_factor_entries);
+            results.trunc_chol_derivative_complete_factor_nonzeros.push_back(
+                direction.derivative_mass.complete_factor_nonzeros);
+            results.trunc_chol_derivative_truncated_factor_nonzeros.push_back(
+                direction.derivative_mass.truncated_factor_nonzeros);
+            results.trunc_chol_derivative_dropped_factor_entries.push_back(
+                direction.derivative_mass.dropped_factor_entries);
             results.derivative_identity_max_relative_error = std::max(
                 results.derivative_identity_max_relative_error,
                 direction.derivative_identity_relative_error);
@@ -551,6 +595,8 @@ PetscErrorCode run_assembled_laplace_experiment(
             truncated_tensor.time_1d_reduced_operators_seconds;
         results.time_tensor_pc_assembly_s =
             truncated_tensor.time_tensor_assembly_seconds;
+        results.time_tensor_memory_preflight_s =
+            truncated_tensor.time_tensor_memory_preflight_seconds;
         results.time_tensor_identity_verification_s =
             truncated_tensor.time_tensor_identity_verification_seconds;
     }
@@ -692,14 +738,19 @@ PetscErrorCode run_assembled_laplace_experiment(
                     "available" : "unavailable"));
         if (options.compute_solution)
         {
+            if (options.compute_unpreconditioned_solution)
+                PetscCall(PetscPrintf(comm,
+                    "  solve(K): outer_iterations=%" PetscInt_FMT
+                    ", setup=%.6e s, outer_total=%.6e s\n",
+                    results.iterations_K,
+                    static_cast<double>(results.setup_time_K),
+                    static_cast<double>(results.outer_solve_time_K)));
+            else
+                PetscCall(PetscPrintf(comm,
+                    "  solve(K): not_computed\n"));
             PetscCall(PetscPrintf(comm,
-                "  solve(K): outer_iterations=%" PetscInt_FMT
-                ", setup=%.6e s, outer_total=%.6e s\n"
                 "  solve(%s): outer_iterations=%" PetscInt_FMT
                 ", setup=%.6e s, outer_total=%.6e s\n",
-                results.iterations_K,
-                static_cast<double>(results.setup_time_K),
-                static_cast<double>(results.outer_solve_time_K),
                 solve_label, results.iterations_lor_K,
                 static_cast<double>(results.setup_time_lor_K),
                 static_cast<double>(results.outer_solve_time_lor_K)));
@@ -726,6 +777,25 @@ PetscErrorCode run_assembled_laplace_experiment(
                     static_cast<double>(results.inner_solve_time_lor_K),
                     average_time));
             }
+            else if (options.lor_pc == LORPCMode::right_fgmres_amg)
+                PetscCall(PetscPrintf(comm,
+                    "  AMG-only: applications=%" PetscInt_FMT
+                    ", CG_iterations=not_applicable, setup=%.6e s, "
+                    "apply_total=%.6e s\n",
+                    results.pc_applications_lor_K,
+                    static_cast<double>(
+                        results.preconditioner_setup_time_lor_K),
+                    static_cast<double>(results.inner_solve_time_lor_K)));
+            else if (options.lor_pc == LORPCMode::left_cg_lu ||
+                     options.lor_pc == LORPCMode::right_gmres_lu)
+                PetscCall(PetscPrintf(comm,
+                    "  LU inverse: applications=%" PetscInt_FMT
+                    ", CG_iterations=not_applicable, factor_setup=%.6e s, "
+                    "apply_total=%.6e s\n",
+                    results.pc_applications_lor_K,
+                    static_cast<double>(
+                        results.preconditioner_setup_time_lor_K),
+                    static_cast<double>(results.inner_solve_time_lor_K)));
             else if (options.lor_pc ==
                      LORPCMode::left_gmres_fixed_jacobi)
                 PetscCall(PetscPrintf(comm,
@@ -739,12 +809,18 @@ PetscErrorCode run_assembled_laplace_experiment(
                     static_cast<double>(results.inner_solve_time_lor_K)));
         }
         if (options.compute_l2_error)
+        {
+            if (options.compute_unpreconditioned_solution)
+                PetscCall(PetscPrintf(comm,
+                    "  L2_error(K) = %.12e\n",
+                    static_cast<double>(results.l2_error_K)));
+            else
+                PetscCall(PetscPrintf(comm,
+                    "  L2_error(K) = not_computed\n"));
             PetscCall(PetscPrintf(comm,
-                "  L2_error(K) = %.12e\n"
-                "  L2_error(%s) = %.12e\n",
-                static_cast<double>(results.l2_error_K),
-                solve_label,
+                "  L2_error(%s) = %.12e\n", solve_label,
                 static_cast<double>(results.l2_error_lor_K)));
+        }
         PetscCall(PetscPrintf(comm, "  result file: %s\n",
             options.output_file.c_str()));
     }

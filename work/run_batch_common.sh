@@ -44,6 +44,8 @@ trunc_chol_k=${trunc_chol_k:-${TRUNC_CHOL_K:-auto}}
 compute_truncation_certificate=${compute_truncation_certificate:-${COMPUTE_TRUNCATION_CERTIFICATE:-true}}
 verify_tensor_identity=${verify_tensor_identity:-${VERIFY_TENSOR_IDENTITY:-false}}
 trunc_chol_max_memory_bytes=${trunc_chol_max_memory_bytes:-${TRUNC_CHOL_MAX_MEMORY_BYTES:-68719476736}}
+trunc_chol_boundary_protection=${trunc_chol_boundary_protection:-${TRUNC_CHOL_BOUNDARY_PROTECTION:-true}}
+compute_unpreconditioned_solution=${compute_unpreconditioned_solution:-${COMPUTE_UNPRECONDITIONED_SOLUTION:-true}}
 compute_spectral_condition_number=${compute_spectral_condition_number:-${COMPUTE_SPECTRAL_CONDITION_NUMBER:-false}}
 eps_tol=${eps_tol:-${EPS_TOL:-1.0e-8}}
 eps_max_it=${eps_max_it:-${EPS_MAX_IT:-100000}}
@@ -126,6 +128,15 @@ case "$lor_pc" in
     fi
     scheme_settings="outer_rtol=$outer_rtol,outer_atol=$outer_atol,outer_dtol=$outer_dtol,outer_max_it=$outer_max_it,inner_pc=$inner_pc,inner_rtol=$inner_rtol,inner_atol=$inner_atol,inner_max_it=$inner_max_it"
     setting_tag="inner_${inner_pc}"
+    ;;
+  right_fgmres_amg)
+    preconditioner_side="right"
+    outer_rtol=${outer_rtol:-${OUTER_RTOL:-1.0e-10}}
+    outer_atol=${outer_atol:-${OUTER_ATOL:-1.0e-10}}
+    outer_dtol=${outer_dtol:-${OUTER_DTOL:-1.0e4}}
+    outer_max_it=${outer_max_it:-${OUTER_MAX_IT:-10000}}
+    scheme_settings="outer_rtol=$outer_rtol,outer_atol=$outer_atol,outer_dtol=$outer_dtol,outer_max_it=$outer_max_it,amg_only_on_P"
+    setting_tag="amg_only"
     ;;
   left_gmres_k_jacobi)
     preconditioner_side="left"
@@ -231,7 +242,7 @@ for degree in "${degrees[@]}"; do
     element_tag=${element_tuple//,/x}
     effective_k=$trunc_chol_k
     [[ "$effective_k" == auto ]] && effective_k=$(( (degree + 1) / 2 ))
-    stem="mpi${mpi_ranks}_${refinement}_p${degree}_n${element_tag}_${lor_points}_${lor_pc}_${preconditioner_side}_${setting_tag}_src${preconditioner_matrix_source}_k${trunc_chol_k}_solve${compute_solution}_l2${compute_l2_error}_svd${compute_condition_number}_eps${compute_spectral_condition_number}_verify${verify_tensor_identity}"
+    stem="mpi${mpi_ranks}_${refinement}_p${degree}_n${element_tag}_${lor_points}_${lor_pc}_${preconditioner_side}_${setting_tag}_src${preconditioner_matrix_source}_k${trunc_chol_k}_bp${trunc_chol_boundary_protection}_solve${compute_solution}_base${compute_unpreconditioned_solution}_l2${compute_l2_error}_svd${compute_condition_number}_eps${compute_spectral_condition_number}_verify${verify_tensor_identity}"
     result_file="$result_dir/${stem}.log"
     console_file="$console_dir/${stem}.console.log"
     case_start=$(date +%s)
@@ -264,6 +275,8 @@ for degree in "${degrees[@]}"; do
       COMPUTE_TRUNCATION_CERTIFICATE="$compute_truncation_certificate" \
       VERIFY_TENSOR_IDENTITY="$verify_tensor_identity" \
       TRUNC_CHOL_MAX_MEMORY_BYTES="$trunc_chol_max_memory_bytes" \
+      TRUNC_CHOL_BOUNDARY_PROTECTION="$trunc_chol_boundary_protection" \
+      COMPUTE_UNPRECONDITIONED_SOLUTION="$compute_unpreconditioned_solution" \
       COMPUTE_SPECTRAL_CONDITION_NUMBER="$compute_spectral_condition_number" \
       EPS_TOL="$eps_tol" EPS_MAX_IT="$eps_max_it" EPS_NCV="$eps_ncv" \
       SVD_TOL="$svd_tol" SVD_MAX_IT="$svd_max_it" SVD_NCV="$svd_ncv" \

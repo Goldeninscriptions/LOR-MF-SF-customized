@@ -143,6 +143,12 @@ case "$lor_pc" in
     outer_atol="1.0e-10"
     outer_dtol="1.0e4"
     ;;
+  right_fgmres_amg)
+    preconditioner_side="right"
+    outer_rtol="1.0e-10"
+    outer_atol="1.0e-10"
+    outer_dtol="1.0e4"
+    ;;
   left_gmres_k_jacobi)
     preconditioner_side="left"
     outer_rtol="1.0e-10"
@@ -163,7 +169,7 @@ case "$lor_pc" in
     outer_dtol="1.0e4"
     ;;
   *)
-    echo "LOR_PC must be left_cg_lu, right_gmres_lu, left_gmres_cg, right_gmres_cg, right_fgmres_cg, left_gmres_k_jacobi, left_gmres_k_gamg, right_gmres_k_gamg, or left_gmres_fixed_jacobi" >&2
+    echo "LOR_PC must be left_cg_lu, right_gmres_lu, left_gmres_cg, right_gmres_cg, right_fgmres_cg, right_fgmres_amg, left_gmres_k_jacobi, left_gmres_k_gamg, right_gmres_k_gamg, or left_gmres_fixed_jacobi" >&2
     exit 2
     ;;
 esac
@@ -198,6 +204,7 @@ trunc_chol_k=${TRUNC_CHOL_K:-auto}
 compute_truncation_certificate=${COMPUTE_TRUNCATION_CERTIFICATE:-true}
 verify_tensor_identity=${VERIFY_TENSOR_IDENTITY:-false}
 trunc_chol_max_memory_bytes=${TRUNC_CHOL_MAX_MEMORY_BYTES:-68719476736}
+trunc_chol_boundary_protection=${TRUNC_CHOL_BOUNDARY_PROTECTION:-true}
 case "$preconditioner_matrix_source" in
   lor_q1|truncated_cholesky_tensor) ;;
   *) echo "PRECONDITIONER_MATRIX_SOURCE must be lor_q1 or truncated_cholesky_tensor" >&2; exit 2 ;;
@@ -223,12 +230,14 @@ fi
 # Independent experiment features. Environment variables make the single-case
 # launcher configurable without lengthening its positional interface.
 compute_solution=${COMPUTE_SOLUTION:-true}
+compute_unpreconditioned_solution=${COMPUTE_UNPRECONDITIONED_SOLUTION:-true}
 compute_l2_error=${COMPUTE_L2_ERROR:-true}
 compute_condition_number=${COMPUTE_CONDITION_NUMBER:-false}
 compute_spectral_condition_number=${COMPUTE_SPECTRAL_CONDITION_NUMBER:-false}
 for feature_value in \
   "$compute_solution" "$compute_l2_error" "$compute_condition_number" \
-  "$compute_spectral_condition_number" "$compute_truncation_certificate"; do
+  "$compute_spectral_condition_number" "$compute_truncation_certificate" \
+  "$compute_unpreconditioned_solution" "$trunc_chol_boundary_protection"; do
   if [[ "$feature_value" != "true" && "$feature_value" != "false" ]]; then
     echo "COMPUTE_* feature switches must be true or false" >&2
     exit 2
@@ -274,7 +283,9 @@ common_options=(
   -compute_truncation_certificate "$compute_truncation_certificate"
   -verify_tensor_identity "$verify_tensor_identity"
   -trunc_chol_max_memory_bytes "$trunc_chol_max_memory_bytes"
+  -trunc_chol_boundary_protection "$trunc_chol_boundary_protection"
   -compute_solution "$compute_solution"
+  -compute_unpreconditioned_solution "$compute_unpreconditioned_solution"
   -compute_l2_error "$compute_l2_error"
   -compute_condition_number "$compute_condition_number"
   -compute_spectral_condition_number "$compute_spectral_condition_number"
@@ -320,5 +331,5 @@ if [[ "$uses_inner_cg" == true ]]; then
 elif [[ "$uses_fixed_jacobi" == true ]]; then
   scheme_log=" fixed_jacobi_steps=$fixed_jacobi_steps fixed_jacobi_omega=$fixed_jacobi_omega"
 fi
-echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side matrix_source=$preconditioner_matrix_source trunc_k=$trunc_chol_k verify_tensor=$verify_tensor_identity memory_limit_bytes=$trunc_chol_max_memory_bytes certificate=$compute_truncation_certificate${scheme_log} solve=$compute_solution L2=$compute_l2_error condition_svd=$compute_condition_number condition_eps=$compute_spectral_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_dtol=$outer_dtol outer_max_it=$outer_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv eps_tol=$eps_tol eps_max_it=$eps_max_it eps_ncv=$eps_ncv"
+echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side matrix_source=$preconditioner_matrix_source trunc_k=$trunc_chol_k boundary_protection=$trunc_chol_boundary_protection verify_tensor=$verify_tensor_identity memory_limit_bytes=$trunc_chol_max_memory_bytes certificate=$compute_truncation_certificate${scheme_log} solve=$compute_solution unpreconditioned_baseline=$compute_unpreconditioned_solution L2=$compute_l2_error condition_svd=$compute_condition_number condition_eps=$compute_spectral_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_dtol=$outer_dtol outer_max_it=$outer_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv eps_tol=$eps_tol eps_max_it=$eps_max_it eps_ncv=$eps_ncv"
 "$mpi_launcher" -n "$mpi_ranks" "$driver" "${common_options[@]}"

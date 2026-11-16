@@ -4,3 +4,6 @@ conf/system_lib_loading.cmake
 *.log
 work/inner_tolerance_*.tsv
 
+# Generated batch manifests, pending/status rows, temporary atomic outputs,
+# console logs, and numerical result files. Sweep scripts remain tracked.
+/work/results/

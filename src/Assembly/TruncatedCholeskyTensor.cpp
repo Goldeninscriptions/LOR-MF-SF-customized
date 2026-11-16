@@ -253,6 +253,7 @@ PetscErrorCode assemble_truncated_cholesky_tensor(
     const BSplinePatch<Dim> &patch, const ID &ID_map,
     Mat high_order_stiffness, const int truncation_half_bandwidth,
     const bool compute_certificate, const bool verify_identity,
+    const bool boundary_protection,
     const PetscLogDouble maximum_memory_bytes,
     TruncatedCholeskyTensorResult<Dim> *result)
 {
@@ -286,7 +287,8 @@ PetscErrorCode assemble_truncated_cholesky_tensor(
                     "truncated_cholesky_tensor currently requires equal degree in every direction");
             result->directions[direction] = build_truncated_direction_1d(
                 patch.degree(direction), patch.knots(direction),
-                truncation_half_bandwidth, compute_certificate);
+                truncation_half_bandwidth, compute_certificate,
+                boundary_protection);
             free_shape[direction] = patch.num_basis(direction) - 2;
             const auto &value_mass = result->directions[direction].value_mass;
             const auto &derivative_mass =
@@ -333,6 +335,7 @@ PetscErrorCode assemble_truncated_cholesky_tensor(
         PetscInt end = 0;
         PetscCall(MatGetOwnershipRange(high_order_stiffness, &begin, &end));
 
+        const auto preflight_start = Clock::now();
         // This overflow-safe structural preflight precedes all tensor-row map
         // construction.  It intentionally overcounts overlaps among the Dim
         // Kronecker summands and accounts for both AIJ storage and one
@@ -386,6 +389,12 @@ PetscErrorCode assemble_truncated_cholesky_tensor(
             "Truncated tensor preflight conservative estimate %.3f MiB exceeds configured limit %.3f MiB; no tensor rows or PETSc matrix were allocated",
             result->conservative_memory_estimate_bytes / (1024.0 * 1024.0),
             maximum_memory_bytes / (1024.0 * 1024.0));
+        const double local_preflight_seconds =
+            std::chrono::duration<double>(Clock::now() -
+                preflight_start).count();
+        PetscCallMPI(MPI_Allreduce(&local_preflight_seconds,
+            &result->time_tensor_memory_preflight_seconds, 1,
+            MPI_DOUBLE, MPI_MAX, comm));
 
         if (verify_identity)
         {
@@ -536,10 +545,10 @@ PetscErrorCode assemble_truncated_cholesky_tensor(
 }
 
 template PetscErrorCode assemble_truncated_cholesky_tensor<2>(
-    const BSplinePatch<2> &, const ID &, Mat, int, bool, bool, PetscLogDouble,
+    const BSplinePatch<2> &, const ID &, Mat, int, bool, bool, bool, PetscLogDouble,
     TruncatedCholeskyTensorResult<2> *);
 template PetscErrorCode assemble_truncated_cholesky_tensor<3>(
-    const BSplinePatch<3> &, const ID &, Mat, int, bool, bool, PetscLogDouble,
+    const BSplinePatch<3> &, const ID &, Mat, int, bool, bool, bool, PetscLogDouble,
     TruncatedCholeskyTensorResult<3> *);
 
 } // namespace lor

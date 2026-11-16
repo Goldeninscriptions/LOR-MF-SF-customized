@@ -47,6 +47,7 @@ struct ExperimentOptions
     int trunc_chol_k = -1; // -1 means auto = ceil(p/2).
     bool trunc_chol_k_was_auto = true;
     bool compute_truncation_certificate = true;
+    bool trunc_chol_boundary_protection = true;
     bool verify_tensor_identity = false;
     PetscLogDouble trunc_chol_max_memory_bytes =
         64.0 * 1024.0 * 1024.0 * 1024.0;
@@ -58,6 +59,7 @@ struct ExperimentOptions
     // vectors and therefore requires compute_solution; condition numbers use
     // only the two assembled stiffness matrices.
     bool compute_solution = true;
+    bool compute_unpreconditioned_solution = true;
     bool compute_l2_error = true;
     bool compute_condition_number = false;
     bool compute_spectral_condition_number = false;
@@ -86,10 +88,12 @@ struct ExperimentResults
     int mpi_ranks = 1;
     int actual_degree = 0;
     std::vector<int> actual_elements;
+    PetscInt total_free_dofs = 0;
 
     // Record which optional computations actually ran. Disabled quantities
     // are omitted from the result file rather than written as artificial zero.
     bool computed_solution = false;
+    bool computed_unpreconditioned_solution = false;
     bool computed_l2_error = false;
     bool computed_condition_number = false;
     bool computed_spectral_condition_number = false;
@@ -106,6 +110,19 @@ struct ExperimentResults
     int trunc_chol_k_effective = -1;
     int trunc_chol_original_degree_p = 0;
     int trunc_chol_mass_degree_q = 0;
+    bool trunc_chol_boundary_protection = true;
+    std::vector<int> trunc_chol_value_original_half_bandwidth;
+    std::vector<int> trunc_chol_value_complete_factor_half_bandwidth;
+    std::vector<int> trunc_chol_value_truncated_factor_half_bandwidth;
+    std::vector<int> trunc_chol_derivative_original_half_bandwidth;
+    std::vector<int> trunc_chol_derivative_complete_factor_half_bandwidth;
+    std::vector<int> trunc_chol_derivative_truncated_factor_half_bandwidth;
+    std::vector<std::size_t> trunc_chol_value_complete_factor_nonzeros;
+    std::vector<std::size_t> trunc_chol_value_truncated_factor_nonzeros;
+    std::vector<std::size_t> trunc_chol_value_dropped_factor_entries;
+    std::vector<std::size_t> trunc_chol_derivative_complete_factor_nonzeros;
+    std::vector<std::size_t> trunc_chol_derivative_truncated_factor_nonzeros;
+    std::vector<std::size_t> trunc_chol_derivative_dropped_factor_entries;
     std::vector<double> trunc_chol_beta_value_mass;
     std::vector<double> trunc_chol_beta_derivative_mass;
     std::vector<double> trunc_chol_certificate_value_maximum_row_sum;
@@ -174,7 +191,11 @@ struct ExperimentResults
     // counts and time are maximum-cost-rank totals.
     PetscInt pc_applications_lor_K = 0;
     PetscInt inner_iterations_lor_K = 0;
+    PetscInt maximum_inner_iterations_lor_K = 0;
+    PetscInt failed_inner_applications_lor_K = 0;
+    KSPConvergedReason last_inner_reason_lor_K = KSP_CONVERGED_ITERATING;
     PetscLogDouble inner_solve_time_lor_K = 0.0;
+    PetscLogDouble preconditioner_setup_time_lor_K = 0.0;
     KSPConvergedReason reason_K = KSP_CONVERGED_ITERATING;
     KSPConvergedReason reason_lor_K = KSP_CONVERGED_ITERATING;
 
@@ -187,6 +208,7 @@ struct ExperimentResults
     PetscLogDouble time_truncation_certificate_s = 0.0;
     PetscLogDouble time_1d_reduced_operators_s = 0.0;
     PetscLogDouble time_tensor_pc_assembly_s = 0.0;
+    PetscLogDouble time_tensor_memory_preflight_s = 0.0;
     PetscLogDouble time_tensor_identity_verification_s = 0.0;
     PetscLogDouble time_spectral_eps_s = 0.0;
     PetscLogDouble time_singular_svd_s = 0.0;

@@ -1,5 +1,6 @@
 #include "Solver/LinearSolver.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace lor
@@ -11,6 +12,7 @@ enum class ShellApplyKind
 {
     exact_lu,
     inner_cg,
+    amg_only,
     fixed_jacobi
 };
 
@@ -27,6 +29,9 @@ struct LORShellContext
     PetscReal fixed_jacobi_omega = 0.0;
     PetscInt applications = 0;
     PetscInt total_inner_iterations = 0;
+    PetscInt maximum_inner_iterations = 0;
+    PetscInt failed_inner_applications = 0;
+    KSPConvergedReason last_inner_reason = KSP_CONVERGED_ITERATING;
     PetscLogDouble total_inner_solve_time_seconds = 0.0;
 };
 
@@ -65,12 +70,19 @@ PetscErrorCode apply_lor_shell(PC pc, Vec residual, Vec correction)
     PetscLogDouble end = 0.0;
     PetscCall(PetscTime(&start));
     PetscInt iterations = 0;
-    if (context->kind == ShellApplyKind::inner_cg ||
-        context->kind == ShellApplyKind::exact_lu)
+    if (context->kind != ShellApplyKind::fixed_jacobi)
     {
         PetscCall(KSPSolve(context->inner_ksp, residual, correction));
+        PetscCall(KSPGetConvergedReason(context->inner_ksp,
+            &context->last_inner_reason));
         if (context->kind == ShellApplyKind::inner_cg)
+        {
             PetscCall(KSPGetIterationNumber(context->inner_ksp, &iterations));
+            context->maximum_inner_iterations = std::max(
+                context->maximum_inner_iterations, iterations);
+            if (context->last_inner_reason < 0)
+                ++context->failed_inner_applications;
+        }
     }
     else
     {
@@ -136,6 +148,7 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     const bool use_inner_cg = mode == LORPCMode::left_gmres_cg ||
         mode == LORPCMode::right_gmres_cg ||
         mode == LORPCMode::right_fgmres_cg;
+    const bool use_amg_only = mode == LORPCMode::right_fgmres_amg;
     const bool use_fixed_jacobi =
         mode == LORPCMode::left_gmres_fixed_jacobi;
     const bool use_k_jacobi =
@@ -143,9 +156,11 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     const bool use_k_gamg =
         mode == LORPCMode::left_gmres_k_gamg ||
         mode == LORPCMode::right_gmres_k_gamg;
-    const bool use_shell = use_exact_lu || use_inner_cg || use_fixed_jacobi;
+    const bool use_shell = use_exact_lu || use_inner_cg || use_amg_only ||
+        use_fixed_jacobi;
     const bool use_fgmres = apply_preconditioner &&
-        mode == LORPCMode::right_fgmres_cg;
+        (mode == LORPCMode::right_fgmres_cg ||
+         mode == LORPCMode::right_fgmres_amg);
     const bool use_gmres = mode != LORPCMode::left_cg_lu;
     const PreconditionerSide side = lor_pc_mode_side(mode);
     PetscCheck(fixed_jacobi.steps > 0, comm, PETSC_ERR_ARG_OUTOFRANGE,
@@ -232,6 +247,21 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
             PetscCall(PCSetType(inner_pc,
                 inner_pc_mode == InnerPCMode::jacobi ? PCJACOBI : PCGAMG));
         }
+        else if (use_amg_only)
+        {
+            // One reusable GAMG PCApply on P per outer preconditioner call;
+            // no nested Krylov iteration is started in this mode.
+            shell_context->kind = ShellApplyKind::amg_only;
+            PetscCall(KSPCreate(comm, &shell_context->inner_ksp));
+            PetscCall(KSPSetOperators(shell_context->inner_ksp,
+                lor_stiffness, lor_stiffness));
+            PetscCall(KSPSetType(shell_context->inner_ksp, KSPPREONLY));
+            PC amg_pc = nullptr;
+            PetscCall(KSPGetPC(shell_context->inner_ksp, &amg_pc));
+            PetscCall(PCSetType(amg_pc, PCGAMG));
+            PetscCall(KSPSetErrorIfNotConverged(
+                shell_context->inner_ksp, PETSC_TRUE));
+        }
         else
         {
             // Store fixed scheme-B coefficients; D^{-1} is created inside the
@@ -251,15 +281,24 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     PetscLogDouble setup_start = 0.0;
     PetscLogDouble setup_end = 0.0;
     PetscCall(PetscTime(&setup_start));
+    PetscLogDouble preconditioner_setup_start = 0.0;
+    PetscLogDouble preconditioner_setup_end = 0.0;
+    PetscCall(PetscTime(&preconditioner_setup_start));
     if (shell_context != nullptr && shell_context->inner_ksp != nullptr)
         PetscCall(KSPSetUp(shell_context->inner_ksp));
     else if (shell_context != nullptr)
         PetscCall(initialize_fixed_jacobi(shell_context));
+    PetscCall(PetscTime(&preconditioner_setup_end));
     PetscCall(KSPSetUp(ksp));
     PetscCall(PetscTime(&setup_end));
     const PetscLogDouble local_setup_time = setup_end - setup_start;
     PetscCallMPI(MPI_Allreduce(&local_setup_time,
         &result->setup_time_seconds, 1, MPI_DOUBLE, MPI_MAX, comm));
+    const PetscLogDouble local_preconditioner_setup_time =
+        preconditioner_setup_end - preconditioner_setup_start;
+    PetscCallMPI(MPI_Allreduce(&local_preconditioner_setup_time,
+        &result->preconditioner_setup_time_seconds, 1,
+        MPI_DOUBLE, MPI_MAX, comm));
 
     // Solve from zero and retain the solution for subsequent error analysis.
     // A preconditioned outer time includes every nested inner CG application.
@@ -280,10 +319,56 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     PetscCall(KSPGetConvergedReason(ksp, &result->reason));
     if (shell_context != nullptr)
     {
+        PetscInt application_min = 0;
+        PetscInt application_max = 0;
         PetscCallMPI(MPI_Allreduce(&shell_context->applications,
-            &result->pc_applications, 1, MPIU_INT, MPI_MAX, comm));
+            &application_min, 1, MPIU_INT, MPI_MIN, comm));
+        PetscCallMPI(MPI_Allreduce(&shell_context->applications,
+            &application_max, 1, MPIU_INT, MPI_MAX, comm));
+        PetscCheck(application_min == application_max, comm, PETSC_ERR_PLIB,
+            "Preconditioner application counts differ across MPI ranks");
+        result->pc_applications = application_max;
+        PetscInt iteration_min = 0;
+        PetscInt iteration_max = 0;
         PetscCallMPI(MPI_Allreduce(&shell_context->total_inner_iterations,
-            &result->inner_iterations, 1, MPIU_INT, MPI_MAX, comm));
+            &iteration_min, 1, MPIU_INT, MPI_MIN, comm));
+        PetscCallMPI(MPI_Allreduce(&shell_context->total_inner_iterations,
+            &iteration_max, 1, MPIU_INT, MPI_MAX, comm));
+        PetscCheck(iteration_min == iteration_max, comm, PETSC_ERR_PLIB,
+            "Nested work counts differ across MPI ranks");
+        result->inner_iterations = iteration_max;
+        PetscInt maximum_iteration_min = 0;
+        PetscInt maximum_iteration_max = 0;
+        PetscCallMPI(MPI_Allreduce(&shell_context->maximum_inner_iterations,
+            &maximum_iteration_min, 1, MPIU_INT, MPI_MIN, comm));
+        PetscCallMPI(MPI_Allreduce(&shell_context->maximum_inner_iterations,
+            &maximum_iteration_max, 1, MPIU_INT, MPI_MAX, comm));
+        PetscCheck(maximum_iteration_min == maximum_iteration_max, comm,
+            PETSC_ERR_PLIB,
+            "Maximum nested iteration counts differ across MPI ranks");
+        result->maximum_inner_iterations = maximum_iteration_max;
+        PetscInt failed_application_min = 0;
+        PetscInt failed_application_max = 0;
+        PetscCallMPI(MPI_Allreduce(&shell_context->failed_inner_applications,
+            &failed_application_min, 1, MPIU_INT, MPI_MIN, comm));
+        PetscCallMPI(MPI_Allreduce(&shell_context->failed_inner_applications,
+            &failed_application_max, 1, MPIU_INT, MPI_MAX, comm));
+        PetscCheck(failed_application_min == failed_application_max, comm,
+            PETSC_ERR_PLIB,
+            "Nested failure counts differ across MPI ranks");
+        result->failed_inner_applications = failed_application_max;
+        const PetscInt local_last_reason =
+            static_cast<PetscInt>(shell_context->last_inner_reason);
+        PetscInt last_reason_min = 0;
+        PetscInt last_reason_max = 0;
+        PetscCallMPI(MPI_Allreduce(&local_last_reason, &last_reason_min, 1,
+            MPIU_INT, MPI_MIN, comm));
+        PetscCallMPI(MPI_Allreduce(&local_last_reason, &last_reason_max, 1,
+            MPIU_INT, MPI_MAX, comm));
+        PetscCheck(last_reason_min == last_reason_max, comm, PETSC_ERR_PLIB,
+            "Nested KSP stopping reasons differ across MPI ranks");
+        result->last_inner_reason =
+            static_cast<KSPConvergedReason>(last_reason_max);
         PetscCallMPI(MPI_Allreduce(
             &shell_context->total_inner_solve_time_seconds,
             &result->inner_solve_time_seconds, 1,
@@ -321,6 +406,8 @@ LORPCMode parse_lor_pc_mode(const std::string &name)
         return LORPCMode::right_gmres_cg;
     if (name == "right_fgmres_cg")
         return LORPCMode::right_fgmres_cg;
+    if (name == "right_fgmres_amg")
+        return LORPCMode::right_fgmres_amg;
     if (name == "left_gmres_k_jacobi")
         return LORPCMode::left_gmres_k_jacobi;
     if (name == "left_gmres_k_gamg")
@@ -331,7 +418,7 @@ LORPCMode parse_lor_pc_mode(const std::string &name)
         return LORPCMode::left_gmres_fixed_jacobi;
     throw std::invalid_argument(
         "lor_pc must be left_cg_lu, right_gmres_lu, left_gmres_cg, "
-        "right_gmres_cg, right_fgmres_cg, left_gmres_k_jacobi, "
+        "right_gmres_cg, right_fgmres_cg, right_fgmres_amg, left_gmres_k_jacobi, "
         "left_gmres_k_gamg, right_gmres_k_gamg, or "
         "left_gmres_fixed_jacobi");
 }
@@ -351,6 +438,8 @@ const char *lor_pc_mode_name(const LORPCMode mode) noexcept
             return "right_gmres_cg";
         case LORPCMode::right_fgmres_cg:
             return "right_fgmres_cg";
+        case LORPCMode::right_fgmres_amg:
+            return "right_fgmres_amg";
         case LORPCMode::left_gmres_k_jacobi:
             return "left_gmres_k_jacobi";
         case LORPCMode::left_gmres_k_gamg:
@@ -370,6 +459,7 @@ PreconditionerSide lor_pc_mode_side(const LORPCMode mode) noexcept
     return mode == LORPCMode::right_gmres_lu ||
         mode == LORPCMode::right_gmres_cg ||
         mode == LORPCMode::right_fgmres_cg ||
+        mode == LORPCMode::right_fgmres_amg ||
         mode == LORPCMode::right_gmres_k_gamg ?
         PreconditionerSide::right : PreconditionerSide::left;
 }

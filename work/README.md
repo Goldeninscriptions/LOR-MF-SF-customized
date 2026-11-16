@@ -60,7 +60,37 @@ COMPUTE_SPECTRAL_CONDITION_NUMBER=true EPS_TOL=1e-8 EPS_NCV=100 \
 `TRUNC_CHOL_MAX_MEMORY_BYTES` 设置装配前的保守内存上限（默认 64 GiB）。
 二维和三维批处理中的 `COMPUTE_CONDITION_NUMBER`、EPS/SVD 开关均可由环境变量
 覆盖，并已编码进结果文件名以避免不同配置互相覆盖。
+
+专用 truncated-Cholesky 扫描使用：
+
+```bash
+RUN_ID=manual-2d BATCH_DRY_RUN=1 ./run_trunc_chol_sweep_2d.sh
+RUN_ID=manual-3d BATCH_DRY_RUN=1 ./run_trunc_chol_sweep_3d.sh
+# 审阅 manifest.tsv 后，由用户自行设置 BATCH_DRY_RUN=0。
+```
+
+默认求解方式为 `SOLVER_MODES="cg_gamg amg"`，还可选择 `lu`、
+`left_gmres_cg_jacobi`、`right_gmres_cg_jacobi` 或 `cg_jacobi`；前两个名称分别
+映射到普通左/右 GMRES + 内层 CG/Jacobi，而 `cg_jacobi` 映射到右 FGMRES +
+内层 CG/Jacobi。边界开关
+默认同时扫描 `true false`。正式 sweep 默认设置
+`COMPUTE_UNPRECONDITIONED_SOLUTION=false` 并关闭 EPS/SVD/张量恒等式验证。
+`summary.tsv` 中 `not_applicable` 表示算法没有相应概念（如 AMG-only/LU 的内层
+CG 次数），`NA` 表示失败、未开始或结果中没有该量，`not_computed` 是 driver 对
+明确禁用功能的状态。时间单位为秒，内存字段为字节。
 曲边入口必须继续使用默认 `lor_q1`。
+
+准备左普通 GMRES + 内层 CG/Jacobi 批处理：
+
+```bash
+RUN_ID=left-gmres-cg-jacobi-2d SOLVER_MODES="left_gmres_cg_jacobi" \
+  BATCH_DRY_RUN=1 ./run_trunc_chol_sweep_2d.sh
+RUN_ID=left-gmres-cg-jacobi-3d SOLVER_MODES="left_gmres_cg_jacobi" \
+  BATCH_DRY_RUN=1 ./run_trunc_chol_sweep_3d.sh
+```
+
+左预条件普通 GMRES 可能按预条件残差判停，结果筛选应同时检查输出中的
+`relative_true_residual`，不能只看 PETSc 的 KSP reason。
 
 该容差扫描显式固定为 `left_gmres_cg`，用于保留左预条件标准 GMRES 对照。PETSc
 对该组合监测预条件残差，宽松且
