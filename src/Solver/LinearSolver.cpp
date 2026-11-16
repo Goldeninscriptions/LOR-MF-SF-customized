@@ -13,6 +13,7 @@ enum class ShellApplyKind
     exact_lu,
     inner_cg,
     amg_only,
+    jacobi_only,
     fixed_jacobi
 };
 
@@ -148,7 +149,9 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     const bool use_inner_cg = mode == LORPCMode::left_gmres_cg ||
         mode == LORPCMode::right_gmres_cg ||
         mode == LORPCMode::right_fgmres_cg;
-    const bool use_amg_only = mode == LORPCMode::right_fgmres_amg;
+    const bool use_amg_only = mode == LORPCMode::right_fgmres_amg ||
+        mode == LORPCMode::left_gmres_amg;
+    const bool use_jacobi_only = mode == LORPCMode::right_fgmres_jacobi;
     const bool use_fixed_jacobi =
         mode == LORPCMode::left_gmres_fixed_jacobi;
     const bool use_k_jacobi =
@@ -157,10 +160,11 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
         mode == LORPCMode::left_gmres_k_gamg ||
         mode == LORPCMode::right_gmres_k_gamg;
     const bool use_shell = use_exact_lu || use_inner_cg || use_amg_only ||
-        use_fixed_jacobi;
+        use_jacobi_only || use_fixed_jacobi;
     const bool use_fgmres = apply_preconditioner &&
         (mode == LORPCMode::right_fgmres_cg ||
-         mode == LORPCMode::right_fgmres_amg);
+         mode == LORPCMode::right_fgmres_amg ||
+         mode == LORPCMode::right_fgmres_jacobi);
     const bool use_gmres = mode != LORPCMode::left_cg_lu;
     const PreconditionerSide side = lor_pc_mode_side(mode);
     PetscCheck(fixed_jacobi.steps > 0, comm, PETSC_ERR_ARG_OUTOFRANGE,
@@ -172,8 +176,8 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
         has_lor, comm, PETSC_ERR_ARG_NULL,
         "Selected LOR preconditioner requires an assembled K_LOR matrix");
 
-    // Use standard GMRES for the fixed linear map and FGMRES only for A1's
-    // variable inner solve. The unpreconditioned baseline remains GMRES.
+    // Use FGMRES for the selected right-preconditioned comparison modes. The
+    // legacy fixed-map modes and unpreconditioned baseline retain GMRES.
     KSP ksp = nullptr;
     PetscCall(KSPCreate(comm, &ksp));
     PetscCall(KSPSetOperators(ksp, stiffness, stiffness));
@@ -266,6 +270,25 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
             PC amg_pc = nullptr;
             PetscCall(KSPGetPC(shell_context->inner_ksp, &amg_pc));
             PetscCall(PCSetType(amg_pc, PCGAMG));
+            // Reuse the same inner_-prefixed GAMG controls as CG+GAMG while
+            // keeping KSPPREONLY fixed, so this remains a direct AMG apply.
+            PetscCall(PCSetOptionsPrefix(amg_pc, "inner_"));
+            PetscCall(PCSetFromOptions(amg_pc));
+            PetscCall(KSPSetErrorIfNotConverged(
+                shell_context->inner_ksp, PETSC_TRUE));
+        }
+        else if (use_jacobi_only)
+        {
+            // Apply diag(P)^{-1} directly.  The nested PREONLY operator is P,
+            // never the original high-order stiffness K.
+            shell_context->kind = ShellApplyKind::jacobi_only;
+            PetscCall(KSPCreate(comm, &shell_context->inner_ksp));
+            PetscCall(KSPSetOperators(shell_context->inner_ksp,
+                lor_stiffness, lor_stiffness));
+            PetscCall(KSPSetType(shell_context->inner_ksp, KSPPREONLY));
+            PC jacobi_pc = nullptr;
+            PetscCall(KSPGetPC(shell_context->inner_ksp, &jacobi_pc));
+            PetscCall(PCSetType(jacobi_pc, PCJACOBI));
             PetscCall(KSPSetErrorIfNotConverged(
                 shell_context->inner_ksp, PETSC_TRUE));
         }
@@ -415,6 +438,10 @@ LORPCMode parse_lor_pc_mode(const std::string &name)
         return LORPCMode::right_fgmres_cg;
     if (name == "right_fgmres_amg")
         return LORPCMode::right_fgmres_amg;
+    if (name == "right_fgmres_jacobi")
+        return LORPCMode::right_fgmres_jacobi;
+    if (name == "left_gmres_amg")
+        return LORPCMode::left_gmres_amg;
     if (name == "left_gmres_k_jacobi")
         return LORPCMode::left_gmres_k_jacobi;
     if (name == "left_gmres_k_gamg")
@@ -425,7 +452,8 @@ LORPCMode parse_lor_pc_mode(const std::string &name)
         return LORPCMode::left_gmres_fixed_jacobi;
     throw std::invalid_argument(
         "lor_pc must be left_cg_lu, right_gmres_lu, left_gmres_cg, "
-        "right_gmres_cg, right_fgmres_cg, right_fgmres_amg, left_gmres_k_jacobi, "
+        "right_gmres_cg, right_fgmres_cg, right_fgmres_amg, "
+        "right_fgmres_jacobi, left_gmres_amg, left_gmres_k_jacobi, "
         "left_gmres_k_gamg, right_gmres_k_gamg, or "
         "left_gmres_fixed_jacobi");
 }
@@ -447,6 +475,10 @@ const char *lor_pc_mode_name(const LORPCMode mode) noexcept
             return "right_fgmres_cg";
         case LORPCMode::right_fgmres_amg:
             return "right_fgmres_amg";
+        case LORPCMode::right_fgmres_jacobi:
+            return "right_fgmres_jacobi";
+        case LORPCMode::left_gmres_amg:
+            return "left_gmres_amg";
         case LORPCMode::left_gmres_k_jacobi:
             return "left_gmres_k_jacobi";
         case LORPCMode::left_gmres_k_gamg:
@@ -467,6 +499,7 @@ PreconditionerSide lor_pc_mode_side(const LORPCMode mode) noexcept
         mode == LORPCMode::right_gmres_cg ||
         mode == LORPCMode::right_fgmres_cg ||
         mode == LORPCMode::right_fgmres_amg ||
+        mode == LORPCMode::right_fgmres_jacobi ||
         mode == LORPCMode::right_gmres_k_gamg ?
         PreconditionerSide::right : PreconditionerSide::left;
 }

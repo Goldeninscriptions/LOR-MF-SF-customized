@@ -143,8 +143,14 @@ case "$lor_pc" in
     outer_atol="1.0e-10"
     outer_dtol="1.0e4"
     ;;
-  right_fgmres_amg)
+  right_fgmres_amg|right_fgmres_jacobi)
     preconditioner_side="right"
+    outer_rtol="1.0e-10"
+    outer_atol="1.0e-10"
+    outer_dtol="1.0e4"
+    ;;
+  left_gmres_amg)
+    preconditioner_side="left"
     outer_rtol="1.0e-10"
     outer_atol="1.0e-10"
     outer_dtol="1.0e4"
@@ -169,7 +175,7 @@ case "$lor_pc" in
     outer_dtol="1.0e4"
     ;;
   *)
-    echo "LOR_PC must be left_cg_lu, right_gmres_lu, left_gmres_cg, right_gmres_cg, right_fgmres_cg, right_fgmres_amg, left_gmres_k_jacobi, left_gmres_k_gamg, right_gmres_k_gamg, or left_gmres_fixed_jacobi" >&2
+    echo "LOR_PC must be left_cg_lu, right_gmres_lu, left_gmres_cg, right_gmres_cg, right_fgmres_cg, right_fgmres_amg, right_fgmres_jacobi, left_gmres_amg, left_gmres_k_jacobi, left_gmres_k_gamg, right_gmres_k_gamg, or left_gmres_fixed_jacobi" >&2
     exit 2
     ;;
 esac

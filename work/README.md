@@ -19,6 +19,8 @@
 | `run_trunc_chol_gamg_tuning_2d.sh` | truncated-Cholesky + 左 GMRES + 内层 CG/GAMG 的四阶段调优 | 依次扫描内层 rtol、GAMG threshold、V-cycle level smoother 步数，再做 p/n 可迁移性扫描；默认只 dry-run |
 | `run_trunc_chol_gamg_rtol_p8_n1024_2d.sh` | `p=8,n=1024x1024` 的专用内层 rtol 扫描入口 | 复用四阶段调优器、使用独立 RUN_ID、默认只 dry-run，支持断点续跑 |
 | `run_trunc_chol_fgmres_gamg_diagnostic_p8_n1024_2d.sh` | `p=8,n=1024x1024` 的右 FGMRES + 内层 CG/GAMG 诊断扫描 | 固定 `k=4,bp=true`、更严格的内外层绝对容差，并扫描 `inner_rtol=1e-8..1e-3`；默认只 dry-run |
+| `run_pc_comparison_p4_p7_n512_n1024_2d.sh` | `p=4..7,n={512,1024}²` 的九种 selected-P 公平对照入口 | 两类 P 各比较右侧三种应用和左 GMRES+GAMG，另含 Greville 一步 CG/Jacobi；共 72 cases，默认只 dry-run |
+| `run_pc_comparison_p7_n512_2d.sh` | 上述扩展实验的兼容实现路径 | 保留早期脚本路径；默认参数现已与九组扩展实验一致 |
 | `REMOTE_BATCH_GUIDE.md` | 远端 macOS/Linux 构建与批处理清单 | 说明 dry-run、`MPI_RANK`、`MAX_MPI_RANKS`、launcher 覆盖、输出和失败恢复 |
 
 几何文件中的 p/n 注释供用户阅读；解析器只从 knot vectors 推断实际初始值。控制点
@@ -167,7 +169,66 @@ BATCH_DRY_RUN=0 ./run_trunc_chol_fgmres_gamg_diagnostic_p8_n1024_2d.sh
 扫描点，不是调优器或通用求解器的默认容差。结果应同时比较 `N_inner`、
 `relative_true_residual` 与 `L2_error`，从中选择不再明显受代数误差影响的最大容差。
 
-该容差扫描显式固定为 `left_gmres_cg`，用于保留左预条件标准 GMRES 对照。PETSc
+### p=4..7、512²/1024² 九种 selected-P 方法对照
+
+专用入口 `run_pc_comparison_p4_p7_n512_n1024_2d.sh` 使用 `square_2d`，默认扫描
+`p={4,5,6,7}` 与 `n={(512,512),(1024,1024)}`。512² 默认使用 27 ranks，1024²
+默认使用 107 ranks，并采用共同的外层容差
+`rtol=1e-6,atol=1e-9`。需要嵌套 CG 的
+方法默认使用 `inner_rtol=1e-3,inner_atol=1e-12`；较小的绝对容差用于避免它掩盖
+本次指定的相对容差。每个 p/n 组合运行九组方法：
+
+1. A1：truncated-Cholesky `P` + 右 FGMRES + 内层 CG/GAMG；
+2. A2：truncated-Cholesky `P` + 右 FGMRES + 直接 GAMG；
+3. A3：truncated-Cholesky `P` + 右 FGMRES + 直接 `diag(P)^{-1}` Jacobi；
+4. A4：truncated-Cholesky `P` + 左普通 GMRES + 直接 GAMG；
+5. B1：Greville Q1-LOR `P` + 右 FGMRES + 内层 CG/GAMG；
+6. B2：Greville Q1-LOR `P` + 右 FGMRES + 直接 GAMG；
+7. B3：Greville Q1-LOR `P` + 右 FGMRES + 直接 `diag(P)^{-1}` Jacobi；
+8. B4：Greville Q1-LOR `P` + 右 FGMRES + 一步内层 CG/Jacobi；
+9. B5：Greville Q1-LOR `P` + 左普通 GMRES + 直接 GAMG。
+
+其中 B4 的“一次内迭代”严格实现为一次 CG/Jacobi 迭代；它达到迭代上限时，
+`inner_failed_applications` 可能非零，这是固定一步近似逆的诊断信息，不等同于外层
+批处理失败。A2/A3/B2/B3 不启动内层 CG，因此其内层迭代字段为
+`not_applicable`。
+
+先预览计划，再用相同 `RUN_ID` 正式运行：
+
+```bash
+BATCH_DRY_RUN=1 ./work/run_pc_comparison_p4_p7_n512_n1024_2d.sh
+BATCH_DRY_RUN=0 ./work/run_pc_comparison_p4_p7_n512_n1024_2d.sh
+```
+
+可显式指定资源，例如：
+
+```bash
+RUN_ID=p4-p7-n512-n1024-nine-way \
+  BATCH_DRY_RUN=0 ./work/run_pc_comparison_p4_p7_n512_n1024_2d.sh
+```
+
+`MPI_RANK_512` 和 `MPI_RANK_1024` 可分别覆盖默认 ranks；`MPI_RANK` 会统一覆盖
+两个网格。`DEGREES` 与 `ELEMENT_CASES` 可缩小扫描集合。`GAMG_THRESHOLD` 与
+`GAMG_SMOOTH_STEPS` 同时作用于 A1/A2/A4/B1/B2/B5；默认分别为 `0.0` 和 `1`，
+并通过统一的 `inner_` PETSc 前缀传递。
+
+默认结果位于
+`work/results/pc_comparison_2d/<RUN_ID>/`，其中 `manifest.tsv` 保存实际参数与命令，
+`summary.tsv` 每组一行，包含 K/P 构造时间、AMG setup、外层 setup/solve、PC apply、
+内层 CG、L2 与端到端时间，以及迭代数、应用次数、reason、真实残差、nnz 和内存。
+`not_applicable` 表示算法没有该概念；`not_recorded` 表示理论上存在但当前无法可靠
+取得。公平比较应使用端到端时间或明确的非嵌套阶段；`T_pc_apply_s` 和
+`T_inner_CG_s` 都嵌套在 `T_outer_solve_s` 中，不能重复相加。
+
+可用 `OUTER_RTOL`、`OUTER_ATOL`、`INNER_RTOL`、`INNER_ATOL`、`INNER_MAX_IT`、
+`TRUNC_CHOL_K`、`TRUNC_CHOL_BOUNDARY_PROTECTION`、`GAMG_THRESHOLD` 和
+`GAMG_SMOOTH_STEPS` 做显式覆盖。默认
+`TRUNC_CHOL_K=auto`，逐 p 计算 `ceil(p/2)`。脚本关闭 EPS/SVD 和无预条件重复求解，
+只计算九组预条件解、真实残差与物理域 L2 误差。尤其应比较 A4/B5 与对应右预条件
+组的 `relative_true_residual`、`L2_error`，不能仅依据左 GMRES 的 KSP reason。
+
+前述 `p=8,n=1024` 容差扫描显式固定为 `left_gmres_cg`，用于保留左预条件标准
+GMRES 对照。PETSc
 对该组合监测预条件残差，宽松且
 随右端项变化的内层 CG 可能导致它先于原方程真实残差收敛；因此不能只按耗时选择
 容差，必须同时检查 TSV 中的 `relative_residual_LOR` 与 `L2_error_LOR`。右预条件
@@ -203,7 +264,8 @@ FGMRES 已作为独立的 `right_fgmres_cg` 配置提供，不能与本扫描的
 REFINEMENT = p_refine | h_refine | k_refine
 LOR_POINTS = greville | demko
 LOR_PC = left_cg_lu | right_gmres_lu | left_gmres_cg |
-         right_gmres_cg | right_fgmres_cg | left_gmres_k_jacobi |
+         right_gmres_cg | right_fgmres_cg | right_fgmres_amg |
+         right_fgmres_jacobi | left_gmres_amg | left_gmres_k_jacobi |
          left_gmres_k_gamg | right_gmres_k_gamg |
          left_gmres_fixed_jacobi
 INNER_PC = jacobi | gamg  # 仅用于三个 *_cg 方案

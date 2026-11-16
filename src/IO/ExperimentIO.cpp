@@ -603,6 +603,8 @@ void write_experiment_results(const std::string &filename,
     output << "memory_bytes_K = " << results.memory_bytes_K << '\n'
            << "time_original_matrix_assembly_s = "
            << results.time_original_matrix_assembly_s << '\n'
+           << "time_preconditioner_matrix_construction_s = "
+           << results.time_preconditioner_matrix_construction_s << '\n'
            << "time_1d_mass_assembly_s = "
            << results.time_1d_mass_assembly_s << '\n'
            << "time_1d_full_cholesky_s = "
@@ -640,17 +642,20 @@ void write_experiment_results(const std::string &filename,
     const char *outer_ksp_type = results.lor_pc == LORPCMode::left_cg_lu ?
         "cg" :
         ((results.lor_pc == LORPCMode::right_fgmres_cg ||
-          results.lor_pc == LORPCMode::right_fgmres_amg) ?
+          results.lor_pc == LORPCMode::right_fgmres_amg ||
+          results.lor_pc == LORPCMode::right_fgmres_jacobi) ?
             "fgmres" : "gmres");
     const char *inverse_application =
         (results.lor_pc == LORPCMode::left_cg_lu ||
          results.lor_pc == LORPCMode::right_gmres_lu) ? "lu" :
-        (results.lor_pc == LORPCMode::right_fgmres_amg ? "amg" :
+        ((results.lor_pc == LORPCMode::right_fgmres_amg ||
+          results.lor_pc == LORPCMode::left_gmres_amg) ? "amg" :
+         (results.lor_pc == LORPCMode::right_fgmres_jacobi ? "jacobi" :
          (uses_inner_cg ?
             (results.inner_pc == InnerPCMode::jacobi ?
                 "cg_jacobi" : "cg_gamg") :
             (results.lor_pc == LORPCMode::left_gmres_fixed_jacobi ?
-                "fixed_jacobi" : "direct_K_pc")));
+                "fixed_jacobi" : "direct_K_pc"))));
     output << "outer_ksp_type = " << outer_ksp_type << '\n'
            << "inverse_application_mode = " << inverse_application << '\n';
     if (!results.computed_condition_number)
@@ -772,8 +777,13 @@ void write_experiment_results(const std::string &filename,
                    << "inner_solve_time_average_seconds("
                    << solve_label << ") = "
                    << average_time << '\n';
+            if (results.inner_pc == InnerPCMode::gamg)
+                output << "amg_setup_time_seconds = "
+                       << results.preconditioner_setup_time_lor_K << '\n'
+                       << "amg_vcycle_applications_status = not_recorded\n";
         }
-        else if (results.lor_pc == LORPCMode::right_fgmres_amg)
+        else if (results.lor_pc == LORPCMode::right_fgmres_amg ||
+                 results.lor_pc == LORPCMode::left_gmres_amg)
         {
             const double applications = static_cast<double>(
                 results.pc_applications_lor_K);
@@ -788,6 +798,23 @@ void write_experiment_results(const std::string &filename,
                    << "amg_apply_time_seconds = "
                    << results.inner_solve_time_lor_K << '\n'
                    << "amg_apply_time_average_seconds = "
+                   << average_time << '\n';
+        }
+        else if (results.lor_pc == LORPCMode::right_fgmres_jacobi)
+        {
+            const double applications = static_cast<double>(
+                results.pc_applications_lor_K);
+            const double average_time = applications > 0.0 ?
+                results.inner_solve_time_lor_K / applications : 0.0;
+            output << "inner_iterations_status = not_applicable\n"
+                   << "inner_cg_iterations_status = not_applicable\n"
+                   << "jacobi_applications = "
+                   << results.pc_applications_lor_K << '\n'
+                   << "jacobi_setup_time_seconds = "
+                   << results.preconditioner_setup_time_lor_K << '\n'
+                   << "jacobi_apply_time_seconds = "
+                   << results.inner_solve_time_lor_K << '\n'
+                   << "jacobi_apply_time_average_seconds = "
                    << average_time << '\n';
         }
         else if (results.lor_pc == LORPCMode::left_cg_lu ||

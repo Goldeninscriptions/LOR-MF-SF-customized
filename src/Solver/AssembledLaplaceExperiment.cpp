@@ -244,6 +244,13 @@ PetscErrorCode run_assembled_laplace_experiment(
     // Assemble K_LOR only for configurations whose preconditioner or spectral
     // diagnostic actually consumes it. Direct K reference modes avoid this
     // setup cost while retaining the common partition and error-analysis path.
+    PetscLogDouble preconditioner_construction_start = 0.0;
+    PetscLogDouble preconditioner_construction_end = 0.0;
+    if (uses_preconditioner_matrix)
+    {
+        PetscCallMPI(MPI_Barrier(comm));
+        PetscCall(PetscTime(&preconditioner_construction_start));
+    }
     GlobalMatrixAssemblyResult lor_stiffness;
     if (uses_lor_matrix)
     {
@@ -264,6 +271,18 @@ PetscErrorCode run_assembled_laplace_experiment(
             options.verify_tensor_identity,
             options.trunc_chol_boundary_protection,
             options.trunc_chol_max_memory_bytes, &truncated_tensor));
+    }
+    PetscLogDouble preconditioner_construction_time = 0.0;
+    if (uses_preconditioner_matrix)
+    {
+        PetscCall(PetscTime(&preconditioner_construction_end));
+        const PetscLogDouble local_preconditioner_construction_time =
+            preconditioner_construction_end -
+            preconditioner_construction_start;
+        PetscCallMPI(MPI_Allreduce(
+            &local_preconditioner_construction_time,
+            &preconditioner_construction_time, 1, MPI_DOUBLE, MPI_MAX,
+            comm));
     }
     Mat preconditioner_matrix = uses_lor_matrix ? lor_stiffness.matrix :
         truncated_tensor.preconditioner.matrix;
@@ -494,6 +513,8 @@ PetscErrorCode run_assembled_laplace_experiment(
         results.l2_error_lor_K = preconditioned_error;
     }
     results.time_original_matrix_assembly_s = original_assembly_time;
+    results.time_preconditioner_matrix_construction_s =
+        preconditioner_construction_time;
     results.time_spectral_eps_s = spectral_eps_time;
     results.time_singular_svd_s = singular_svd_time;
     results.time_l2_error_s = l2_error_time;
@@ -777,9 +798,19 @@ PetscErrorCode run_assembled_laplace_experiment(
                     static_cast<double>(results.inner_solve_time_lor_K),
                     average_time));
             }
-            else if (options.lor_pc == LORPCMode::right_fgmres_amg)
+            else if (options.lor_pc == LORPCMode::right_fgmres_amg ||
+                     options.lor_pc == LORPCMode::left_gmres_amg)
                 PetscCall(PetscPrintf(comm,
                     "  AMG-only: applications=%" PetscInt_FMT
+                    ", CG_iterations=not_applicable, setup=%.6e s, "
+                    "apply_total=%.6e s\n",
+                    results.pc_applications_lor_K,
+                    static_cast<double>(
+                        results.preconditioner_setup_time_lor_K),
+                    static_cast<double>(results.inner_solve_time_lor_K)));
+            else if (options.lor_pc == LORPCMode::right_fgmres_jacobi)
+                PetscCall(PetscPrintf(comm,
+                    "  Jacobi-only: applications=%" PetscInt_FMT
                     ", CG_iterations=not_applicable, setup=%.6e s, "
                     "apply_total=%.6e s\n",
                     results.pc_applications_lor_K,

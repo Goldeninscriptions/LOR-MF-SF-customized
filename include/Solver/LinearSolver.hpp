@@ -21,6 +21,8 @@ enum class LORPCMode
     right_gmres_cg,
     right_fgmres_cg,
     right_fgmres_amg,
+    right_fgmres_jacobi,
+    left_gmres_amg,
     left_gmres_k_jacobi,
     left_gmres_k_gamg,
     right_gmres_k_gamg,
@@ -107,7 +109,8 @@ const char *lor_pc_mode_name(LORPCMode mode) noexcept;
 PreconditionerSide lor_pc_mode_side(LORPCMode mode) noexcept;
 
 // Report whether the selected configuration needs an assembled K_LOR. The
-// direct K-Jacobi and K-GAMG reference modes operate only on stiffness.
+// direct K-Jacobi and K-GAMG reference modes operate only on stiffness. The
+// right_fgmres_jacobi mode instead consumes the selected assembled P.
 bool lor_pc_mode_uses_lor_matrix(LORPCMode mode) noexcept;
 
 // Parse and print the stable inner-preconditioner spellings shared by command

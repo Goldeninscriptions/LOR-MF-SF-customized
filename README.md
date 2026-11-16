@@ -67,6 +67,10 @@ Kronecker 刚度与装配的高阶 `K` 对照。内存上限默认 64 GiB；程�
 `right_fgmres_amg` 是 AMG-only 逆作用：右 FGMRES 的每次预条件调用在已组装的
 预条件矩阵 `P` 上执行一次复用的 `KSPPREONLY+PCGAMG`，不会启动内层 CG。它与
 `right_fgmres_cg -inner_pc gamg`（CG+GAMG）是不同算法。
+`right_fgmres_jacobi` 则在同一个所选 `P` 上执行
+`KSPPREONLY+PCJACOBI`，明确使用 `diag(P)^{-1}`，不会使用高阶 `K` 的对角线。
+`left_gmres_amg` 使用同样的 selected-P 直接 GAMG，但外层改为左预条件普通 GMRES；
+结果仍会重算原系统真实残差并计算物理域 L² 误差。
 `-compute_unpreconditioned_solution false` 可只求预条件系统，同时继续计算该解的
 真实残差和物理域 L² 误差；默认仍为 `true`，兼容历史运行。
 
@@ -107,6 +111,19 @@ BATCH_DRY_RUN=1 ./work/run_batch_square_2d.sh
 ./work/run_batch_square_2d.sh
 ```
 
+`p=4..7,n={512,1024}²` 的九组 selected-P 专用对照使用：
+
+```bash
+BATCH_DRY_RUN=1 ./work/run_pc_comparison_p4_p7_n512_n1024_2d.sh
+BATCH_DRY_RUN=0 ./work/run_pc_comparison_p4_p7_n512_n1024_2d.sh
+```
+
+它分别在 truncated-Cholesky 与 Greville LOR 矩阵上比较 CG+GAMG、直接 GAMG、
+直接 Jacobi，并增加 Greville 一步 CG/Jacobi，以及两类矩阵各自的左 GMRES+GAMG。
+总计 72 个 case。默认外层容差为
+`rtol=1e-6,atol=1e-9`，嵌套 CG 的 `rtol=1e-3`；完整字段说明和资源覆盖方法见
+[work/README.md](work/README.md)。
+
 每个旧几何批处理脚本都列出了原有求解方案。需要方案 A1 时，在脚本配置区注释
 当前 `left_gmres_fixed_jacobi` 块，并取消注释 `right_fgmres_cg` 块及其内层参数。
 
@@ -144,7 +161,8 @@ COMPUTE_CONDITION_NUMBER=false \
 默认关闭以避免普通批次隐式执行昂贵的四次 SVD。
 
 位置参数 `LOR_PC` 接受 `left_cg_lu`、`right_gmres_lu`、`left_gmres_cg`、
-`right_gmres_cg`、`right_fgmres_cg`、`right_fgmres_amg`、作为参考的 `left_gmres_k_jacobi`、
+`right_gmres_cg`、`right_fgmres_cg`、`right_fgmres_amg`、
+`right_fgmres_jacobi`、`left_gmres_amg`、作为参考的 `left_gmres_k_jacobi`、
 `left_gmres_k_gamg`、`right_gmres_k_gamg` 和默认的
 `left_gmres_fixed_jacobi`。两个 K-GAMG 模式直接在高阶 K 上构造一次 AMG 层次，
 不组装 K_LOR；方向由名称唯一确定，结果仍会记录

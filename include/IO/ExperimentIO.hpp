@@ -200,8 +200,10 @@ struct ExperimentResults
     KSPConvergedReason reason_lor_K = KSP_CONVERGED_ITERATING;
 
     // New source-independent and truncated-source phase timings. MPI phases
-    // are rank-maximum wall times.
+    // are rank-maximum wall times. The generic P timer covers Q1-LOR matrix
+    // assembly or the complete truncated-tensor construction.
     PetscLogDouble time_original_matrix_assembly_s = 0.0;
+    PetscLogDouble time_preconditioner_matrix_construction_s = 0.0;
     PetscLogDouble time_1d_mass_assembly_s = 0.0;
     PetscLogDouble time_1d_full_cholesky_s = 0.0;
     PetscLogDouble time_1d_factor_truncation_s = 0.0;
