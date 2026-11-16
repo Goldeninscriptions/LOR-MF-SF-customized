@@ -6,10 +6,12 @@ set -uo pipefail
 #
 # Safe defaults (the script only plans; it does not launch a solver):
 #   BATCH_DRY_RUN=1 RESUME=1
-#   SOLVER_MODES="cg_gamg amg"
-#     available: lu left_gmres_cg_jacobi right_gmres_cg_jacobi
+#   SOLVER_MODES="left_gmres_cg_jacobi"
+#     available: lu
+#                left_gmres_cg_jacobi right_gmres_cg_jacobi
+#                left_gmres_cg_gamg right_gmres_cg_gamg
 #                cg_jacobi cg_gamg amg
-#     left/right_gmres_cg_jacobi = ordinary GMRES + inner CG/Jacobi
+#     left/right_gmres_cg_{jacobi,gamg} = ordinary GMRES + inner CG
 #   BOUNDARY_PROTECTION_MODES="true false"
 #   TRUNC_CHOL_K=auto MPI_RANK=default MAX_MPI_RANKS=
 #   TRUNC_CHOL_MAX_MEMORY_BYTES=68719476736
@@ -18,8 +20,8 @@ set -uo pipefail
 #   COMPUTE_CONDITION_NUMBER=false
 #   COMPUTE_SPECTRAL_CONDITION_NUMBER=false
 #   VERIFY_TENSOR_IDENTITY=false
-#   OUTER_RTOL=1e-10 OUTER_ATOL=1e-10 OUTER_DTOL=1e4 OUTER_MAX_IT=10000
-#   INNER_RTOL=1e-10 INNER_ATOL=1e-10 INNER_DTOL=1e4 INNER_MAX_IT=10000
+#   OUTER_RTOL=1e-6 OUTER_ATOL=1e-9 OUTER_DTOL=1e4 OUTER_MAX_IT=10000
+#   INNER_RTOL=1e-6 INNER_ATOL=1e-6 INNER_DTOL=1e4 INNER_MAX_IT=10000
 # Optional filters retain the complete defaults when unset:
 #   P_VALUES="4 5" N_VALUES="4 8" SOLVER_MODES="amg"
 # Operational controls:
@@ -49,7 +51,7 @@ esac
 
 degrees_text=${P_VALUES:-"4 5 6 7 8"}
 n_values_text=${N_VALUES:-$default_n_values}
-solver_modes_text=${SOLVER_MODES:-"cg_gamg amg"}
+solver_modes_text=${SOLVER_MODES:-"left_gmres_cg_jacobi"}
 boundary_modes_text=${BOUNDARY_PROTECTION_MODES:-"true false"}
 read -r -a degrees <<<"$degrees_text"
 read -r -a n_values <<<"$n_values_text"
@@ -69,12 +71,12 @@ dry_run=${BATCH_DRY_RUN:-1}
 resume=${RESUME:-1}
 timeout_sec=${TIMEOUT_SEC:-0}
 fail_fast=${FAIL_FAST:-0}
-outer_rtol=${OUTER_RTOL:-1.0e-10}
-outer_atol=${OUTER_ATOL:-1.0e-10}
+outer_rtol=${OUTER_RTOL:-1.0e-6}
+outer_atol=${OUTER_ATOL:-1.0e-9}
 outer_dtol=${OUTER_DTOL:-1.0e4}
 outer_max_it=${OUTER_MAX_IT:-10000}
-inner_rtol=${INNER_RTOL:-1.0e-10}
-inner_atol=${INNER_ATOL:-1.0e-10}
+inner_rtol=${INNER_RTOL:-1.0e-6}
+inner_atol=${INNER_ATOL:-1.0e-6}
 inner_dtol=${INNER_DTOL:-1.0e4}
 inner_max_it=${INNER_MAX_IT:-10000}
 
@@ -111,7 +113,7 @@ fi
 }
 for mode in "${solver_modes[@]}"; do
   case "$mode" in
-    lu|left_gmres_cg_jacobi|right_gmres_cg_jacobi|cg_jacobi|cg_gamg|amg) ;;
+    lu|left_gmres_cg_jacobi|right_gmres_cg_jacobi|left_gmres_cg_gamg|right_gmres_cg_gamg|cg_jacobi|cg_gamg|amg) ;;
     *)
     echo "Unsupported SOLVER_MODES entry: $mode" >&2; exit 2;; esac
 done
@@ -195,6 +197,8 @@ for degree in "${degrees[@]}"; do
           lu) lor_pc=left_cg_lu; inner_pc=not_applicable ;;
           left_gmres_cg_jacobi) lor_pc=left_gmres_cg; inner_pc=jacobi ;;
           right_gmres_cg_jacobi) lor_pc=right_gmres_cg; inner_pc=jacobi ;;
+          left_gmres_cg_gamg) lor_pc=left_gmres_cg; inner_pc=gamg ;;
+          right_gmres_cg_gamg) lor_pc=right_gmres_cg; inner_pc=gamg ;;
           cg_jacobi) lor_pc=right_fgmres_cg; inner_pc=jacobi ;;
           cg_gamg) lor_pc=right_fgmres_cg; inner_pc=gamg ;;
           amg) lor_pc=right_fgmres_amg; inner_pc=not_applicable ;;

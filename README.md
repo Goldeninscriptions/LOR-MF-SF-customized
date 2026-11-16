@@ -188,24 +188,38 @@ RUN_ID=tc3d-trial BATCH_DRY_RUN=0 ./work/run_trunc_chol_sweep_3d.sh
 ```
 
 二维默认覆盖 `p=4..8` 与 `n=4..1024` 的九个网格，三维覆盖 `p=4..8` 与
-`n=4..64` 的五个网格。默认 `SOLVER_MODES="cg_gamg amg"`、
+`n=4..64` 的五个网格。默认 `SOLVER_MODES="left_gmres_cg_jacobi"`、
 `BOUNDARY_PROTECTION_MODES="true false"`；可用求解方式为
-`lu left_gmres_cg_jacobi right_gmres_cg_jacobi cg_jacobi cg_gamg amg`。
-前两个普通 GMRES 名称分别映射到左/右 GMRES + 内层 CG/Jacobi；`cg_jacobi`
-则保留为右 FGMRES + 内层 CG/Jacobi。`P_VALUES`、`N_VALUES` 可供用户先做小规模过滤，
+`lu left_gmres_cg_jacobi right_gmres_cg_jacobi left_gmres_cg_gamg
+right_gmres_cg_gamg cg_jacobi cg_gamg amg`。显式的普通 GMRES 名称分别映射到
+左/右 GMRES + 内层 CG/Jacobi 或 CG/GAMG；短名称 `cg_jacobi`、`cg_gamg` 则保留
+为右 FGMRES 版本。`P_VALUES`、`N_VALUES` 可供用户先做小规模过滤，
 未设置时不会删减规定的完整列表。
+
+为与其他方法使用相同停止精度，专用 sweep 默认显式传递外层
+`rtol=1e-6, atol=1e-9`，以及内层 CG `rtol=atol=1e-6`；这些值会进入配置哈希、
+manifest 命令和结果文件。通用 `run_case.sh` 的历史默认值保持不变。
 
 左普通 GMRES + 内层 CG/Jacobi 的专用扫描可显式选择：
 
 ```bash
-RUN_ID=left-gmres-cg-jacobi-2d SOLVER_MODES="left_gmres_cg_jacobi" \
+RUN_ID=left-gmres-cg-jacobi-2d \
   BATCH_DRY_RUN=1 ./work/run_trunc_chol_sweep_2d.sh
-RUN_ID=left-gmres-cg-jacobi-3d SOLVER_MODES="left_gmres_cg_jacobi" \
+RUN_ID=left-gmres-cg-jacobi-3d \
   BATCH_DRY_RUN=1 ./work/run_trunc_chol_sweep_3d.sh
 ```
 
 左预条件普通 GMRES 的内部停止准则可能使用预条件残差；分析结果时应以输出中对
 原方程重新计算的 `relative_true_residual` 和物理域 L² 误差为准。
+
+左普通 GMRES + 内层 CG/GAMG 使用独立 `RUN_ID`：
+
+```bash
+RUN_ID=left-gmres-cg-gamg-2d SOLVER_MODES="left_gmres_cg_gamg" \
+  BATCH_DRY_RUN=1 ./work/run_trunc_chol_sweep_2d.sh
+RUN_ID=left-gmres-cg-gamg-3d SOLVER_MODES="left_gmres_cg_gamg" \
+  BATCH_DRY_RUN=1 ./work/run_trunc_chol_sweep_3d.sh
+```
 
 每个 run 目录包含 `manifest.tsv`、稳定的一行一案例 `summary.tsv`、`cases/`、
 `logs/` 和配置哈希成功标记。`RESUME=1` 只跳过结果存在且哈希一致的成功案例；
@@ -214,6 +228,17 @@ RUN_ID=left-gmres-cg-jacobi-3d SOLVER_MODES="left_gmres_cg_jacobi" \
 内存峰值。外层求解时间已经包含 PC 应用时间，不可与应用累计时间再次相加。
 `trunc_chol_conservative_memory_estimate_bytes` 是张量预条件矩阵及其装配临时结构的
 保守预检值，不代表整个进程（尤其是高阶 `K`、GAMG 层次或 LU 因子）的全局峰值。
+
+针对 truncated-Cholesky + 左 GMRES + 内层 CG/GAMG 的参数研究，使用独立脚本
+`work/run_trunc_chol_gamg_tuning_2d.sh`。它按 `rtol -> threshold -> smooth ->
+transfer` 四阶段运行，默认只生成计划，并为每阶段单独记录 setup、内外迭代、完整
+外层求解时间、真实残差和 L²。具体命令及可覆盖参数见 `work/README.md`；选择参数时
+应优先比较 `T_solve_s`，不能仅比较内层迭代数。
+`p=8,n=1024x1024` 的独立 rtol 扫描入口为
+`work/run_trunc_chol_gamg_rtol_p8_n1024_2d.sh`，默认 dry-run 且不会覆盖较小算例结果。
+更严格的右 FGMRES 诊断组使用
+`work/run_trunc_chol_fgmres_gamg_diagnostic_p8_n1024_2d.sh`，固定 `k=4,bp=true`，
+扫描 `inner_rtol=1e-8..1e-3`，并写入独立 RUN_ID。
 
 ## 顶层文件和目录
 

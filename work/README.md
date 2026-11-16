@@ -16,6 +16,9 @@
 | `run_batch_curved_quadrilateral_2d.sh` | 双三次曲边 Patch 批处理入口 | 与二维矩形采用相同 p/n sweep 和功能默认值；默认完成求解与 L2 |
 | `run_batch_common.sh` | 三个入口共享的执行器 | 统一参数验证、逐 case rank 规划、运行、日志和 TSV summary；不直接运行 |
 | `run_inner_tolerance_sweep_square_2d.sh` | 固定二维 case 的内层 CG 精度扫描 | 默认扫描 `inner_rtol={1e-10,1e-6,1e-4,1e-3,1e-2}`，汇总内外迭代、时间、真实残差和 L2 误差 |
+| `run_trunc_chol_gamg_tuning_2d.sh` | truncated-Cholesky + 左 GMRES + 内层 CG/GAMG 的四阶段调优 | 依次扫描内层 rtol、GAMG threshold、V-cycle level smoother 步数，再做 p/n 可迁移性扫描；默认只 dry-run |
+| `run_trunc_chol_gamg_rtol_p8_n1024_2d.sh` | `p=8,n=1024x1024` 的专用内层 rtol 扫描入口 | 复用四阶段调优器、使用独立 RUN_ID、默认只 dry-run，支持断点续跑 |
+| `run_trunc_chol_fgmres_gamg_diagnostic_p8_n1024_2d.sh` | `p=8,n=1024x1024` 的右 FGMRES + 内层 CG/GAMG 诊断扫描 | 固定 `k=4,bp=true`、更严格的内外层绝对容差，并扫描 `inner_rtol=1e-8..1e-3`；默认只 dry-run |
 | `REMOTE_BATCH_GUIDE.md` | 远端 macOS/Linux 构建与批处理清单 | 说明 dry-run、`MPI_RANK`、`MAX_MPI_RANKS`、launcher 覆盖、输出和失败恢复 |
 
 几何文件中的 p/n 注释供用户阅读；解析器只从 knot vectors 推断实际初始值。控制点
@@ -69,10 +72,10 @@ RUN_ID=manual-3d BATCH_DRY_RUN=1 ./run_trunc_chol_sweep_3d.sh
 # 审阅 manifest.tsv 后，由用户自行设置 BATCH_DRY_RUN=0。
 ```
 
-默认求解方式为 `SOLVER_MODES="cg_gamg amg"`，还可选择 `lu`、
-`left_gmres_cg_jacobi`、`right_gmres_cg_jacobi` 或 `cg_jacobi`；前两个名称分别
-映射到普通左/右 GMRES + 内层 CG/Jacobi，而 `cg_jacobi` 映射到右 FGMRES +
-内层 CG/Jacobi。边界开关
+默认求解方式为 `SOLVER_MODES="left_gmres_cg_jacobi"`，还可选择 `lu`、
+`left_gmres_cg_jacobi`、`right_gmres_cg_jacobi`、`left_gmres_cg_gamg`、
+`right_gmres_cg_gamg`、`cg_jacobi` 或 `cg_gamg`。显式左右名称映射到普通
+GMRES + 内层 CG/Jacobi 或 CG/GAMG，短名称映射到右 FGMRES。边界开关
 默认同时扫描 `true false`。正式 sweep 默认设置
 `COMPUTE_UNPRECONDITIONED_SOLUTION=false` 并关闭 EPS/SVD/张量恒等式验证。
 `summary.tsv` 中 `not_applicable` 表示算法没有相应概念（如 AMG-only/LU 的内层
@@ -80,17 +83,89 @@ CG 次数），`NA` 表示失败、未开始或结果中没有该量，`not_comp
 明确禁用功能的状态。时间单位为秒，内存字段为字节。
 曲边入口必须继续使用默认 `lor_q1`。
 
+专用 sweep 默认使用外层 `rtol=1e-6, atol=1e-9`，内层 CG
+`rtol=atol=1e-6`。这些容差被显式写入 manifest、配置哈希和 driver 参数；如需
+覆盖，仍可设置 `OUTER_RTOL`、`OUTER_ATOL`、`INNER_RTOL` 和 `INNER_ATOL`。
+
 准备左普通 GMRES + 内层 CG/Jacobi 批处理：
 
 ```bash
-RUN_ID=left-gmres-cg-jacobi-2d SOLVER_MODES="left_gmres_cg_jacobi" \
+RUN_ID=left-gmres-cg-jacobi-2d \
   BATCH_DRY_RUN=1 ./run_trunc_chol_sweep_2d.sh
-RUN_ID=left-gmres-cg-jacobi-3d SOLVER_MODES="left_gmres_cg_jacobi" \
+RUN_ID=left-gmres-cg-jacobi-3d \
   BATCH_DRY_RUN=1 ./run_trunc_chol_sweep_3d.sh
 ```
 
 左预条件普通 GMRES 可能按预条件残差判停，结果筛选应同时检查输出中的
 `relative_true_residual`，不能只看 PETSc 的 KSP reason。
+
+准备左普通 GMRES + 内层 CG/GAMG 对照组：
+
+```bash
+RUN_ID=left-gmres-cg-gamg-2d SOLVER_MODES="left_gmres_cg_gamg" \
+  BATCH_DRY_RUN=1 ./run_trunc_chol_sweep_2d.sh
+RUN_ID=left-gmres-cg-gamg-3d SOLVER_MODES="left_gmres_cg_gamg" \
+  BATCH_DRY_RUN=1 ./run_trunc_chol_sweep_3d.sh
+```
+
+### GAMG 四阶段参数调优
+
+独立脚本 `run_trunc_chol_gamg_tuning_2d.sh` 不修改或覆盖已有 sweep 结果。固定外层
+左 GMRES 与内层 CG/GAMG，按以下阶段手动运行：
+
+```bash
+# 1. p=8,n=256：固定 threshold/smoother，扫描内层 rtol
+RUN_ID=gamg-study TUNING_STAGE=rtol BATCH_DRY_RUN=1 \
+  ./run_trunc_chol_gamg_tuning_2d.sh
+RUN_ID=gamg-study TUNING_STAGE=rtol BATCH_DRY_RUN=0 \
+  ./run_trunc_chol_gamg_tuning_2d.sh
+
+# 2. 根据 summary_rtol.tsv 选择仍保持真实残差和 L2 的最大 rtol
+RUN_ID=gamg-study TUNING_STAGE=threshold SELECTED_INNER_RTOL=1e-6 \
+  BATCH_DRY_RUN=0 ./run_trunc_chol_gamg_tuning_2d.sh
+
+# 3. 固定选择的 rtol/threshold，扫描每层平滑步数
+RUN_ID=gamg-study TUNING_STAGE=smooth SELECTED_INNER_RTOL=1e-6 \
+  SELECTED_GAMG_THRESHOLD=0.05 BATCH_DRY_RUN=0 \
+  ./run_trunc_chol_gamg_tuning_2d.sh
+
+# 4. 把选中的三元组用于 p=4..8、n=32,64,128,256
+RUN_ID=gamg-study TUNING_STAGE=transfer SELECTED_INNER_RTOL=1e-6 \
+  SELECTED_GAMG_THRESHOLD=0.05 SELECTED_GAMG_SMOOTH_STEPS=2 \
+  BATCH_DRY_RUN=0 ./run_trunc_chol_gamg_tuning_2d.sh
+```
+
+每阶段分别生成 `manifest_<stage>.tsv` 和 `summary_<stage>.tsv`。汇总包含
+`T_setup_pc_s`、`T_setup_total_s`、`N_inner`、`N_outer`、`T_solve_s`、真实相对残差
+和 `L2_error`；调优首先比较 `T_solve_s`，不能仅以 `N_inner` 最少作为最优标准。
+`GAMG_SMOOTH_STEPS` 控制 V-cycle 各 level smoother 的迭代步数，不是插值算子的
+`pc_gamg_agg_nsmooths`。脚本支持 `RESUME=1`、`TIMEOUT_SEC`、`FAIL_FAST`、
+`MPI_RANK` 和 `MAX_MPI_RANKS`。
+
+昂贵的 `p=8,n=1024x1024` rtol 对照使用独立入口，不会覆盖上述 `p=8,n=256`
+结果：
+
+```bash
+BATCH_DRY_RUN=1 ./run_trunc_chol_gamg_rtol_p8_n1024_2d.sh
+BATCH_DRY_RUN=0 ./run_trunc_chol_gamg_rtol_p8_n1024_2d.sh
+```
+
+默认扫描 `1e-10 1e-8 1e-7 1e-6 1e-5 1e-4 1e-3 1e-2`，可用
+`INNER_RTOLS` 缩小集合。固定 RUN_ID 为 `p8-n1024-gamg-rtol`，因此中断后以同一命令
+重启会复用成功标记；可通过 `RUN_ID` 显式改名。
+
+右 FGMRES 诊断组使用独立入口和结果目录，保留上述全部结果：
+
+```bash
+BATCH_DRY_RUN=1 ./run_trunc_chol_fgmres_gamg_diagnostic_p8_n1024_2d.sh
+BATCH_DRY_RUN=0 ./run_trunc_chol_fgmres_gamg_diagnostic_p8_n1024_2d.sh
+```
+
+该组默认复用上一组实际采用的 107 ranks，并固定
+`outer_rtol=1e-8, outer_atol=1e-10, inner_atol=1e-12, k=4, bp=true`；扫描点为
+`inner_rtol={1e-8,1e-7,1e-6,1e-5,1e-4,1e-3}`。这里 `1e-3` 只是待比较的最后一个
+扫描点，不是调优器或通用求解器的默认容差。结果应同时比较 `N_inner`、
+`relative_true_residual` 与 `L2_error`，从中选择不再明显受代数误差影响的最大容差。
 
 该容差扫描显式固定为 `left_gmres_cg`，用于保留左预条件标准 GMRES 对照。PETSc
 对该组合监测预条件残差，宽松且

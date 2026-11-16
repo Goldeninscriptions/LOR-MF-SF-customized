@@ -246,6 +246,13 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
             PetscCall(KSPGetPC(shell_context->inner_ksp, &inner_pc));
             PetscCall(PCSetType(inner_pc,
                 inner_pc_mode == InnerPCMode::jacobi ? PCJACOBI : PCGAMG));
+            // Keep nested tuning isolated from the outer GMRES.  In
+            // particular, GAMG experiments may use options such as
+            // -inner_pc_gamg_threshold and
+            // -inner_mg_levels_ksp_max_it without changing the outer KSP.
+            PetscCall(KSPSetOptionsPrefix(shell_context->inner_ksp,
+                "inner_"));
+            PetscCall(KSPSetFromOptions(shell_context->inner_ksp));
         }
         else if (use_amg_only)
         {
