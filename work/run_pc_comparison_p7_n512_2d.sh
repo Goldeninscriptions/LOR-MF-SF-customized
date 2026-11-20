@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Nine-way selected-P comparison on square_2d, p=4..7 and n=512/1024.
+# Shared selected-P comparison implementation for the dedicated 2D/3D entry
+# scripts. INCLUDE_LEFT_GMRES controls whether A4/B5 are included.
 # Safe default: create the manifest only; launch nothing until BATCH_DRY_RUN=0.
 #
 # A1: truncated P, right FGMRES, inner CG+GAMG
@@ -16,10 +17,32 @@ set -uo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(cd "$script_dir/.." && pwd)
-geometry_file="$script_dir/input/square_2d.txt"
+benchmark_dimension=${BENCHMARK_DIMENSION:-2}
+include_left_gmres=${INCLUDE_LEFT_GMRES:-1}
+include_direct_k_baselines=${INCLUDE_DIRECT_K_BASELINES:-0}
+comparison_method_set=${COMPARISON_METHOD_SET:-selected_p}
+[[ "$comparison_method_set" == selected_p ||
+   "$comparison_method_set" == direct_k_baseline ]] || {
+  echo "COMPARISON_METHOD_SET must be selected_p or direct_k_baseline" >&2
+  exit 2
+}
+if [[ "$benchmark_dimension" == 2 ]]; then
+  geometry_file=${GEOMETRY_FILE:-"$script_dir/input/square_2d.txt"}
+  default_element_cases="512,512 1024,1024"
+  default_result_group=pc_comparison_2d
+  default_run_id=p4-p7-n512-n1024-selected-p-nine-way
+elif [[ "$benchmark_dimension" == 3 ]]; then
+  geometry_file=${GEOMETRY_FILE:-"$script_dir/input/cube_3d.txt"}
+  default_element_cases="32,32,32 64,64,64"
+  default_result_group=pc_comparison_3d
+  default_run_id=p4-p7-n32-n64-selected-p-with-k-baselines
+else
+  echo "BENCHMARK_DIMENSION must be 2 or 3" >&2
+  exit 2
+fi
 
 read -r -a degrees <<<"${DEGREES:-4 5 6 7}"
-read -r -a element_cases <<<"${ELEMENT_CASES:-512,512 1024,1024}"
+read -r -a element_cases <<<"${ELEMENT_CASES:-$default_element_cases}"
 mpi_rank_override=${MPI_RANK:-}
 mpi_rank_512=${MPI_RANK_512:-27}
 mpi_rank_1024=${MPI_RANK_1024:-107}
@@ -41,17 +64,18 @@ boundary_protection=${TRUNC_CHOL_BOUNDARY_PROTECTION:-true}
 gamg_threshold=${GAMG_THRESHOLD:-0.0}
 gamg_smooth_steps=${GAMG_SMOOTH_STEPS:-1}
 
-for boolean in "$dry_run" "$resume" "$fail_fast"; do
+for boolean in "$dry_run" "$resume" "$fail_fast" "$include_left_gmres" \
+  "$include_direct_k_baselines"; do
   [[ "$boolean" == 0 || "$boolean" == 1 ]] || {
-    echo "BATCH_DRY_RUN, RESUME, and FAIL_FAST must be 0 or 1" >&2
+    echo "BATCH_DRY_RUN, RESUME, FAIL_FAST, INCLUDE_LEFT_GMRES, and INCLUDE_DIRECT_K_BASELINES must be 0 or 1" >&2
     exit 2
   }
 done
 rank_values=("$mpi_rank_512" "$mpi_rank_1024")
 [[ -n "$mpi_rank_override" ]] && rank_values+=("$mpi_rank_override")
 for rank_value in "${rank_values[@]}"; do
-  [[ "$rank_value" =~ ^[1-9][0-9]*$ ]] || {
-    echo "MPI_RANK, MPI_RANK_512, and MPI_RANK_1024 must be positive integers" >&2
+  [[ "$rank_value" == default || "$rank_value" =~ ^[1-9][0-9]*$ ]] || {
+    echo "MPI rank settings must be 'default' or positive integers" >&2
     exit 2
   }
 done
@@ -77,9 +101,15 @@ for degree_value in "${degrees[@]}"; do
   }
 done
 for tuple_value in "${element_cases[@]}"; do
-  [[ "$tuple_value" =~ ^[1-9][0-9]*,[1-9][0-9]*$ ]] || {
-    echo "ELEMENT_CASES must contain comma-separated 2D tuples" >&2; exit 2;
-  }
+  if [[ "$benchmark_dimension" == 2 ]]; then
+    [[ "$tuple_value" =~ ^[1-9][0-9]*,[1-9][0-9]*$ ]] || {
+      echo "ELEMENT_CASES must contain comma-separated 2D tuples" >&2; exit 2;
+    }
+  else
+    [[ "$tuple_value" =~ ^[1-9][0-9]*,[1-9][0-9]*,[1-9][0-9]*$ ]] || {
+      echo "ELEMENT_CASES must contain comma-separated 3D tuples" >&2; exit 2;
+    }
+  fi
 done
 
 hash_text() {
@@ -100,8 +130,9 @@ solver_fingerprint=$(
 )
 solver_fingerprint=$(hash_text "$solver_fingerprint")
 short_commit=$(git -C "$project_dir" rev-parse --short HEAD 2>/dev/null || printf unknown)
-run_id=${RUN_ID:-p4-p7-n512-n1024-selected-p-nine-way}
-run_root=${RUN_DIR:-"$script_dir/results/pc_comparison_2d/$run_id"}
+run_id=${RUN_ID:-$default_run_id}
+result_group=${RESULT_GROUP:-$default_result_group}
+run_root=${RUN_DIR:-"$script_dir/results/$result_group/$run_id"}
 case_dir="$run_root/cases"
 log_dir="$run_root/logs"
 status_dir="$run_root/status"
@@ -127,11 +158,17 @@ printf '%b\n' "$summary_header" > "$summary.tmp"
 declare -a records=()
 add_method() {
   local id=$1 source=$2 outer_mode=$3 application=$4 inner_pc=$5 method_inner_max=$6
+  local source_label=$source
+  if [[ "$application" == direct_k_jacobi ||
+        "$application" == direct_k_gamg ]]; then
+    source_label=high_order_K
+  fi
   local gamg_options=not_applicable
-  if [[ "$application" == cg_gamg || "$application" == direct_gamg ]]; then
+  if [[ "$application" == cg_gamg || "$application" == direct_gamg ||
+        "$application" == direct_k_gamg ]]; then
     gamg_options="threshold=$gamg_threshold,smooth=$gamg_smooth_steps"
   fi
-  local config="fingerprint=$solver_fingerprint;id=$id;source=$source;outer=$outer_mode;application=$application;inner_pc=$inner_pc;inner_max=$method_inner_max;p=$degree;n=$element_tuple;ranks=$mpi_rank;outer_tol=$outer_rtol,$outer_atol,$outer_dtol,$outer_max_it;inner_tol=$inner_rtol,$inner_atol,$inner_dtol;trunc_k=$effective_k;bp=$boundary_protection;gamg=$gamg_options;memory=$memory_limit"
+  local config="fingerprint=$solver_fingerprint;method_set=$comparison_method_set;dim=$benchmark_dimension;geometry=$geometry_file;id=$id;source=$source;outer=$outer_mode;application=$application;inner_pc=$inner_pc;inner_max=$method_inner_max;p=$degree;n=$element_tuple;ranks=$mpi_rank;max_ranks=${MAX_MPI_RANKS:-};outer_tol=$outer_rtol,$outer_atol,$outer_dtol,$outer_max_it;inner_tol=$inner_rtol,$inner_atol,$inner_dtol;trunc_k=$effective_k;bp=$boundary_protection;gamg=$gamg_options;memory=$memory_limit"
   local config_hash
   config_hash=$(hash_text "$config")
   local tuple_label=${element_tuple//,/-}
@@ -144,10 +181,12 @@ add_method() {
   fi
   if [[ "$application" == cg_gamg || "$application" == direct_gamg ]]; then
     command_text+=" PETSC_OPTIONS='-inner_pc_gamg_threshold $gamg_threshold -inner_mg_levels_ksp_max_it $gamg_smooth_steps'"
+  elif [[ "$application" == direct_k_gamg ]]; then
+    command_text+=" PETSC_OPTIONS='-pc_gamg_threshold $gamg_threshold -mg_levels_ksp_max_it $gamg_smooth_steps'"
   fi
-  command_text+=" ./work/run_case.sh $mpi_rank work/input/square_2d.txt k_refine $degree $element_tuple greville $outer_mode $result_file"
+  command_text+=" ./work/run_case.sh $mpi_rank $geometry_file k_refine $degree $element_tuple greville $outer_mode $result_file"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$case_id" "$id" "$source" "$outer_mode" "$application" \
+    "$case_id" "$id" "$source_label" "$outer_mode" "$application" \
     "$inner_pc" "$method_inner_max" "$degree" "$element_tuple" \
     "$mpi_rank" "$outer_rtol" "$outer_atol" "$inner_rtol" \
     "$inner_atol" "$effective_k" "$boundary_protection" \
@@ -173,15 +212,28 @@ for degree in "${degrees[@]}"; do
       echo "Set MPI_RANK for nonstandard ELEMENT_CASES tuple $element_tuple" >&2
       exit 2
     fi
-    add_method A1 truncated_cholesky_tensor right_fgmres_cg cg_gamg gamg "$inner_max_it"
-    add_method A2 truncated_cholesky_tensor right_fgmres_amg direct_gamg not_applicable not_applicable
-    add_method A3 truncated_cholesky_tensor right_fgmres_jacobi direct_jacobi not_applicable not_applicable
-    add_method A4 truncated_cholesky_tensor left_gmres_amg direct_gamg not_applicable not_applicable
-    add_method B1 lor_q1 right_fgmres_cg cg_gamg gamg "$inner_max_it"
-    add_method B2 lor_q1 right_fgmres_amg direct_gamg not_applicable not_applicable
-    add_method B3 lor_q1 right_fgmres_jacobi direct_jacobi not_applicable not_applicable
-    add_method B4 lor_q1 right_fgmres_cg cg_jacobi_one jacobi 1
-    add_method B5 lor_q1 left_gmres_amg direct_gamg not_applicable not_applicable
+    if [[ "$comparison_method_set" == direct_k_baseline ]]; then
+      add_method K1 lor_q1 left_gmres_k_jacobi direct_k_jacobi not_applicable not_applicable
+      add_method K2 lor_q1 left_gmres_k_gamg direct_k_gamg not_applicable not_applicable
+    else
+      add_method A1 truncated_cholesky_tensor right_fgmres_cg cg_gamg gamg "$inner_max_it"
+      add_method A2 truncated_cholesky_tensor right_fgmres_amg direct_gamg not_applicable not_applicable
+      add_method A3 truncated_cholesky_tensor right_fgmres_jacobi direct_jacobi not_applicable not_applicable
+      if [[ "$include_left_gmres" == 1 ]]; then
+        add_method A4 truncated_cholesky_tensor left_gmres_amg direct_gamg not_applicable not_applicable
+      fi
+      add_method B1 lor_q1 right_fgmres_cg cg_gamg gamg "$inner_max_it"
+      add_method B2 lor_q1 right_fgmres_amg direct_gamg not_applicable not_applicable
+      add_method B3 lor_q1 right_fgmres_jacobi direct_jacobi not_applicable not_applicable
+      add_method B4 lor_q1 right_fgmres_cg cg_jacobi_one jacobi 1
+      if [[ "$include_left_gmres" == 1 ]]; then
+        add_method B5 lor_q1 left_gmres_amg direct_gamg not_applicable not_applicable
+      fi
+      if [[ "$include_direct_k_baselines" == 1 ]]; then
+        add_method K1 lor_q1 left_gmres_k_jacobi direct_k_jacobi not_applicable not_applicable
+        add_method K2 lor_q1 left_gmres_k_gamg direct_k_gamg not_applicable not_applicable
+      fi
+    fi
   done
 done
 
@@ -228,6 +280,18 @@ append_summary() {
   outer_reason=$(value_or_na "$input" ksp_reason)
   residual=$(value_or_na "$input" relative_true_residual)
   l2=$(value_or_na "$input" l2_error)
+  if [[ "$application" == direct_k_jacobi ||
+        "$application" == direct_k_gamg ]]; then
+    # K is both system and PC operator; no separate P was assembled.
+    source=high_order_K
+    nnz_p=$nnz_k
+    mem_p=$mem_k
+    alloc_p=$alloc_k
+    calls_p=$calls_k
+    t_p=not_applicable
+    n_apply=not_recorded
+    t_apply=not_separately_timed
+  fi
   outer_failed=NA
   if [[ "$outer_reason" =~ ^-?[0-9]+$ ]]; then
     (( outer_reason < 0 )) && outer_failed=true || outer_failed=false
@@ -242,6 +306,9 @@ append_summary() {
     else
       n_amg=not_recorded
     fi
+  elif [[ "$application" == direct_k_gamg ]]; then
+    t_amg=not_separately_timed
+    n_amg=not_recorded
   fi
 
   if [[ "$inner_pc" == not_applicable ]]; then
@@ -311,6 +378,8 @@ for record in "${records[@]}"; do
   fi
   if [[ "$application" == cg_gamg || "$application" == direct_gamg ]]; then
     env_args+=(PETSC_OPTIONS="${PETSC_OPTIONS:-} -inner_pc_gamg_threshold $gamg_threshold -inner_mg_levels_ksp_max_it $gamg_smooth_steps")
+  elif [[ "$application" == direct_k_gamg ]]; then
+    env_args+=(PETSC_OPTIONS="${PETSC_OPTIONS:-} -pc_gamg_threshold $gamg_threshold -mg_levels_ksp_max_it $gamg_smooth_steps")
   fi
   command=(env "${env_args[@]}" "$script_dir/run_case.sh" "$mpi_rank"
     "$geometry_file" k_refine "$degree" "$element_tuple" greville

@@ -21,6 +21,8 @@
 | `run_trunc_chol_fgmres_gamg_diagnostic_p8_n1024_2d.sh` | `p=8,n=1024x1024` 的右 FGMRES + 内层 CG/GAMG 诊断扫描 | 固定 `k=4,bp=true`、更严格的内外层绝对容差，并扫描 `inner_rtol=1e-8..1e-3`；默认只 dry-run |
 | `run_pc_comparison_p4_p7_n512_n1024_2d.sh` | `p=4..7,n={512,1024}²` 的九种 selected-P 公平对照入口 | 两类 P 各比较右侧三种应用和左 GMRES+GAMG，另含 Greville 一步 CG/Jacobi；共 72 cases，默认只 dry-run |
 | `run_pc_comparison_p7_n512_2d.sh` | 上述扩展实验的兼容实现路径 | 保留早期脚本路径；默认参数现已与九组扩展实验一致 |
+| `run_pc_comparison_cube_3d_p4_p7_n32_n64.sh` | `p=4..7,n={32,64}³` 的九种方法对照 | 七种 selected-P 方法加 K-Jacobi/K-GAMG，排除 A4/B5，共 72 cases；默认由 case planner 选择 ranks，且只 dry-run |
+| `run_pc_baseline_high_order_k_p4_p7_n512_n1024_2d.sh` | 与二维扫描对应的高阶 K 基准 | K1 为左 GMRES+Jacobi(K)，K2 为左 GMRES+GAMG(K)；共 16 cases，写入独立结果目录 |
 | `REMOTE_BATCH_GUIDE.md` | 远端 macOS/Linux 构建与批处理清单 | 说明 dry-run、`MPI_RANK`、`MAX_MPI_RANKS`、launcher 覆盖、输出和失败恢复 |
 
 几何文件中的 p/n 注释供用户阅读；解析器只从 knot vectors 推断实际初始值。控制点
@@ -226,6 +228,61 @@ RUN_ID=p4-p7-n512-n1024-nine-way \
 `TRUNC_CHOL_K=auto`，逐 p 计算 `ceil(p/2)`。脚本关闭 EPS/SVD 和无预条件重复求解，
 只计算九组预条件解、真实残差与物理域 L2 误差。尤其应比较 A4/B5 与对应右预条件
 组的 `relative_true_residual`、`L2_error`，不能仅依据左 GMRES 的 KSP reason。
+
+### 3D cube 七种 selected-P 方法与两个高阶 K 基准
+
+三维入口固定使用 `cube_3d`，扫描 `p={4,5,6,7}` 和
+`n={(32,32,32),(64,64,64)}`。它生成 A1/A2/A3/B1/B2/B3/B4，并增加：
+
+1. K1：高阶 `K` + 左普通 GMRES + `PCJACOBI(K)`；
+2. K2：高阶 `K` + 左普通 GMRES + `PCGAMG(K)`。
+
+脚本不包含 A4/B5，共九种方法、72 个 case：
+
+```bash
+RUN_ID=cube3d-p4-p7-n32-n64-nine-way \
+  BATCH_DRY_RUN=1 ./work/run_pc_comparison_cube_3d_p4_p7_n32_n64.sh
+RUN_ID=cube3d-p4-p7-n32-n64-nine-way \
+  BATCH_DRY_RUN=0 ./work/run_pc_comparison_cube_3d_p4_p7_n32_n64.sh
+```
+
+默认 `MPI_RANK=default`，因此每个 p/n 由 `case_planner` 根据实际自由度选择 ranks；
+可以用 `MAX_MPI_RANKS` 限制自动规划，或用 `MPI_RANK` 为全部 72 个 case 固定相同
+ranks。例如：
+
+```bash
+MAX_MPI_RANKS=64 BATCH_DRY_RUN=0 \
+  ./work/run_pc_comparison_cube_3d_p4_p7_n32_n64.sh
+```
+
+输出写入
+`work/results/pc_comparison_cube_3d/<RUN_ID>/`，目录结构和 `summary.tsv` 字段与二维
+批次相同。三维规模对内存更敏感；默认 64 GiB 预检上限可用
+`TRUNC_CHOL_MAX_MEMORY_BYTES` 覆盖，超过上限的 case 会记录为 `skipped_memory`，不会
+继续装配 P。
+
+### 二维高阶 K 基准
+
+独立基准脚本只运行以下两种方法，不组装 truncated-Cholesky 或 Greville LOR 矩阵：
+
+1. K1：高阶 `K` + 左普通 GMRES + `PCJACOBI(K)`；
+2. K2：高阶 `K` + 左普通 GMRES + `PCGAMG(K)`。
+
+它与二维 selected-P 批次使用相同的 `p={4,5,6,7}`、
+`n={(512,512),(1024,1024)}`、外层容差和默认 ranks，共 16 个 case：
+
+```bash
+RUN_ID=high-order-k-p4-p7-n512-n1024 \
+  BATCH_DRY_RUN=1 ./work/run_pc_baseline_high_order_k_p4_p7_n512_n1024_2d.sh
+RUN_ID=high-order-k-p4-p7-n512-n1024 \
+  BATCH_DRY_RUN=0 ./work/run_pc_baseline_high_order_k_p4_p7_n512_n1024_2d.sh
+```
+
+结果位于 `work/results/pc_baseline_high_order_k_2d/<RUN_ID>/`。直接 PETSc PC 没有经过
+计时 shell，所以单独的 PC setup/apply 次数与时间标为 `not_separately_timed` 或
+`not_recorded`；这些成本已经包含在 `T_outer_setup_s` 和 `T_outer_solve_s` 中。
+K-GAMG 使用无前缀参数 `-pc_gamg_threshold` 和 `-mg_levels_ksp_max_it`，脚本仍通过
+统一的 `GAMG_THRESHOLD`、`GAMG_SMOOTH_STEPS` 环境变量配置。
 
 前述 `p=8,n=1024` 容差扫描显式固定为 `left_gmres_cg`，用于保留左预条件标准
 GMRES 对照。PETSc

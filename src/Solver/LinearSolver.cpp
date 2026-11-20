@@ -209,7 +209,12 @@ PetscErrorCode solve(Mat stiffness, Mat lor_stiffness, Vec load,
     else if (use_k_jacobi)
         PetscCall(PCSetType(pc, PCJACOBI));
     else if (use_k_gamg)
+    {
         PetscCall(PCSetType(pc, PCGAMG));
+        // Direct-K baselines use ordinary unprefixed PETSc PC options, e.g.
+        // -pc_gamg_threshold and -mg_levels_ksp_max_it.
+        PetscCall(PCSetFromOptions(pc));
+    }
     else if (!use_shell)
         PetscCall(PCSetType(pc, PCLU));
     else

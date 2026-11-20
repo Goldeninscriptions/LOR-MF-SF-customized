@@ -124,6 +124,22 @@ BATCH_DRY_RUN=0 ./work/run_pc_comparison_p4_p7_n512_n1024_2d.sh
 `rtol=1e-6,atol=1e-9`，嵌套 CG 的 `rtol=1e-3`；完整字段说明和资源覆盖方法见
 [work/README.md](work/README.md)。
 
+不含 A4/B5、但包含高阶 K-Jacobi/K-GAMG 基准的三维 cube 实验覆盖 `p=4..7`
+与 `n={32,64}³`，共 72 个 case：
+
+```bash
+BATCH_DRY_RUN=1 ./work/run_pc_comparison_cube_3d_p4_p7_n32_n64.sh
+BATCH_DRY_RUN=0 ./work/run_pc_comparison_cube_3d_p4_p7_n32_n64.sh
+```
+
+与二维 selected-P 扫描对应的高阶 K-Jacobi/K-GAMG 基准由独立脚本生成，共 16 个
+case：
+
+```bash
+BATCH_DRY_RUN=1 ./work/run_pc_baseline_high_order_k_p4_p7_n512_n1024_2d.sh
+BATCH_DRY_RUN=0 ./work/run_pc_baseline_high_order_k_p4_p7_n512_n1024_2d.sh
+```
+
 每个旧几何批处理脚本都列出了原有求解方案。需要方案 A1 时，在脚本配置区注释
 当前 `left_gmres_fixed_jacobi` 块，并取消注释 `right_fgmres_cg` 块及其内层参数。
 
