@@ -25,6 +25,7 @@
 #include "Mesh/Refinement.hpp"
 #include "Mesh/TensorSlabPartition.hpp"
 #include "Solver/ErrorAnalysis.hpp"
+#include "Solver/GeneralizedConditionNumber.hpp"
 #include "Solver/LinearSolver.hpp"
 #include "Solver/ManufacturedSolution.hpp"
 
@@ -373,23 +374,15 @@ PetscErrorCode run_assembled_laplace_experiment(
             &singular_svd_time, 1, MPI_DOUBLE, MPI_MAX, comm));
     }
 
-    SpectralConditionNumberResult spectral_condition;
+    GeneralizedConditionResult spectral_condition;
     PetscLogDouble spectral_eps_time = 0.0;
     if (options.compute_spectral_condition_number)
     {
-        PetscCallMPI(MPI_Barrier(comm));
-        PetscLogDouble analysis_start = 0.0;
-        PetscLogDouble analysis_end = 0.0;
-        PetscCall(PetscTime(&analysis_start));
-        PetscCall(compute_generalized_spectral_condition_number(
+        PetscCall(compute_generalized_condition_number(
             high_stiffness.matrix, preconditioner_matrix,
             options.eps_tolerance, options.eps_max_iterations,
             options.eps_subspace_dimension, &spectral_condition));
-        PetscCall(PetscTime(&analysis_end));
-        const PetscLogDouble local_analysis_time =
-            analysis_end - analysis_start;
-        PetscCallMPI(MPI_Allreduce(&local_analysis_time,
-            &spectral_eps_time, 1, MPI_DOUBLE, MPI_MAX, comm));
+        spectral_eps_time = spectral_condition.total_time;
     }
 
     // Collect metadata and only the diagnostics whose computations were
@@ -409,6 +402,7 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.computed_spectral_condition_number =
         options.compute_spectral_condition_number;
     results.lor_pc = options.lor_pc;
+    results.lor_points = options.lor_points;
     results.preconditioner_matrix_source =
         options.preconditioner_matrix_source;
     results.preconditioner_side = options.preconditioner_side;
@@ -463,13 +457,27 @@ PetscErrorCode run_assembled_laplace_experiment(
         results.lambda_min = spectral_condition.lambda_min;
         results.lambda_max = spectral_condition.lambda_max;
         results.lambda_relative_error_min =
-            spectral_condition.relative_error_min;
+            spectral_condition.min_eigenpair_error;
         results.lambda_relative_error_max =
-            spectral_condition.relative_error_max;
-        results.eps_iterations_min = spectral_condition.iterations_min;
-        results.eps_iterations_max = spectral_condition.iterations_max;
-        results.eps_reason_min = spectral_condition.reason_min;
-        results.eps_reason_max = spectral_condition.reason_max;
+            spectral_condition.max_eigenpair_error;
+        results.lambda_min_converged_by_stability =
+            spectral_condition.min_converged_by_stability;
+        results.lambda_min_stability_relative_span =
+            spectral_condition.min_stability_relative_span;
+        results.lambda_min_stability_residual_limit =
+            spectral_condition.min_stability_residual_limit;
+        results.lambda_min_stability_window =
+            spectral_condition.min_stability_window;
+        results.eps_iterations_min =
+            spectral_condition.min_eps_iterations;
+        results.eps_iterations_max =
+            spectral_condition.max_eps_iterations;
+        results.eps_reason_min =
+            spectral_condition.min_convergence_reason;
+        results.eps_reason_max =
+            spectral_condition.max_convergence_reason;
+        results.time_eps_lambda_min_s = spectral_condition.min_solve_time;
+        results.time_eps_lambda_max_s = spectral_condition.max_solve_time;
     }
     if (options.compute_solution)
     {
@@ -734,10 +742,12 @@ PetscErrorCode run_assembled_laplace_experiment(
             if (results.spectral_condition_converged)
                 PetscCall(PetscPrintf(comm,
                     "    lambda_min=%.12e, lambda_max=%.12e, "
-                    "kappa_lambda=%.12e\n",
+                    "kappa_lambda=%.12e, min_criterion=%s\n",
                     static_cast<double>(results.lambda_min),
                     static_cast<double>(results.lambda_max),
-                    static_cast<double>(results.kappa_lambda)));
+                    static_cast<double>(results.kappa_lambda),
+                    results.lambda_min_converged_by_stability ?
+                        "ritz_stability" : "residual"));
         }
         if (options.preconditioner_matrix_source ==
             PreconditionerMatrixSource::truncated_cholesky_tensor)

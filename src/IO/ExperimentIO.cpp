@@ -386,6 +386,7 @@ void write_experiment_results(const std::string &filename,
     // numerical fields belonging to computations that did not run.
     output << std::boolalpha
            << "lor_pc = " << lor_pc_mode_name(results.lor_pc) << '\n'
+           << "lor_points = " << results.lor_points << '\n'
            << "preconditioner_matrix_source = "
            << preconditioner_matrix_source_name(
                 results.preconditioner_matrix_source) << '\n'
@@ -696,7 +697,11 @@ void write_experiment_results(const std::string &filename,
                << "eps_iterations_max = "
                << results.eps_iterations_max << '\n'
                << "eps_reason_min = " << results.eps_reason_min << '\n'
-               << "eps_reason_max = " << results.eps_reason_max << '\n';
+               << "eps_reason_max = " << results.eps_reason_max << '\n'
+               << "time_eps_lambda_min_s = "
+               << results.time_eps_lambda_min_s << '\n'
+               << "time_eps_lambda_max_s = "
+               << results.time_eps_lambda_max_s << '\n';
         if (results.spectral_condition_converged)
             output << "kappa_lambda = " << results.kappa_lambda << '\n'
                    << "lambda_min = " << results.lambda_min << '\n'
@@ -704,7 +709,16 @@ void write_experiment_results(const std::string &filename,
                    << "eps_relative_error_min = "
                    << results.lambda_relative_error_min << '\n'
                    << "eps_relative_error_max = "
-                   << results.lambda_relative_error_max << '\n';
+                   << results.lambda_relative_error_max << '\n'
+                   << "eps_min_convergence_criterion = "
+                   << (results.lambda_min_converged_by_stability ?
+                       "ritz_stability" : "residual") << '\n'
+                   << "eps_min_stability_window = "
+                   << results.lambda_min_stability_window << '\n'
+                   << "eps_min_stability_relative_span = "
+                   << results.lambda_min_stability_relative_span << '\n'
+                   << "eps_min_stability_residual_limit = "
+                   << results.lambda_min_stability_residual_limit << '\n';
     }
     if (results.computed_solution)
     {

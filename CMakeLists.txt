@@ -60,6 +60,7 @@ endif()
 add_library(lor_petsc
   src/Assembly/GlobalAssembly.cpp
   src/Assembly/TruncatedCholeskyTensor.cpp
+  src/Solver/GeneralizedConditionNumber.cpp
 )
 target_include_directories(lor_petsc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(lor_petsc PUBLIC cxx_std_17)

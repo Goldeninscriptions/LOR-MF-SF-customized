@@ -85,9 +85,8 @@ struct ConditionNumberResult
     bool converged = false;
 };
 
-// Generalized Hermitian-definite extremes K x = lambda P x.  This is the
-// eigenvalue spectral condition number and is intentionally distinct from the
-// singular-value condition number above.
+// Backward-compatible result and entry point for callers of the original
+// GlobalAssembly API. New code should use Solver/GeneralizedConditionNumber.
 struct SpectralConditionNumberResult
 {
     PetscReal lambda_min = 0.0;
@@ -95,6 +94,10 @@ struct SpectralConditionNumberResult
     PetscReal condition_number = 0.0;
     PetscReal relative_error_min = 0.0;
     PetscReal relative_error_max = 0.0;
+    bool min_converged_by_stability = false;
+    PetscReal min_stability_relative_span = 0.0;
+    PetscReal min_stability_residual_limit = 0.0;
+    PetscInt min_stability_window = 0;
     PetscInt iterations_min = 0;
     PetscInt iterations_max = 0;
     int reason_min = 0;

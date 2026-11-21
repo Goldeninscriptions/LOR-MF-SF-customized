@@ -55,6 +55,18 @@ COMPUTE_SPECTRAL_CONDITION_NUMBER=true COMPUTE_CONDITION_NUMBER=true \
 `kappa_lambda`。新来源会拒绝曲边几何和直接 K-Jacobi/K-GAMG 模式，旧
 Greville/Demko 曲边路径不受影响。
 
+广义 EPS 使用两个独立前缀。默认最大值为 `eigmax_` 下的 Krylov-Schur
+`EPS_LARGEST_REAL`，最小值为 `eigmin_` 下的 `EPS_SMALLEST_REAL`；两者均作用
+于 `M^{-1}A`，只对稀疏 LOR 矩阵 `M` 做内层求解。
+例如可用 `-eigmax_st_ksp_type cg -eigmax_st_pc_type gamg` 与
+`-eigmin_st_ksp_type cg -eigmin_st_pc_type gamg` 分别配置两个内层系统。只有在
+显式实验 shift-and-invert 时才传
+`-eigmin_st_type sinvert -eigmin_eps_target 0 -eigmin_eps_target_magnitude`。
+最小值默认保留标准残差判据，同时增加受误差估计上限保护的长期 Ritz 稳定性判据：
+至少 300 次迭代且最近 100 个有效 Ritz 更新的相对跨度不超过 `5e-6`、SLEPc 相对误差估计低于
+`1e-2` 才提前接受。`eigmin_eps_stability_*` 可调整或关闭该判据，结果会记录采用
+`residual` 还是 `ritz_stability`，并始终输出求解结束后重新计算的实际相对误差。
+
 `-verify_tensor_identity` 默认关闭；开启时会独立计时并将完整（未截断）
 Kronecker 刚度与装配的高阶 `K` 对照。内存上限默认 64 GiB；程序会在构造任何
 逐行临时 map 或 PETSc `P` 之前，用包含 AIJ 与临时结构的保守估计执行预检。

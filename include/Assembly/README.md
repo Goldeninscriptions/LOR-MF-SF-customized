@@ -24,8 +24,8 @@ matrix-free 算子接口。若调用者同时需要多个项，可显式选择
 `compute_stiffness_condition_numbers` 是独立且昂贵的后处理入口，只有调用者显式请求
 时才创建四个 SVD 求解和预条件算子；它可分析精确 LOR 逆或直接的
 `diag(K)^{-1}` 左预条件参考算子。
-`compute_generalized_spectral_condition_number` 是独立的 EPS-GHEP 路线，
-求解 `Kx=lambda Px`；其 `lambda_max/lambda_min` 不与上述 SVD 的
+独立的 EPS-GHEP 路线已移到 `Solver/GeneralizedConditionNumber.hpp`，求解
+`Kx=lambda Px`；其 `lambda_max/lambda_min` 不与上述 SVD 的
 `sigma_max/sigma_min` 混用。
 高阶和 LOR 矩阵都从张量支撑直接计算逐 owned-row 的精确 `d_nnz/o_nnz`，不创建旧
 代码使用的临时 pattern 矩阵。结果同时保存 predicted/used/allocated nnz、PETSc

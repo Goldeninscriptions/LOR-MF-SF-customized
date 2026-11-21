@@ -103,6 +103,7 @@ struct ExperimentResults
     LORPCMode lor_pc = LORPCMode::left_gmres_fixed_jacobi;
     PreconditionerSide preconditioner_side = PreconditionerSide::left;
     InnerPCMode inner_pc = InnerPCMode::jacobi;
+    std::string lor_points = "greville";
     PreconditionerMatrixSource preconditioner_matrix_source =
         PreconditionerMatrixSource::lor_q1;
 
@@ -212,6 +213,8 @@ struct ExperimentResults
     PetscLogDouble time_tensor_pc_assembly_s = 0.0;
     PetscLogDouble time_tensor_memory_preflight_s = 0.0;
     PetscLogDouble time_tensor_identity_verification_s = 0.0;
+    PetscLogDouble time_eps_lambda_min_s = 0.0;
+    PetscLogDouble time_eps_lambda_max_s = 0.0;
     PetscLogDouble time_spectral_eps_s = 0.0;
     PetscLogDouble time_singular_svd_s = 0.0;
     PetscLogDouble time_l2_error_s = 0.0;
@@ -223,6 +226,10 @@ struct ExperimentResults
     PetscReal lambda_max = 0.0;
     PetscReal lambda_relative_error_min = 0.0;
     PetscReal lambda_relative_error_max = 0.0;
+    bool lambda_min_converged_by_stability = false;
+    PetscReal lambda_min_stability_relative_span = 0.0;
+    PetscReal lambda_min_stability_residual_limit = 0.0;
+    PetscInt lambda_min_stability_window = 0;
     PetscInt eps_iterations_min = 0;
     PetscInt eps_iterations_max = 0;
     int eps_reason_min = 0;

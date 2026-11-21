@@ -6,11 +6,13 @@ Solver 负责可选线性系统求解、离散解误差和实验编排，不负�
 |---|---|---|
 | `LinearSolver.hpp` | 定义十二个方向/外层/预条件组合方案、内层 `jacobi|gamg`、AMG/Jacobi-only、固定 Jacobi 参数、两层容差及分阶段统计 | 输入 GlobalAssembly 产生的 K、可选 K_LOR、F；返回 PETSc solution Vec |
 | `ErrorAnalysis.hpp` | 声明高阶离散解物理域 L2 误差积分 | MPI 下读取自由系数 halo，并从 Dirichlet lift 恢复受约束系数；各 rank 只积分自己的元素，最后全局归约 |
+| `GeneralizedConditionNumber.hpp` | 声明 MPI 并行的 `EPS_GHEP` 广义谱条件数计算器及极值误差、迭代、原因和计时结果 | 直接消费分布式 SPD 矩阵 A/M；不构造逆、平方根、预条件乘积或稠密矩阵 |
 | `ManufacturedSolution.hpp` | header-only 的物理解 `u=1+sum(x_d)+bubble(x)`、解析源项和精确仿射边界系数 | 轴对齐几何使用张量正弦 bubble，曲边基准使用四个边界多项式因子；实验编排用其生成 source、非零 lift 和 L2 exact function |
 | `AssembledLaplaceExperiment.hpp` | 声明完整 assembled 实验编排入口 | 接受最小几何/options；root refinement 后依次调用 Mesh、Assembly 和其他 Solver 模块 |
 
-条件数接口已归入 `Assembly/GlobalAssembly.hpp`，且只有
-`compute_condition_number=true` 时由实验编排显式调用。制造解的仿射边界迹通常
+SVD 条件数接口位于 `Assembly/GlobalAssembly.hpp`；广义特征值条件数接口位于
+`Solver/GeneralizedConditionNumber.hpp`。二者都只在对应开关启用时由实验编排显式
+调用。制造解的仿射边界迹通常
 非零，但通过几何控制点得到的系数可被 B-spline 精确再现；零迹 bubble 只改变域内
 解和源项，不增加边界投影误差。
 不同方案的外层算法和实际近似逆不同，因此迭代数不能脱离方案与残差容差直接比较。

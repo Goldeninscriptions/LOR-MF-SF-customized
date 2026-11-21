@@ -68,6 +68,26 @@ COMPUTE_SPECTRAL_CONDITION_NUMBER=true EPS_TOL=1e-8 EPS_NCV=100 \
 二维和三维批处理中的 `COMPUTE_CONDITION_NUMBER`、EPS/SVD 开关均可由环境变量
 覆盖，并已编码进结果文件名以避免不同配置互相覆盖。
 
+两个专用广义谱测试入口只组装高阶/LOR 矩阵并执行 EPS，不求 PDE 解或 SVD：
+
+```bash
+./work/test_generalized_condition_2d_p7_n1024.sh
+./work/test_generalized_condition_3d_p5_n32.sh
+```
+
+默认分别使用 56 和 8 个 MPI rank，可用 `MPI_RANKS` 覆盖。两个脚本的最大、最小
+特征值求解均对 `M^{-1}A` 使用紧容差 CG+PETSc GAMG；末尾附加的参数
+会原样传给 driver，可覆盖任意 `eigmax_`/`eigmin_` 选项。
+
+最小特征值默认还启用受残差保护的长期稳定性判据。只有在至少 300
+次迭代后，最近 100 个有效 Ritz 更新（通常覆盖至少 100 次外层迭代）的
+Ritz 值相对跨度不超过 `5e-6`，并且
+SLEPc 相对误差估计已经低于 `1e-2` 时，才会在标准 `eps_tol` 尚未满足的情况下
+提前接受。可分别用 `EIGMIN_STABILITY_WINDOW`、`EIGMIN_STABILITY_TOL`、
+`EIGMIN_STABILITY_RESIDUAL` 和 `EIGMIN_STABILITY_MIN_IT` 调整；设
+`-eigmin_eps_stability_stop false` 可完全禁用。结果文件会明确记录采用
+`residual` 还是 `ritz_stability`，以及最终实际相对残差和窗口跨度。
+
 专用 truncated-Cholesky 扫描使用：
 
 ```bash

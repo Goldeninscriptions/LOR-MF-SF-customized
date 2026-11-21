@@ -5,10 +5,10 @@
 #include "Element/FEMHex8.hpp"
 #include "Element/FEMQ1Basis.hpp"
 #include "Element/FEMQuad4.hpp"
+#include "Solver/GeneralizedConditionNumber.hpp"
 
 #include <petscksp.h>
 #include <slepcsvd.h>
-#include <slepceps.h>
 
 #include <algorithm>
 #include <array>
@@ -86,6 +86,9 @@ PetscErrorCode create_matrix(const MPI_Comm comm, const PetscInt local_size,
         global_size, global_size, 0, diagonal,
         0, off_diagonal, &result.matrix));
     PetscCall(MatSetOption(result.matrix, MAT_SYMMETRIC, PETSC_TRUE));
+    // Removing all Dirichlet rows and columns preserves positive definiteness
+    // of the elliptic stiffness and consistent mass bilinear forms.
+    PetscCall(MatSetOption(result.matrix, MAT_SPD, PETSC_TRUE));
     PetscCall(MatSetOption(
         result.matrix, MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_TRUE));
     initialize_statistics(result.statistics);
@@ -1279,97 +1282,38 @@ PetscErrorCode compute_stiffness_condition_numbers(Mat stiffness,
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-namespace
-{
-
-PetscErrorCode generalized_extreme_eigenvalue(Mat stiffness,
-    Mat preconditioner, const EPSWhich which, const char *prefix,
-    const PetscReal tolerance, const PetscInt max_iterations,
-    const PetscInt requested_subspace_dimension, PetscReal &eigenvalue,
-    PetscReal &relative_error, PetscInt &iterations, int &reason_value,
-    bool &converged_result)
-{
-    PetscFunctionBeginUser;
-    const MPI_Comm comm = PetscObjectComm(
-        reinterpret_cast<PetscObject>(stiffness));
-    PetscInt size = 0;
-    PetscCall(MatGetSize(stiffness, &size, nullptr));
-    const PetscInt ncv = std::min(size, requested_subspace_dimension);
-    PetscCheck(ncv >= 2, comm, PETSC_ERR_ARG_SIZ,
-        "EPS operator must have dimension at least two");
-    EPS eps = nullptr;
-    PetscCall(EPSCreate(comm, &eps));
-    PetscCall(EPSSetOptionsPrefix(eps, prefix));
-    PetscCall(EPSSetOperators(eps, stiffness, preconditioner));
-    PetscCall(EPSSetProblemType(eps, EPS_GHEP));
-    PetscCall(EPSSetType(eps, EPSKRYLOVSCHUR));
-    PetscCall(EPSSetDimensions(eps, 1, ncv, PETSC_DEFAULT));
-    PetscCall(EPSSetTolerances(eps, tolerance, max_iterations));
-    PetscCall(EPSSetWhichEigenpairs(eps, which));
-    PetscCall(EPSSetFromOptions(eps));
-    PetscCall(EPSSolve(eps));
-    PetscInt converged = 0;
-    EPSConvergedReason reason = EPS_CONVERGED_ITERATING;
-    PetscCall(EPSGetConverged(eps, &converged));
-    PetscCall(EPSGetConvergedReason(eps, &reason));
-    PetscCall(EPSGetIterationNumber(eps, &iterations));
-    reason_value = static_cast<int>(reason);
-    converged_result = converged > 0 && reason > 0;
-    if (converged_result)
-    {
-        PetscScalar value = 0.0;
-        PetscCall(EPSGetEigenvalue(eps, 0, &value, nullptr));
-        eigenvalue = PetscRealPart(value);
-        PetscCall(EPSComputeError(eps, 0, EPS_ERROR_RELATIVE,
-            &relative_error));
-    }
-    PetscCall(EPSDestroy(&eps));
-    PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-} // namespace
-
 PetscErrorCode compute_generalized_spectral_condition_number(Mat stiffness,
     Mat preconditioner, const PetscReal eps_tolerance,
     const PetscInt max_iterations, const PetscInt subspace_dimension,
     SpectralConditionNumberResult *result)
 {
     PetscFunctionBeginUser;
+    PetscCheck(stiffness != nullptr, PETSC_COMM_SELF, PETSC_ERR_ARG_NULL,
+        "Generalized EPS stiffness matrix must not be null");
     const MPI_Comm comm = PetscObjectComm(
         reinterpret_cast<PetscObject>(stiffness));
     PetscCheck(result != nullptr, comm, PETSC_ERR_ARG_NULL,
         "Spectral condition-number result must not be null");
-    PetscCheck(preconditioner != nullptr, comm, PETSC_ERR_ARG_NULL,
-        "Generalized EPS analysis requires a preconditioner matrix");
-    PetscCheck(eps_tolerance > 0.0 && max_iterations > 0 &&
-        subspace_dimension >= 2, comm, PETSC_ERR_ARG_OUTOFRANGE,
-        "EPS tolerance/iteration/subspace controls are invalid");
-    PetscInt rows = 0;
-    PetscInt columns = 0;
-    PetscInt p_rows = 0;
-    PetscInt p_columns = 0;
-    PetscCall(MatGetSize(stiffness, &rows, &columns));
-    PetscCall(MatGetSize(preconditioner, &p_rows, &p_columns));
-    PetscCheck(rows == columns && p_rows == p_columns && rows == p_rows,
-        comm, PETSC_ERR_ARG_SIZ,
-        "K and P must have the same square dimensions for EPS_GHEP");
-    bool maximum_converged = false;
-    bool minimum_converged = false;
-    PetscCall(generalized_extreme_eigenvalue(stiffness, preconditioner,
-        EPS_LARGEST_REAL, "trunc_eps_max_", eps_tolerance,
-        max_iterations, subspace_dimension, result->lambda_max,
-        result->relative_error_max, result->iterations_max,
-        result->reason_max, maximum_converged));
-    PetscCall(generalized_extreme_eigenvalue(stiffness, preconditioner,
-        EPS_SMALLEST_REAL, "trunc_eps_min_", eps_tolerance,
-        max_iterations, subspace_dimension, result->lambda_min,
-        result->relative_error_min, result->iterations_min,
-        result->reason_min, minimum_converged));
-    result->converged = maximum_converged && minimum_converged &&
-        result->lambda_min > 0.0;
-    if (result->converged)
-        result->condition_number =
-            result->lambda_max / result->lambda_min;
+    GeneralizedConditionResult generalized;
+    PetscCall(compute_generalized_condition_number(stiffness, preconditioner,
+        eps_tolerance, max_iterations, subspace_dimension, &generalized));
+    result->lambda_min = generalized.lambda_min;
+    result->lambda_max = generalized.lambda_max;
+    result->condition_number = generalized.condition_number;
+    result->relative_error_min = generalized.min_eigenpair_error;
+    result->relative_error_max = generalized.max_eigenpair_error;
+    result->min_converged_by_stability =
+        generalized.min_converged_by_stability;
+    result->min_stability_relative_span =
+        generalized.min_stability_relative_span;
+    result->min_stability_residual_limit =
+        generalized.min_stability_residual_limit;
+    result->min_stability_window = generalized.min_stability_window;
+    result->iterations_min = generalized.min_eps_iterations;
+    result->iterations_max = generalized.max_eps_iterations;
+    result->reason_min = generalized.min_convergence_reason;
+    result->reason_max = generalized.max_convergence_reason;
+    result->converged = generalized.converged;
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
