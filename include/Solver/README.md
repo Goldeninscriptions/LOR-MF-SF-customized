@@ -7,6 +7,8 @@ Solver 负责可选线性系统求解、离散解误差和实验编排，不负�
 | `LinearSolver.hpp` | 定义十二个方向/外层/预条件组合方案、内层 `jacobi|gamg`、AMG/Jacobi-only、固定 Jacobi 参数、两层容差及分阶段统计 | 输入 GlobalAssembly 产生的 K、可选 K_LOR、F；返回 PETSc solution Vec |
 | `ErrorAnalysis.hpp` | 声明高阶离散解物理域 L2 误差积分 | MPI 下读取自由系数 halo，并从 Dirichlet lift 恢复受约束系数；各 rank 只积分自己的元素，最后全局归约 |
 | `GeneralizedConditionNumber.hpp` | 声明 MPI 并行的 `EPS_GHEP` 广义谱条件数计算器及极值误差、迭代、原因和计时结果 | 直接消费分布式 SPD 矩阵 A/M；不构造逆、平方根、预条件乘积或稠密矩阵 |
+| `GrevilleMassPC.hpp` | 将 `T^T M_g T` 封装为 CG 可用的 `PCShell`；逐方向执行带状 `T^{-T}`、三对角 `M_g^{-1}`、带状 `T^{-1}` | 保存逐次外层迭代、逐次 PCApply 三阶段时间/线求解数及因子、工作区、算子内存统计；当前单 rank |
+| `DistributedGrevilleMassPC.hpp` | 提供二维 Greville mass 预条件器的两种 MPI 实现：两次全局 pencil transpose，或沿分区方向传递带宽边界的分布式带状求解 | 提供 spline mass 与 `T^T M_g T` 的矩阵自由张量 `MatShell`；可给 EPS/ST 的 KSP 安装精确 tensor-transpose 逆，并统计应用成本 |
 | `ManufacturedSolution.hpp` | header-only 的物理解 `u=1+sum(x_d)+bubble(x)`、解析源项和精确仿射边界系数 | 轴对齐几何使用张量正弦 bubble，曲边基准使用四个边界多项式因子；实验编排用其生成 source、非零 lift 和 L2 exact function |
 | `AssembledLaplaceExperiment.hpp` | 声明完整 assembled 实验编排入口 | 接受最小几何/options；root refinement 后依次调用 Mesh、Assembly 和其他 Solver 模块 |
 

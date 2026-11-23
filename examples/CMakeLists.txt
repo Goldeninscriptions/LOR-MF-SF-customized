@@ -21,9 +21,49 @@ target_link_libraries(case_planner PRIVATE lor_core)
 add_executable(truncated_cholesky_1d_test truncated_cholesky_1d_test.cpp)
 target_link_libraries(truncated_cholesky_1d_test PRIVATE lor_core)
 
+add_executable(greville_mass_preconditioner_test
+  greville_mass_preconditioner_test.cpp)
+target_link_libraries(greville_mass_preconditioner_test PRIVATE lor_petsc)
+
+add_executable(greville_mass_pc_application_test
+  greville_mass_pc_application_test.cpp)
+target_link_libraries(greville_mass_pc_application_test PRIVATE lor_petsc)
+
+add_executable(distributed_greville_mass_benchmark
+  distributed_greville_mass_benchmark.cpp)
+target_link_libraries(distributed_greville_mass_benchmark PRIVATE lor_petsc)
+
 enable_testing()
 add_test(NAME truncated_cholesky_1d COMMAND truncated_cholesky_1d_test)
+add_test(NAME greville_mass_preconditioner
+  COMMAND greville_mass_preconditioner_test)
+add_test(NAME greville_mass_pc_application
+  COMMAND greville_mass_pc_application_test)
 find_program(LOR_MPIEXEC_EXECUTABLE NAMES mpirun mpiexec REQUIRED)
+add_test(NAME distributed_greville_tensor_transpose
+  COMMAND ${LOR_MPIEXEC_EXECUTABLE} -n 2
+          $<TARGET_FILE:distributed_greville_mass_benchmark>
+          -p 3 -n 16 -mode tensor_transpose -rtol 1e-10 -max_it 200)
+add_test(NAME distributed_greville_band
+  COMMAND ${LOR_MPIEXEC_EXECUTABLE} -n 2
+          $<TARGET_FILE:distributed_greville_mass_benchmark>
+          -p 3 -n 16 -mode distributed_band -rtol 1e-10 -max_it 200)
+set_tests_properties(
+  distributed_greville_tensor_transpose distributed_greville_band
+  PROPERTIES TIMEOUT 60)
+add_test(NAME greville_tensor_eps_integration
+  COMMAND ${LOR_MPIEXEC_EXECUTABLE} -n 2 $<TARGET_FILE:assembled_driver>
+          -geometry ${CMAKE_CURRENT_LIST_DIR}/../work/input/square_2d.txt
+          -refinement k_refine -p 3 -n 4,4 -lor_points greville
+          -lor_pc left_cg_lu -preconditioner_side left
+          -preconditioner_matrix_source greville_mass_tensor
+          -compute_solution false -compute_unpreconditioned_solution false
+          -compute_l2_error false -compute_condition_number false
+          -compute_spectral_condition_number true
+          -spectral_condition_target pinv_k -eps_tol 1e-10
+          -eps_max_it 1000 -eps_ncv 20
+          -output ${CMAKE_CURRENT_BINARY_DIR}/greville_tensor_eps_test.log)
+set_tests_properties(greville_tensor_eps_integration PROPERTIES TIMEOUT 60)
 add_test(NAME truncated_tensor_integration
   COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/truncated_tensor_integration_test.sh
           $<TARGET_FILE:assembled_driver> ${LOR_MPIEXEC_EXECUTABLE}

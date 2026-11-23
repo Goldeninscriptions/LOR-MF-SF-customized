@@ -86,6 +86,13 @@ struct TruncatedDirectionResult1D
     double reduced_operator_seconds = 0.0;
 };
 
+// Assemble the exact one-dimensional B-spline consistent mass matrix.  This
+// is also the common reference operator used by alternative mass
+// preconditioners, so they share the same basis evaluation and quadrature as
+// the truncated-Cholesky path.
+SparseMatrix1D assemble_bspline_mass_1d(int degree,
+    const std::vector<double> &knots, bool remove_endpoints = false);
+
 // Assemble one p-degree value mass (with endpoint coefficients removed) and
 // one complete (p-1)-degree derivative-space mass on the endpoint-trimmed
 // knot vector, then factor, truncate, certify, and form D^T M D.

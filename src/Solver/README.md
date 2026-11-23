@@ -5,6 +5,8 @@
 | `LinearSolver.cpp` | 统一 baseline 与十个预条件方案；精确 LOR LU、标准 GMRES+内层 CG、右 FGMRES+内层 CG、右 FGMRES+AMG-only、K-Jacobi、左右 K-GAMG 及左 GMRES+固定 weighted Jacobi 共用统计入口 | 输入为 GlobalAssembly 的 K、可选 K_LOR、F |
 | `ErrorAnalysis.cpp` | 把本 slab 所需的连续 ID 区间 scatter 到局部 halo 向量，从独立 lift 恢复非零边界系数，各 rank 只积分自己的 BSplineIEN 元素，再对误差平方做 MPI sum | 正确处理跨 slab 单元与非齐次 Dirichlet 值，不复制完整全局解 |
 | `GeneralizedConditionNumber.cpp` | 两个独立 Krylov-Schur `EPS_GHEP` 均作用 `M^{-1}A`，分别求最大/最小实特征值；最小值使用“标准残差优先，长窗口 Ritz 相对跨度 + 残差安全上限兜底”的复合判据 | 使用 `eigmax_`/`eigmin_` 前缀将 EPS、ST、KSP 和 PC 全部开放给运行时配置；稳定性参数为 `eigmin_eps_stability_*` |
+| `GrevilleMassPC.cpp` | 把逐方向 Greville 配点带状 LU 与 P1 mass 三对角 Cholesky 组合成 `T^{-1}M_g^{-1}T^{-T}` PCShell | 单 rank 张量线求解；记录每次 apply 的三阶段时间/线数、外层 CG 历史和内存，拒绝用全量 gather 伪装 MPI 扩展 |
+| `DistributedGrevilleMassPC.cpp` | 实现二维并行 `T^{-1}M_g^{-1}T^{-T}`：transpose 路线每次 PCApply 做两次 `MPI_Alltoallv`；band 路线用六次相邻 rank 前/后向流水传递完成三个分布式一维因子求解 | 同时实现矩阵自由 `M_s`/`T^TM_gT` 张量乘法和 EPS/ST 的精确 PCShell；齐次 Dirichlet 路径使用端点裁剪的一维因子 |
 | `AssembledLaplaceExperiment.cpp` | root-only 构造/细化并广播 Patch，随后编排边界、LOR、MPI 分区和组装；按三个独立开关调用两次求解、L2 与 GlobalAssembly 条件数入口 | 关闭功能时不构造其荷载、解向量、误差表或谱对象 |
 
 `include/Solver/ManufacturedSolution.hpp` 是 header-only：它定义

@@ -214,7 +214,9 @@ PetscErrorCode validate_compatible_matrices(Mat A, Mat M)
 
 PetscErrorCode solve_extreme(Mat A, Mat M, const Extreme extreme,
     const PetscReal tolerance, const PetscInt max_iterations,
-    const PetscInt requested_subspace_dimension, ExtremeResult *result)
+    const PetscInt requested_subspace_dimension, ExtremeResult *result,
+    const GeneralizedConditionKSPConfigurator configure_ksp,
+    void *configure_ksp_context)
 {
     PetscFunctionBeginUser;
     const MPI_Comm comm = PetscObjectComm(reinterpret_cast<PetscObject>(A));
@@ -251,6 +253,12 @@ PetscErrorCode solve_extreme(Mat A, Mat M, const Extreme extreme,
     // This call follows all programmatic defaults so every EPS/ST/KSP/PC
     // choice above can be independently overridden through the prefix.
     PetscCall(EPSSetFromOptions(eps));
+    if (M != nullptr && configure_ksp != nullptr)
+    {
+        KSP ksp = nullptr;
+        PetscCall(STGetKSP(st, &ksp));
+        PetscCall(configure_ksp(ksp, configure_ksp_context));
+    }
 
     StabilityConvergenceContext stability;
     PetscBool stability_enabled =
@@ -355,7 +363,9 @@ PetscErrorCode solve_extreme(Mat A, Mat M, const Extreme extreme,
 
 PetscErrorCode compute_generalized_condition_number(Mat A, Mat M,
     const PetscReal eps_tolerance, const PetscInt max_iterations,
-    const PetscInt subspace_dimension, GeneralizedConditionResult *result)
+    const PetscInt subspace_dimension, GeneralizedConditionResult *result,
+    const GeneralizedConditionKSPConfigurator configure_ksp,
+    void *configure_ksp_context)
 {
     PetscFunctionBeginUser;
     PetscCheck(A != nullptr, PETSC_COMM_SELF, PETSC_ERR_ARG_NULL,
@@ -380,9 +390,11 @@ PetscErrorCode compute_generalized_condition_number(Mat A, Mat M,
     ExtremeResult maximum;
     ExtremeResult minimum;
     PetscCall(solve_extreme(A, M, Extreme::maximum, eps_tolerance,
-        max_iterations, subspace_dimension, &maximum));
+        max_iterations, subspace_dimension, &maximum,
+        configure_ksp, configure_ksp_context));
     PetscCall(solve_extreme(A, M, Extreme::minimum, eps_tolerance,
-        max_iterations, subspace_dimension, &minimum));
+        max_iterations, subspace_dimension, &minimum,
+        configure_ksp, configure_ksp_context));
     PetscCall(PetscTime(&local_total_end));
     const PetscLogDouble local_total_time =
         local_total_end - local_total_start;

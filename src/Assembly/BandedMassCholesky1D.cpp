@@ -467,6 +467,12 @@ SparseMatrix1D direct_stiffness(const int degree,
 
 } // namespace
 
+SparseMatrix1D assemble_bspline_mass_1d(const int degree,
+    const std::vector<double> &knots, const bool remove_endpoints)
+{
+    return band_to_sparse(assemble_mass(degree, knots, remove_endpoints));
+}
+
 SymmetricBandMatrix1D::SymmetricBandMatrix1D(
     const int size, const int half_bandwidth)
     : size_(size), half_bandwidth_(half_bandwidth),

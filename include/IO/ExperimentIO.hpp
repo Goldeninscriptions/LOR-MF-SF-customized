@@ -15,7 +15,8 @@ namespace lor
 enum class PreconditionerMatrixSource
 {
     lor_q1,
-    truncated_cholesky_tensor
+    truncated_cholesky_tensor,
+    greville_mass_tensor
 };
 
 enum class SpectralConditionTarget

@@ -15,6 +15,7 @@
 #include "Assembly/GlobalAssembly.hpp"
 #include "Assembly/LexicographicOrdering.hpp"
 #include "Assembly/TruncatedCholeskyTensor.hpp"
+#include "Assembly/GrevilleMassPreconditioner.hpp"
 #include "Element/GaussQuadrature.hpp"
 #include "IO/PatchInput.hpp"
 #include "Mesh/DistributedPatch.hpp"
@@ -26,6 +27,7 @@
 #include "Mesh/TensorSlabPartition.hpp"
 #include "Solver/ErrorAnalysis.hpp"
 #include "Solver/GeneralizedConditionNumber.hpp"
+#include "Solver/DistributedGrevilleMassPC.hpp"
 #include "Solver/LinearSolver.hpp"
 #include "Solver/ManufacturedSolution.hpp"
 
@@ -220,17 +222,16 @@ PetscErrorCode run_assembled_laplace_experiment(
         partition->lor_assembly_cell_end()));
     PetscCall(PetscSynchronizedFlush(comm, PETSC_STDOUT));
 
-    // A pure Q1-LOR P spectrum does not consume K. Skipping K in that narrow
-    // mode prevents the dense high-order matrix from competing with EPS
-    // storage. Truncated-tensor P still requires K during its construction.
-    const bool pure_lor_p_spectrum =
+    // A pure Q1-LOR or matrix-free Greville P spectrum does not consume K.
+    // Truncated-tensor P still requires K during its construction.
+    const bool pure_independent_p_spectrum =
         options.compute_spectral_condition_number &&
         options.spectral_condition_target ==
             SpectralConditionTarget::preconditioner &&
         !options.compute_solution && !options.compute_condition_number &&
-        options.preconditioner_matrix_source ==
-            PreconditionerMatrixSource::lor_q1;
-    const bool assemble_high_matrix = !pure_lor_p_spectrum;
+        options.preconditioner_matrix_source !=
+            PreconditionerMatrixSource::truncated_cholesky_tensor;
+    const bool assemble_high_matrix = !pure_independent_p_spectrum;
 
     // Assemble the high-order stiffness whenever a requested feature consumes
     // it. Fuse load into the traversal only for the two linear solves.
@@ -288,6 +289,35 @@ PetscErrorCode run_assembled_laplace_experiment(
             options.trunc_chol_boundary_protection,
             options.trunc_chol_max_memory_bytes, &truncated_tensor));
     }
+    std::array<GrevilleMassPreconditioner1D, 2> greville_directions;
+    Mat greville_preconditioner = nullptr;
+    DistributedGrevillePCConfiguration2D greville_configuration;
+    if (uses_preconditioner_matrix &&
+        options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::greville_mass_tensor)
+    {
+        PetscCheck(Dim == 2, comm, PETSC_ERR_SUP,
+            "greville_mass_tensor currently supports only 2D");
+        try
+        {
+            for (int direction = 0; direction < 2; ++direction)
+                greville_directions[direction] =
+                    restrict_greville_mass_preconditioner_endpoints(
+                        build_greville_mass_preconditioner_1d(
+                            patch.degree(direction), patch.knots(direction)));
+        }
+        catch (const std::exception &error)
+        {
+            SETERRQ(comm, PETSC_ERR_ARG_WRONG, "%s", error.what());
+        }
+        PetscCall(create_distributed_tensor_greville_preconditioner_2d(
+            comm, greville_directions[0], greville_directions[1],
+            &greville_preconditioner));
+        greville_configuration.x_direction = &greville_directions[0];
+        greville_configuration.y_direction = &greville_directions[1];
+        greville_configuration.mode =
+            DistributedGrevillePCMode::tensor_transpose;
+    }
     PetscLogDouble preconditioner_construction_time = 0.0;
     if (uses_preconditioner_matrix)
     {
@@ -300,8 +330,15 @@ PetscErrorCode run_assembled_laplace_experiment(
             &preconditioner_construction_time, 1, MPI_DOUBLE, MPI_MAX,
             comm));
     }
-    Mat preconditioner_matrix = uses_lor_matrix ? lor_stiffness.matrix :
-        truncated_tensor.preconditioner.matrix;
+    Mat preconditioner_matrix = nullptr;
+    if (uses_lor_matrix)
+        preconditioner_matrix = lor_stiffness.matrix;
+    else if (options.preconditioner_matrix_source ==
+        PreconditionerMatrixSource::truncated_cholesky_tensor)
+        preconditioner_matrix = truncated_tensor.preconditioner.matrix;
+    else if (options.preconditioner_matrix_source ==
+        PreconditionerMatrixSource::greville_mass_tensor)
+        preconditioner_matrix = greville_preconditioner;
 
     // Test/debug-only PETSc viewers.  They are inert unless their explicit
     // options are supplied and let the integration test form an independent
@@ -411,10 +448,24 @@ PetscErrorCode run_assembled_laplace_experiment(
         }
         PetscCheck(spectral_A != nullptr, comm, PETSC_ERR_ARG_NULL,
             "Selected EPS spectral target matrix was not assembled");
-        PetscCall(compute_generalized_condition_number(
-            spectral_A, spectral_M,
-            options.eps_tolerance, options.eps_max_iterations,
-            options.eps_subspace_dimension, &spectral_condition));
+        const bool greville_source =
+            options.preconditioner_matrix_source ==
+                PreconditionerMatrixSource::greville_mass_tensor;
+        if (greville_source && options.spectral_condition_target ==
+            SpectralConditionTarget::preconditioner)
+            PetscCall(compute_tensor_greville_preconditioner_condition_2d(
+                comm, greville_directions[0], greville_directions[1],
+                options.eps_tolerance, options.eps_max_iterations,
+                options.eps_subspace_dimension, &spectral_condition));
+        else
+            PetscCall(compute_generalized_condition_number(
+                spectral_A, spectral_M,
+                options.eps_tolerance, options.eps_max_iterations,
+                options.eps_subspace_dimension, &spectral_condition,
+                greville_source && spectral_M != nullptr ?
+                    configure_distributed_greville_pc_2d : nullptr,
+                greville_source && spectral_M != nullptr ?
+                    &greville_configuration : nullptr));
         spectral_eps_time = spectral_condition.total_time;
     }
 
@@ -452,7 +503,9 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.memory_bytes_K = high_stiffness.memory_bytes;
     results.estimated_minimum_bytes_K =
         high_stiffness.estimated_minimum_bytes;
-    if (uses_preconditioner_matrix)
+    if (uses_preconditioner_matrix &&
+        options.preconditioner_matrix_source !=
+            PreconditionerMatrixSource::greville_mass_tensor)
     {
         const GlobalMatrixAssemblyResult &selected_preconditioner =
             uses_lor_matrix ? lor_stiffness :
@@ -730,7 +783,11 @@ PetscErrorCode run_assembled_laplace_experiment(
         else
             PetscCall(PetscPrintf(comm,
                 "  K storage: not assembled for P-only EPS mode\n"));
-        if (uses_preconditioner_matrix)
+        if (options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::greville_mass_tensor)
+            PetscCall(PetscPrintf(comm,
+                "  P storage: matrix-free Greville tensor MatShell\n"));
+        else if (uses_preconditioner_matrix)
             PetscCall(PetscPrintf(comm,
                 "  P storage: predicted_nnz=%" PetscInt_FMT
                 ", used_nnz=%.0f, allocated_nnz=%.0f, mallocs=%.0f, "
@@ -915,6 +972,7 @@ PetscErrorCode run_assembled_laplace_experiment(
     // Release all PETSc-owned result objects after output and post-processing.
     PetscCall(destroy_linear_solve_result(&preconditioned_solve));
     PetscCall(destroy_linear_solve_result(&original_solve));
+    PetscCall(MatDestroy(&greville_preconditioner));
     PetscCall(destroy_global_matrix(&truncated_tensor.preconditioner));
     PetscCall(destroy_global_matrix(&lor_stiffness));
     PetscCall(destroy_global_vector(&high_load));

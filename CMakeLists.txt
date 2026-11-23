@@ -43,6 +43,7 @@ add_library(lor_core
   src/Assembly/DirichletBC.cpp
   src/Assembly/LocalAssembly.cpp
   src/Assembly/BandedMassCholesky1D.cpp
+  src/Assembly/GrevilleMassPreconditioner.cpp
 )
 
 target_include_directories(lor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -61,6 +62,8 @@ add_library(lor_petsc
   src/Assembly/GlobalAssembly.cpp
   src/Assembly/TruncatedCholeskyTensor.cpp
   src/Solver/GeneralizedConditionNumber.cpp
+  src/Solver/GrevilleMassPC.cpp
+  src/Solver/DistributedGrevilleMassPC.cpp
 )
 target_include_directories(lor_petsc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(lor_petsc PUBLIC cxx_std_17)

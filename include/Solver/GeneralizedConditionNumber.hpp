@@ -1,11 +1,14 @@
 #ifndef LOR_SOLVER_GENERALIZED_CONDITION_NUMBER_HPP
 #define LOR_SOLVER_GENERALIZED_CONDITION_NUMBER_HPP
 
-#include <petscmat.h>
+#include <petscksp.h>
 #include <petscsys.h>
 
 namespace lor
 {
+
+using GeneralizedConditionKSPConfigurator =
+    PetscErrorCode (*)(KSP ksp, void *context);
 
 // Results for the generalized Hermitian-definite problem
 //
@@ -59,7 +62,9 @@ struct GeneralizedConditionResult
 // Standard residual convergence always remains active and takes precedence.
 PetscErrorCode compute_generalized_condition_number(Mat A, Mat M,
     PetscReal eps_tolerance, PetscInt max_iterations,
-    PetscInt subspace_dimension, GeneralizedConditionResult *result);
+    PetscInt subspace_dimension, GeneralizedConditionResult *result,
+    GeneralizedConditionKSPConfigurator configure_ksp = nullptr,
+    void *configure_ksp_context = nullptr);
 
 } // namespace lor
 

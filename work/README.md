@@ -16,6 +16,9 @@
 | `run_batch_curved_quadrilateral_2d.sh` | 双三次曲边 Patch 批处理入口 | 与二维矩形采用相同 p/n sweep 和功能默认值；默认完成求解与 L2 |
 | `run_batch_common.sh` | 三个入口共享的执行器 | 统一参数验证、逐 case rank 规划、运行、日志和 TSV summary；不直接运行 |
 | `run_inner_tolerance_sweep_square_2d.sh` | 固定二维 case 的内层 CG 精度扫描 | 默认扫描 `inner_rtol={1e-10,1e-6,1e-4,1e-3,1e-2}`，汇总内外迭代、时间、真实残差和 L2 误差 |
+| `run_eps_greville_condition_2d.sh` | 单个二维 Greville tensor EPS 条件数案例 | 只接受 `p` 或 `pinv_k`；矩阵自由构造 `P=T^T M_g T`，广义 EPS 用 `tensor_transpose` 精确应用 `P^{-1}` |
+| `run_eps_greville_condition_batch_2d.sh` | 新预条件子的顺序条件数批次 | `p=3..7,n=4..1024`，每例依次运行 `P` 与 `P^{-1}K`，支持断点续跑且不重算已有 `K` |
+| `make_greville_condition_number_excel.py` | 合并新旧条件数结果 | 从旧 summary 只读取 `K`，从新 summary 读取 `P_G/P_G^{-1}K`，生成三列一组的 Excel |
 | `run_trunc_chol_gamg_tuning_2d.sh` | truncated-Cholesky + 左 GMRES + 内层 CG/GAMG 的四阶段调优 | 依次扫描内层 rtol、GAMG threshold、V-cycle level smoother 步数，再做 p/n 可迁移性扫描；默认只 dry-run |
 | `run_trunc_chol_gamg_rtol_p8_n1024_2d.sh` | `p=8,n=1024x1024` 的专用内层 rtol 扫描入口 | 复用四阶段调优器、使用独立 RUN_ID、默认只 dry-run，支持断点续跑 |
 | `run_trunc_chol_fgmres_gamg_diagnostic_p8_n1024_2d.sh` | `p=8,n=1024x1024` 的右 FGMRES + 内层 CG/GAMG 诊断扫描 | 固定 `k=4,bp=true`、更严格的内外层绝对容差，并扫描 `inner_rtol=1e-8..1e-3`；默认只 dry-run |
@@ -78,6 +81,18 @@ COMPUTE_SPECTRAL_CONDITION_NUMBER=true EPS_TOL=1e-8 EPS_NCV=100 \
 默认分别使用 56 和 8 个 MPI rank，可用 `MPI_RANKS` 覆盖。两个脚本的最大、最小
 特征值求解均对 `M^{-1}A` 使用紧容差 CG+PETSc GAMG；末尾附加的参数
 会原样传给 driver，可覆盖任意 `eigmax_`/`eigmin_` 选项。
+
+Greville tensor 新预条件子的完整二维条件数批次使用：
+
+```bash
+MAX_MPI_RANKS=56 ./work/run_eps_greville_condition_batch_2d.sh
+python3 ./work/make_greville_condition_number_excel.py
+```
+
+该批次保留 UCX 原生传输选择，严格等待一个 `mpirun` 退出后再启动下一个。默认
+`RESUME=true`；失败后再次执行会跳过已经收敛的结果。`DEGREES_LIST`、`SIZES_LIST`
+和 `TARGETS_LIST` 可用于局部重跑，例如只测试
+`DEGREES_LIST=7 SIZES_LIST=1024 TARGETS_LIST=pinv_k`。
 
 最小特征值默认还启用受残差保护的长期稳定性判据。只有在至少 300
 次迭代后，最近 100 个有效 Ritz 更新（通常覆盖至少 100 次外层迭代）的

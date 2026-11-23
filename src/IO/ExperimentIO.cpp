@@ -41,16 +41,26 @@ PreconditionerMatrixSource parse_preconditioner_matrix_source(
         return PreconditionerMatrixSource::lor_q1;
     if (name == "truncated_cholesky_tensor")
         return PreconditionerMatrixSource::truncated_cholesky_tensor;
+    if (name == "greville_mass_tensor")
+        return PreconditionerMatrixSource::greville_mass_tensor;
     throw std::invalid_argument(
-        "-preconditioner_matrix_source must be lor_q1 or "
-        "truncated_cholesky_tensor");
+        "-preconditioner_matrix_source must be lor_q1, "
+        "truncated_cholesky_tensor, or greville_mass_tensor");
 }
 
 const char *preconditioner_matrix_source_name(
     const PreconditionerMatrixSource source) noexcept
 {
-    return source == PreconditionerMatrixSource::lor_q1 ?
-        "lor_q1" : "truncated_cholesky_tensor";
+    switch (source)
+    {
+    case PreconditionerMatrixSource::lor_q1:
+        return "lor_q1";
+    case PreconditionerMatrixSource::truncated_cholesky_tensor:
+        return "truncated_cholesky_tensor";
+    case PreconditionerMatrixSource::greville_mass_tensor:
+        return "greville_mass_tensor";
+    }
+    return "unknown";
 }
 
 SpectralConditionTarget parse_spectral_condition_target(
@@ -251,6 +261,23 @@ ExperimentOptions read_experiment_options(const int dimension)
         throw std::invalid_argument(
             "-preconditioner_matrix_source truncated_cholesky_tensor conflicts "
             "with a direct K-Jacobi/K-GAMG lor_pc mode");
+    if (options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::greville_mass_tensor &&
+        uses_direct_k)
+        throw std::invalid_argument(
+            "-preconditioner_matrix_source greville_mass_tensor conflicts "
+            "with a direct K-Jacobi/K-GAMG lor_pc mode");
+    if (options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::greville_mass_tensor &&
+        dimension != 2)
+        throw std::invalid_argument(
+            "greville_mass_tensor currently supports only 2D");
+    if (options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::greville_mass_tensor &&
+        (options.compute_solution || options.compute_condition_number))
+        throw std::invalid_argument(
+            "greville_mass_tensor is currently an EPS-only matrix-free "
+            "source; disable solution and SVD condition computations");
     if (uses_direct_k && options.compute_spectral_condition_number &&
         options.spectral_condition_target !=
             SpectralConditionTarget::stiffness)
