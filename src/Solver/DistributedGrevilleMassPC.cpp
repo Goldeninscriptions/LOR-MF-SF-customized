@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 
@@ -326,10 +327,15 @@ struct TensorMassContext
 {
     const SparseMatrix1D *x_mass = nullptr;
     const SparseMatrix1D *y_mass = nullptr;
+    const SparseMatrix1D *x_second = nullptr;
+    const SparseMatrix1D *y_second = nullptr;
+    double first_weight = 1.0;
+    double second_weight = 1.0;
     TransposePlan plan;
     std::vector<double> original;
     std::vector<double> work;
     std::vector<double> transposed_work;
+    std::vector<double> accumulated;
     PetscLogDouble apply_seconds = 0.0;
     PetscInt applications = 0;
 };
@@ -347,15 +353,33 @@ PetscErrorCode tensor_mass_mult(Mat matrix, Vec input, Vec output)
     for (std::size_t index = 0; index < context->original.size(); ++index)
         context->original[index] = PetscRealPart(source[index]);
     PetscCall(VecRestoreArrayRead(input, &source));
-    // Complete x lines are local in the original y-slab distribution.
-    apply_sparse_lines(*context->x_mass, context->plan.y.local_count, 1,
-        context->original.data(), context->work.data());
     PetscLogDouble ignored_communication = 0.0;
-    transpose_forward(context->plan, context->work, ignored_communication);
-    apply_sparse_lines(*context->y_mass, context->plan.x.local_count, 1,
-        context->plan.transposed.data(), context->transposed_work.data());
-    context->plan.transposed.swap(context->transposed_work);
-    transpose_backward(context->plan, context->work, ignored_communication);
+    const auto apply_product = [&](const SparseMatrix1D &x_factor,
+                                   const SparseMatrix1D &y_factor) {
+        // Complete x lines are local in the original y-slab distribution.
+        apply_sparse_lines(x_factor, context->plan.y.local_count, 1,
+            context->original.data(), context->work.data());
+        transpose_forward(context->plan, context->work,
+            ignored_communication);
+        apply_sparse_lines(y_factor, context->plan.x.local_count, 1,
+            context->plan.transposed.data(),
+            context->transposed_work.data());
+        context->plan.transposed.swap(context->transposed_work);
+        transpose_backward(context->plan, context->work,
+            ignored_communication);
+    };
+    apply_product(*context->x_mass, *context->y_mass);
+    if (context->first_weight != 1.0)
+        for (double &value : context->work)
+            value *= context->first_weight;
+    if (context->x_second != nullptr && context->y_second != nullptr)
+    {
+        context->accumulated = context->work;
+        apply_product(*context->x_second, *context->y_second);
+        for (std::size_t index = 0; index < context->work.size(); ++index)
+            context->work[index] = context->second_weight *
+                context->work[index] + context->accumulated[index];
+    }
     PetscScalar *destination = nullptr;
     PetscCall(VecGetArray(output, &destination));
     for (std::size_t index = 0; index < context->work.size(); ++index)
@@ -812,8 +836,11 @@ namespace
 {
 
 PetscErrorCode create_distributed_tensor_product_2d(const MPI_Comm comm,
-    const SparseMatrix1D &x_factor, const SparseMatrix1D &y_factor,
-    Mat *matrix)
+    const SparseMatrix1D &x_factor, const SparseMatrix1D &y_factor, Mat *matrix,
+    const SparseMatrix1D *x_second = nullptr,
+    const SparseMatrix1D *y_second = nullptr,
+    const double first_weight = 1.0,
+    const double second_weight = 1.0)
 {
     PetscFunctionBeginUser;
     PetscCheck(matrix != nullptr, comm, PETSC_ERR_ARG_NULL,
@@ -821,6 +848,10 @@ PetscErrorCode create_distributed_tensor_product_2d(const MPI_Comm comm,
     auto *context = new TensorMassContext();
     context->x_mass = &x_factor;
     context->y_mass = &y_factor;
+    context->x_second = x_second;
+    context->y_second = y_second;
+    context->first_weight = first_weight;
+    context->second_weight = second_weight;
     context->plan = make_transpose_plan(
         comm, x_factor.size(), y_factor.size());
     const PetscInt local_size = static_cast<PetscInt>(
@@ -830,6 +861,8 @@ PetscErrorCode create_distributed_tensor_product_2d(const MPI_Comm comm,
     context->original.resize(local_size);
     context->work.resize(local_size);
     context->transposed_work.resize(context->plan.transposed.size());
+    if (x_second != nullptr && y_second != nullptr)
+        context->accumulated.resize(local_size);
     PetscCall(MatCreateShell(comm, local_size, local_size,
         global_size, global_size, context, matrix));
     PetscCall(MatShellSetOperation(*matrix, MATOP_MULT,
@@ -912,6 +945,38 @@ PetscErrorCode create_distributed_tensor_greville_preconditioner_2d(
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+PetscErrorCode create_distributed_tensor_spline_stiffness_2d(
+    const MPI_Comm comm,
+    const GrevilleMassPreconditioner1D &x_direction,
+    const GrevilleMassPreconditioner1D &y_direction, Mat *matrix,
+    const double x_derivative_weight,
+    const double y_derivative_weight)
+{
+    PetscFunctionBeginUser;
+    PetscCall(create_distributed_tensor_product_2d(comm,
+        x_direction.spline_stiffness, y_direction.spline_mass, matrix,
+        &x_direction.spline_mass, &y_direction.spline_stiffness,
+        x_derivative_weight, y_derivative_weight));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+PetscErrorCode create_distributed_tensor_greville_stiffness_2d(
+    const MPI_Comm comm,
+    const GrevilleMassPreconditioner1D &x_direction,
+    const GrevilleMassPreconditioner1D &y_direction, Mat *matrix,
+    const double x_derivative_weight,
+    const double y_derivative_weight)
+{
+    PetscFunctionBeginUser;
+    PetscCall(create_distributed_tensor_product_2d(comm,
+        x_direction.transformed_stiffness,
+        y_direction.transformed_mass, matrix,
+        &x_direction.transformed_mass,
+        &y_direction.transformed_stiffness,
+        x_derivative_weight, y_derivative_weight));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 PetscErrorCode configure_distributed_greville_pc_2d(
     KSP ksp, void *raw_configuration)
 {
@@ -942,6 +1007,221 @@ PetscErrorCode configure_distributed_greville_pc_2d(
     PetscCall(PCShellSetDestroy(pc, destroy_parallel_pc));
     PetscCall(PCShellSetName(pc,
         distributed_greville_pc_mode_name(configuration->mode)));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+namespace
+{
+
+struct StiffnessPCContext
+{
+    BandLU Tx;
+    BandLU Ty;
+    TransposePlan plan;
+    std::vector<double> values;
+    Mat low_stiffness = nullptr;
+    KSP low_solver = nullptr;
+    Vec low_rhs = nullptr;
+    Vec low_solution = nullptr;
+};
+
+PetscErrorCode create_low_tensor_stiffness(
+    const GrevilleMassPreconditioner1D &x_direction,
+    const GrevilleMassPreconditioner1D &y_direction,
+    const TransposePlan &plan, const double x_derivative_weight,
+    const double y_derivative_weight, Mat *matrix)
+{
+    PetscFunctionBeginUser;
+    const MPI_Comm comm = plan.comm;
+    const PetscInt local_size = static_cast<PetscInt>(plan.y.local_count) *
+        plan.nx;
+    const PetscInt global_size = static_cast<PetscInt>(plan.nx) * plan.ny;
+    PetscCall(MatCreateAIJ(comm, local_size, local_size,
+        global_size, global_size, 9, nullptr, 9, nullptr, matrix));
+    for (int local_y = 0; local_y < plan.y.local_count; ++local_y)
+    {
+        const int y = plan.y.local_offset + local_y;
+        for (int x = 0; x < plan.nx; ++x)
+        {
+            std::map<PetscInt, PetscScalar> entries;
+            for (const auto &y_entry : y_direction.greville_mass.rows[y])
+                for (const auto &x_entry :
+                     x_direction.greville_stiffness.rows[x])
+                    entries[static_cast<PetscInt>(y_entry.first) * plan.nx +
+                        x_entry.first] += x_derivative_weight *
+                            y_entry.second * x_entry.second;
+            for (const auto &y_entry :
+                 y_direction.greville_stiffness.rows[y])
+                for (const auto &x_entry : x_direction.greville_mass.rows[x])
+                    entries[static_cast<PetscInt>(y_entry.first) * plan.nx +
+                        x_entry.first] += y_derivative_weight *
+                            y_entry.second * x_entry.second;
+            const PetscInt row = static_cast<PetscInt>(y) * plan.nx + x;
+            for (const auto &entry : entries)
+                if (entry.second != 0.0)
+                    PetscCall(MatSetValue(*matrix, row, entry.first,
+                        entry.second, INSERT_VALUES));
+        }
+    }
+    PetscCall(MatAssemblyBegin(*matrix, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyEnd(*matrix, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatSetOption(*matrix, MAT_SYMMETRIC, PETSC_TRUE));
+    PetscCall(MatSetOption(*matrix, MAT_SPD, PETSC_TRUE));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+void apply_inverse_tensor_transform(StiffnessPCContext &context,
+    const bool transpose)
+{
+    for (int local_y = 0; local_y < context.plan.y.local_count; ++local_y)
+    {
+        double *line = context.values.data() +
+            static_cast<std::size_t>(local_y) * context.plan.nx;
+        if (transpose)
+            solve_T_transpose(context.Tx, line);
+        else
+            solve_T(context.Tx, line);
+    }
+    PetscLogDouble ignored_communication = 0.0;
+    transpose_forward(context.plan, context.values, ignored_communication);
+    for (int local_x = 0; local_x < context.plan.x.local_count; ++local_x)
+    {
+        double *line = context.plan.transposed.data() +
+            static_cast<std::size_t>(local_x) * context.plan.ny;
+        if (transpose)
+            solve_T_transpose(context.Ty, line);
+        else
+            solve_T(context.Ty, line);
+    }
+    transpose_backward(context.plan, context.values,
+        ignored_communication);
+}
+
+PetscErrorCode apply_stiffness_pc(PC pc, Vec input, Vec output)
+{
+    PetscFunctionBeginUser;
+    StiffnessPCContext *context = nullptr;
+    PetscCall(PCShellGetContext(pc, &context));
+    const PetscScalar *source = nullptr;
+    PetscCall(VecGetArrayRead(input, &source));
+    for (std::size_t index = 0; index < context->values.size(); ++index)
+        context->values[index] = PetscRealPart(source[index]);
+    PetscCall(VecRestoreArrayRead(input, &source));
+
+    apply_inverse_tensor_transform(*context, true);
+    PetscScalar *rhs = nullptr;
+    PetscCall(VecGetArray(context->low_rhs, &rhs));
+    for (std::size_t index = 0; index < context->values.size(); ++index)
+        rhs[index] = context->values[index];
+    PetscCall(VecRestoreArray(context->low_rhs, &rhs));
+    PetscCall(VecSet(context->low_solution, 0.0));
+    PetscCall(KSPSolve(context->low_solver,
+        context->low_rhs, context->low_solution));
+    KSPConvergedReason reason = KSP_CONVERGED_ITERATING;
+    PetscCall(KSPGetConvergedReason(context->low_solver, &reason));
+    PetscCheck(reason > 0, PetscObjectComm(
+        reinterpret_cast<PetscObject>(pc)), PETSC_ERR_NOT_CONVERGED,
+        "Nested Greville stiffness solve did not converge (reason=%d)",
+        static_cast<int>(reason));
+    const PetscScalar *solution = nullptr;
+    PetscCall(VecGetArrayRead(context->low_solution, &solution));
+    for (std::size_t index = 0; index < context->values.size(); ++index)
+        context->values[index] = PetscRealPart(solution[index]);
+    PetscCall(VecRestoreArrayRead(context->low_solution, &solution));
+    apply_inverse_tensor_transform(*context, false);
+
+    PetscScalar *destination = nullptr;
+    PetscCall(VecGetArray(output, &destination));
+    for (std::size_t index = 0; index < context->values.size(); ++index)
+        destination[index] = context->values[index];
+    PetscCall(VecRestoreArray(output, &destination));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+PetscErrorCode destroy_stiffness_pc(PC pc)
+{
+    PetscFunctionBeginUser;
+    StiffnessPCContext *context = nullptr;
+    PetscCall(PCShellGetContext(pc, &context));
+    if (context != nullptr)
+    {
+        PetscCall(VecDestroy(&context->low_rhs));
+        PetscCall(VecDestroy(&context->low_solution));
+        PetscCall(KSPDestroy(&context->low_solver));
+        PetscCall(MatDestroy(&context->low_stiffness));
+        delete context;
+    }
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+} // namespace
+
+PetscErrorCode configure_distributed_greville_stiffness_pc_2d(
+    KSP ksp, void *raw_configuration)
+{
+    PetscFunctionBeginUser;
+    PetscCheck(ksp != nullptr, PETSC_COMM_SELF, PETSC_ERR_ARG_NULL,
+        "KSP must not be null");
+    const MPI_Comm comm = PetscObjectComm(reinterpret_cast<PetscObject>(ksp));
+    auto *configuration = static_cast<DistributedGrevillePCConfiguration2D *>(
+        raw_configuration);
+    PetscCheck(configuration != nullptr &&
+        configuration->x_direction != nullptr &&
+        configuration->y_direction != nullptr,
+        comm, PETSC_ERR_ARG_NULL,
+        "Distributed Greville stiffness configuration is incomplete");
+    auto *context = new StiffnessPCContext();
+    try
+    {
+        context->Tx = factor_collocation(
+            configuration->x_direction->collocation);
+        context->Ty = factor_collocation(
+            configuration->y_direction->collocation);
+        context->plan = make_transpose_plan(comm,
+            configuration->x_direction->collocation.size(),
+            configuration->y_direction->collocation.size());
+        if (context->plan.x.local_count == 0 ||
+            context->plan.y.local_count == 0)
+            throw std::invalid_argument(
+                "MPI ranks must not exceed either tensor direction size");
+        context->values.resize(static_cast<std::size_t>(
+            context->plan.y.local_count) * context->plan.nx);
+    }
+    catch (const std::exception &error)
+    {
+        delete context;
+        SETERRQ(comm, PETSC_ERR_ARG_WRONG, "%s", error.what());
+    }
+    PetscCall(create_low_tensor_stiffness(
+        *configuration->x_direction, *configuration->y_direction,
+        context->plan, configuration->stiffness_x_weight,
+        configuration->stiffness_y_weight, &context->low_stiffness));
+    PetscCall(MatCreateVecs(context->low_stiffness,
+        &context->low_solution, &context->low_rhs));
+    PetscCall(KSPCreate(comm, &context->low_solver));
+    PetscCall(KSPSetOptionsPrefix(context->low_solver,
+        "greville_stiffness_inner_"));
+    PetscCall(KSPSetOperators(context->low_solver,
+        context->low_stiffness, context->low_stiffness));
+    PetscCall(KSPSetType(context->low_solver, KSPCG));
+    PetscCall(KSPSetTolerances(context->low_solver,
+        1.0e-12, 1.0e-14, 1.0e4, 5000));
+    PetscCall(KSPSetErrorIfNotConverged(context->low_solver, PETSC_TRUE));
+    PC inner_pc = nullptr;
+    PetscCall(KSPGetPC(context->low_solver, &inner_pc));
+    PetscCall(PCSetType(inner_pc, PCGAMG));
+    PetscCall(KSPSetFromOptions(context->low_solver));
+    PetscCall(KSPSetUp(context->low_solver));
+
+    PetscCall(KSPSetType(ksp, KSPPREONLY));
+    PetscCall(KSPSetErrorIfNotConverged(ksp, PETSC_TRUE));
+    PC pc = nullptr;
+    PetscCall(KSPGetPC(ksp, &pc));
+    PetscCall(PCSetType(pc, PCSHELL));
+    PetscCall(PCShellSetContext(pc, context));
+    PetscCall(PCShellSetApply(pc, apply_stiffness_pc));
+    PetscCall(PCShellSetDestroy(pc, destroy_stiffness_pc));
+    PetscCall(PCShellSetName(pc, "greville_stiffness_tensor"));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 

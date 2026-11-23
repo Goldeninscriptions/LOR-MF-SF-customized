@@ -37,6 +37,10 @@ add_executable(distributed_greville_mass_benchmark
   distributed_greville_mass_benchmark.cpp)
 target_link_libraries(distributed_greville_mass_benchmark PRIVATE lor_petsc)
 
+add_executable(greville_tensor_condition_driver
+  greville_tensor_condition_driver.cpp)
+target_link_libraries(greville_tensor_condition_driver PRIVATE lor_petsc)
+
 enable_testing()
 add_test(NAME truncated_cholesky_1d COMMAND truncated_cholesky_1d_test)
 add_test(NAME greville_mass_preconditioner
@@ -56,6 +60,38 @@ add_test(NAME distributed_greville_band
           -p 3 -n 16 -mode distributed_band -rtol 1e-10 -max_it 200)
 set_tests_properties(
   distributed_greville_tensor_transpose distributed_greville_band
+  PROPERTIES TIMEOUT 60)
+add_test(NAME greville_tensor_mass_condition
+  COMMAND ${LOR_MPIEXEC_EXECUTABLE} -n 2
+          $<TARGET_FILE:greville_tensor_condition_driver>
+          -operator_type mass -spectral_target preconditioned
+          -p 3 -n 4 -eps_tol 1e-10
+          -eps_max_it 1000 -eps_ncv 20 -eigmin_eps_stability_stop false
+          -output ${CMAKE_CURRENT_BINARY_DIR}/greville_mass_condition.log)
+add_test(NAME greville_tensor_stiffness_condition
+  COMMAND ${LOR_MPIEXEC_EXECUTABLE} -n 2
+          $<TARGET_FILE:greville_tensor_condition_driver>
+          -operator_type stiffness -spectral_target preconditioned
+          -p 3 -n 4 -eps_tol 1e-10
+          -eps_max_it 1000 -eps_ncv 20 -eigmin_eps_stability_stop false
+          -output ${CMAKE_CURRENT_BINARY_DIR}/greville_stiffness_condition.log)
+add_test(NAME greville_tensor_mass_preconditioner_condition
+  COMMAND $<TARGET_FILE:greville_tensor_condition_driver>
+          -operator_type mass -spectral_target preconditioner
+          -p 3 -n 4 -eps_tol 1e-10 -eps_max_it 1000 -eps_ncv 20
+          -output ${CMAKE_CURRENT_BINARY_DIR}/greville_mass_P_condition.log)
+add_test(NAME greville_tensor_stiffness_preconditioner_condition
+  COMMAND ${LOR_MPIEXEC_EXECUTABLE} -n 2
+          $<TARGET_FILE:greville_tensor_condition_driver>
+          -operator_type stiffness -spectral_target preconditioner
+          -p 3 -n 4 -eps_tol 1e-10 -eps_max_it 1000 -eps_ncv 20
+          -eigmin_st_type sinvert -eigmin_eps_target 0
+          -eigmin_eps_target_magnitude -eigmin_eps_stability_stop false
+          -output ${CMAKE_CURRENT_BINARY_DIR}/greville_stiffness_P_condition.log)
+set_tests_properties(
+  greville_tensor_mass_condition greville_tensor_stiffness_condition
+  greville_tensor_mass_preconditioner_condition
+  greville_tensor_stiffness_preconditioner_condition
   PROPERTIES TIMEOUT 60)
 add_test(NAME greville_tensor_eps_integration
   COMMAND ${LOR_MPIEXEC_EXECUTABLE} -n 2 $<TARGET_FILE:assembled_driver>

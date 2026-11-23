@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace lor
@@ -253,7 +254,12 @@ PetscErrorCode solve_extreme(Mat A, Mat M, const Extreme extreme,
     // This call follows all programmatic defaults so every EPS/ST/KSP/PC
     // choice above can be independently overridden through the prefix.
     PetscCall(EPSSetFromOptions(eps));
-    if (M != nullptr && configure_ksp != nullptr)
+    const char *configured_st_type = nullptr;
+    PetscCall(STGetType(st, &configured_st_type));
+    const bool transform_uses_solve = M != nullptr ||
+        (configured_st_type != nullptr &&
+         std::string(configured_st_type) == STSINVERT);
+    if (configure_ksp != nullptr && transform_uses_solve)
     {
         KSP ksp = nullptr;
         PetscCall(STGetKSP(st, &ksp));
