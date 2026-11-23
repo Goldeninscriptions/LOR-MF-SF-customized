@@ -94,6 +94,35 @@ SparseMatrix1D assemble_greville_p1_mass(
     return result;
 }
 
+SparseMatrix1D assemble_greville_p1_stiffness(
+    const std::vector<double> &points)
+{
+    if (points.size() < 2)
+        throw std::invalid_argument(
+            "Greville P1 stiffness requires at least two points");
+    std::vector<std::map<int, double>> accumulated(points.size());
+    for (int element = 0;
+         element + 1 < static_cast<int>(points.size()); ++element)
+    {
+        const double h = points[element + 1] - points[element];
+        if (!(h > 0.0))
+            throw std::invalid_argument(
+                "Greville points must be strictly increasing");
+        const double inverse_h = 1.0 / h;
+        accumulated[element][element] += inverse_h;
+        accumulated[element][element + 1] -= inverse_h;
+        accumulated[element + 1][element] -= inverse_h;
+        accumulated[element + 1][element + 1] += inverse_h;
+    }
+    SparseMatrix1D result;
+    result.rows.resize(points.size());
+    for (int row = 0; row < static_cast<int>(points.size()); ++row)
+        for (const auto &entry : accumulated[row])
+            if (entry.second != 0.0)
+                result.rows[row].push_back(entry);
+    return result;
+}
+
 SparseMatrix1D assemble_collocation(const int degree,
     const std::vector<double> &knots,
     const std::vector<double> &points)
@@ -183,6 +212,13 @@ GrevilleMassPreconditioner1D restrict_greville_mass_preconditioner_endpoints(
     result.greville_mass = remove_endpoints(full.greville_mass);
     result.collocation = remove_endpoints(full.collocation);
     result.transformed_mass = remove_endpoints(full.transformed_mass);
+    result.spline_stiffness = assemble_bspline_stiffness_1d(
+        full.degree, full.knots);
+    const auto full_greville_stiffness =
+        assemble_greville_p1_stiffness(full.greville_points);
+    result.greville_stiffness = remove_endpoints(full_greville_stiffness);
+    result.transformed_stiffness = multiply(transpose(result.collocation),
+        multiply(result.greville_stiffness, result.collocation));
     return result;
 }
 

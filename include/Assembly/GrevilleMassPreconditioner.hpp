@@ -25,6 +25,13 @@ struct GrevilleMassPreconditioner1D
     SparseMatrix1D greville_mass;
     SparseMatrix1D collocation;
     SparseMatrix1D transformed_mass;
+    // Homogeneous-Dirichlet stiffness counterparts.  The full builder leaves
+    // these empty because the unrestricted stiffness has a constant null
+    // space; restrict_greville_mass_preconditioner_endpoints fills them on
+    // the common interior coefficient/node space.
+    SparseMatrix1D spline_stiffness;
+    SparseMatrix1D greville_stiffness;
+    SparseMatrix1D transformed_stiffness;
 };
 
 // Construct an open uniform knot vector on [0,1] with maximum interior

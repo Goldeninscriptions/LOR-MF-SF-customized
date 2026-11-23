@@ -25,6 +25,10 @@ add_executable(greville_mass_preconditioner_test
   greville_mass_preconditioner_test.cpp)
 target_link_libraries(greville_mass_preconditioner_test PRIVATE lor_petsc)
 
+add_executable(greville_stiffness_preconditioner_test
+  greville_stiffness_preconditioner_test.cpp)
+target_link_libraries(greville_stiffness_preconditioner_test PRIVATE lor_petsc)
+
 add_executable(greville_mass_pc_application_test
   greville_mass_pc_application_test.cpp)
 target_link_libraries(greville_mass_pc_application_test PRIVATE lor_petsc)
@@ -37,6 +41,8 @@ enable_testing()
 add_test(NAME truncated_cholesky_1d COMMAND truncated_cholesky_1d_test)
 add_test(NAME greville_mass_preconditioner
   COMMAND greville_mass_preconditioner_test)
+add_test(NAME greville_stiffness_preconditioner
+  COMMAND greville_stiffness_preconditioner_test)
 add_test(NAME greville_mass_pc_application
   COMMAND greville_mass_pc_application_test)
 find_program(LOR_MPIEXEC_EXECUTABLE NAMES mpirun mpiexec REQUIRED)

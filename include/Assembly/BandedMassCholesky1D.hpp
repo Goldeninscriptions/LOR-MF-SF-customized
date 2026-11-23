@@ -93,6 +93,11 @@ struct TruncatedDirectionResult1D
 SparseMatrix1D assemble_bspline_mass_1d(int degree,
     const std::vector<double> &knots, bool remove_endpoints = false);
 
+// Assemble the exact one-dimensional B-spline stiffness matrix after
+// removing the two endpoint coefficients (homogeneous Dirichlet data).
+SparseMatrix1D assemble_bspline_stiffness_1d(int degree,
+    const std::vector<double> &knots);
+
 // Assemble one p-degree value mass (with endpoint coefficients removed) and
 // one complete (p-1)-degree derivative-space mass on the endpoint-trimmed
 // knot vector, then factor, truncate, certify, and form D^T M D.
