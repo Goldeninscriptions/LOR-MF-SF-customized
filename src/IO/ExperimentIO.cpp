@@ -53,6 +53,34 @@ const char *preconditioner_matrix_source_name(
         "lor_q1" : "truncated_cholesky_tensor";
 }
 
+SpectralConditionTarget parse_spectral_condition_target(
+    const std::string &name)
+{
+    if (name == "k")
+        return SpectralConditionTarget::stiffness;
+    if (name == "p")
+        return SpectralConditionTarget::preconditioner;
+    if (name == "pinv_k")
+        return SpectralConditionTarget::preconditioned;
+    throw std::invalid_argument(
+        "-spectral_condition_target must be k, p, or pinv_k");
+}
+
+const char *spectral_condition_target_name(
+    const SpectralConditionTarget target) noexcept
+{
+    switch (target)
+    {
+    case SpectralConditionTarget::stiffness:
+        return "k";
+    case SpectralConditionTarget::preconditioner:
+        return "p";
+    case SpectralConditionTarget::preconditioned:
+        return "pinv_k";
+    }
+    return "unknown";
+}
+
 ExperimentOptions read_experiment_options(const int dimension)
 {
     // Allocate fixed PETSc option buffers and track the three required inputs.
@@ -66,6 +94,7 @@ ExperimentOptions read_experiment_options(const int dimension)
     char inner_pc[16] = "jacobi";
     char point_set[32] = "greville";
     char matrix_source[64] = "lor_q1";
+    char spectral_target[32] = "pinv_k";
     char truncation_bandwidth[32] = "auto";
     PetscBool geometry_set = PETSC_FALSE;
     PetscBool degree_set = PETSC_FALSE;
@@ -107,6 +136,8 @@ ExperimentOptions read_experiment_options(const int dimension)
         sizeof(point_set), nullptr);
     PetscOptionsGetString(nullptr, nullptr, "-preconditioner_matrix_source",
         matrix_source, sizeof(matrix_source), nullptr);
+    PetscOptionsGetString(nullptr, nullptr, "-spectral_condition_target",
+        spectral_target, sizeof(spectral_target), nullptr);
     PetscBool truncation_bandwidth_set = PETSC_FALSE;
     PetscOptionsGetString(nullptr, nullptr, "-trunc_chol_k",
         truncation_bandwidth, sizeof(truncation_bandwidth),
@@ -155,6 +186,8 @@ ExperimentOptions read_experiment_options(const int dimension)
     options.lor_pc = parse_lor_pc_mode(mode);
     options.preconditioner_matrix_source =
         parse_preconditioner_matrix_source(matrix_source);
+    options.spectral_condition_target =
+        parse_spectral_condition_target(spectral_target);
     options.trunc_chol_k_was_auto =
         !truncation_bandwidth_set ||
         std::string(truncation_bandwidth) == "auto";
@@ -218,10 +251,12 @@ ExperimentOptions read_experiment_options(const int dimension)
         throw std::invalid_argument(
             "-preconditioner_matrix_source truncated_cholesky_tensor conflicts "
             "with a direct K-Jacobi/K-GAMG lor_pc mode");
-    if (uses_direct_k && options.compute_spectral_condition_number)
+    if (uses_direct_k && options.compute_spectral_condition_number &&
+        options.spectral_condition_target !=
+            SpectralConditionTarget::stiffness)
         throw std::invalid_argument(
-            "-compute_spectral_condition_number requires an assembled "
-            "preconditioner matrix and is unavailable for direct K modes");
+            "spectral targets p and pinv_k require an assembled "
+            "preconditioner matrix and are unavailable for direct K modes");
     if (options.preconditioner_matrix_source ==
         PreconditionerMatrixSource::truncated_cholesky_tensor)
     {
@@ -410,6 +445,9 @@ void write_experiment_results(const std::string &filename,
            << results.computed_condition_number << '\n'
            << "compute_spectral_condition_number = "
            << results.computed_spectral_condition_number << '\n'
+           << "spectral_condition_target = "
+           << spectral_condition_target_name(
+                results.spectral_condition_target) << '\n'
            << std::scientific << std::setprecision(16);
 
     if (results.preconditioner_matrix_source ==
@@ -577,7 +615,8 @@ void write_experiment_results(const std::string &filename,
 
     // Record predicted tensor structure and PETSc's post-assembly storage so
     // remote batches can detect reallocations and memory regressions.
-    output << "predicted_nnz(K) = " << results.predicted_nonzeros_K << '\n'
+    output << "assembled(K) = " << results.assembled_high_matrix << '\n'
+           << "predicted_nnz(K) = " << results.predicted_nonzeros_K << '\n'
            << "nnz_K = " << results.used_nonzeros_K << '\n'
            << "used_nnz(K) = " << results.used_nonzeros_K << '\n'
            << "allocated_nnz(K) = " << results.allocated_nonzeros_K << '\n'
@@ -703,7 +742,9 @@ void write_experiment_results(const std::string &filename,
                << "time_eps_lambda_max_s = "
                << results.time_eps_lambda_max_s << '\n';
         if (results.spectral_condition_converged)
-            output << "kappa_lambda = " << results.kappa_lambda << '\n'
+            output << "eps_condition_number = "
+                   << results.kappa_lambda << '\n'
+                   << "kappa_lambda = " << results.kappa_lambda << '\n'
                    << "lambda_min = " << results.lambda_min << '\n'
                    << "lambda_max = " << results.lambda_max << '\n'
                    << "eps_relative_error_min = "

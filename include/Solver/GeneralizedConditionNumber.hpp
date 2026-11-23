@@ -36,8 +36,10 @@ struct GeneralizedConditionResult
     bool converged = false;
 };
 
-// Compute lambda_max and lambda_min with two generalized EPS solves on the
-// same M^{-1}A operator. Runtime options use the prefixes eigmax_ and eigmin_,
+// Compute lambda_max and lambda_min with two EPS solves. When M is non-null,
+// solve the generalized Hermitian-definite problem on M^{-1}A. When M is
+// null, solve the standard Hermitian problem for A directly; no identity
+// matrix is allocated. Runtime options use the prefixes eigmax_ and eigmin_,
 // respectively. In SLEPc 3.24 this gives, for
 // example, -eigmin_eps_type, -eigmin_st_type, -eigmin_st_ksp_type, and
 // -eigmin_st_pc_type. Supplying

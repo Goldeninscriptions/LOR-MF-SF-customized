@@ -140,8 +140,19 @@ PetscErrorCode validate_compatible_matrices(Mat A, Mat M)
     PetscCheck(A != nullptr, PETSC_COMM_SELF, PETSC_ERR_ARG_NULL,
         "Generalized EPS matrix A must not be null");
     const MPI_Comm comm = PetscObjectComm(reinterpret_cast<PetscObject>(A));
-    PetscCheck(M != nullptr, comm, PETSC_ERR_ARG_NULL,
-        "Generalized EPS matrix M must not be null");
+    PetscBool symmetry_known_A = PETSC_FALSE;
+    PetscBool symmetric_A = PETSC_FALSE;
+    PetscCall(MatIsSymmetricKnown(A, &symmetry_known_A, &symmetric_A));
+    PetscCheck(!symmetry_known_A || symmetric_A, comm, PETSC_ERR_ARG_WRONG,
+        "EPS matrix A is marked nonsymmetric");
+    if (M == nullptr)
+    {
+        if (!symmetry_known_A)
+            PetscCall(PetscInfo(A,
+                "EPS_HEP requires symmetric A; the matrix has no PETSc "
+                "symmetry declaration\n"));
+        PetscFunctionReturn(PETSC_SUCCESS);
+    }
 
     int communicator_relation = MPI_UNEQUAL;
     PetscCallMPI(MPI_Comm_compare(comm,
@@ -189,14 +200,9 @@ PetscErrorCode validate_compatible_matrices(Mat A, Mat M)
         comm, PETSC_ERR_ARG_SIZ,
         "A and M must use the same distributed ownership ranges");
 
-    PetscBool symmetry_known_A = PETSC_FALSE;
-    PetscBool symmetric_A = PETSC_FALSE;
     PetscBool symmetry_known_M = PETSC_FALSE;
     PetscBool symmetric_M = PETSC_FALSE;
-    PetscCall(MatIsSymmetricKnown(A, &symmetry_known_A, &symmetric_A));
     PetscCall(MatIsSymmetricKnown(M, &symmetry_known_M, &symmetric_M));
-    PetscCheck(!symmetry_known_A || symmetric_A, comm, PETSC_ERR_ARG_WRONG,
-        "A is marked nonsymmetric and is invalid for EPS_GHEP");
     PetscCheck(!symmetry_known_M || symmetric_M, comm, PETSC_ERR_ARG_WRONG,
         "M is marked nonsymmetric and is invalid for EPS_GHEP");
     if (!symmetry_known_A || !symmetry_known_M)
@@ -225,7 +231,7 @@ PetscErrorCode solve_extreme(Mat A, Mat M, const Extreme extreme,
     PetscCall(EPSSetOptionsPrefix(eps,
         extreme == Extreme::maximum ? "eigmax_" : "eigmin_"));
     PetscCall(EPSSetOperators(eps, A, M));
-    PetscCall(EPSSetProblemType(eps, EPS_GHEP));
+    PetscCall(EPSSetProblemType(eps, M == nullptr ? EPS_HEP : EPS_GHEP));
     PetscCall(EPSSetType(eps, EPSKRYLOVSCHUR));
     PetscCall(EPSSetDimensions(eps, 1, ncv, PETSC_DEFAULT));
     PetscCall(EPSSetTolerances(eps, tolerance, max_iterations));

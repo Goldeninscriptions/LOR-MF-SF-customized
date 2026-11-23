@@ -240,6 +240,11 @@ compute_unpreconditioned_solution=${COMPUTE_UNPRECONDITIONED_SOLUTION:-true}
 compute_l2_error=${COMPUTE_L2_ERROR:-true}
 compute_condition_number=${COMPUTE_CONDITION_NUMBER:-false}
 compute_spectral_condition_number=${COMPUTE_SPECTRAL_CONDITION_NUMBER:-false}
+spectral_condition_target=${SPECTRAL_CONDITION_TARGET:-pinv_k}
+case "$spectral_condition_target" in
+  k|p|pinv_k) ;;
+  *) echo "SPECTRAL_CONDITION_TARGET must be k, p, or pinv_k" >&2; exit 2 ;;
+esac
 for feature_value in \
   "$compute_solution" "$compute_l2_error" "$compute_condition_number" \
   "$compute_spectral_condition_number" "$compute_truncation_certificate" \
@@ -295,6 +300,7 @@ common_options=(
   -compute_l2_error "$compute_l2_error"
   -compute_condition_number "$compute_condition_number"
   -compute_spectral_condition_number "$compute_spectral_condition_number"
+  -spectral_condition_target "$spectral_condition_target"
   -outer_rtol "$outer_rtol"
   -outer_atol "$outer_atol"
   -outer_dtol "$outer_dtol"
@@ -337,5 +343,5 @@ if [[ "$uses_inner_cg" == true ]]; then
 elif [[ "$uses_fixed_jacobi" == true ]]; then
   scheme_log=" fixed_jacobi_steps=$fixed_jacobi_steps fixed_jacobi_omega=$fixed_jacobi_omega"
 fi
-echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side matrix_source=$preconditioner_matrix_source trunc_k=$trunc_chol_k boundary_protection=$trunc_chol_boundary_protection verify_tensor=$verify_tensor_identity memory_limit_bytes=$trunc_chol_max_memory_bytes certificate=$compute_truncation_certificate${scheme_log} solve=$compute_solution unpreconditioned_baseline=$compute_unpreconditioned_solution L2=$compute_l2_error condition_svd=$compute_condition_number condition_eps=$compute_spectral_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_dtol=$outer_dtol outer_max_it=$outer_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv eps_tol=$eps_tol eps_max_it=$eps_max_it eps_ncv=$eps_ncv"
+echo "[run] mpi_ranks=$mpi_ranks refinement=$refinement requested_p=$degree requested_n=($element_tuple) point_set=$lor_points lor_pc=$lor_pc preconditioner_side=$preconditioner_side matrix_source=$preconditioner_matrix_source spectral_target=$spectral_condition_target trunc_k=$trunc_chol_k boundary_protection=$trunc_chol_boundary_protection verify_tensor=$verify_tensor_identity memory_limit_bytes=$trunc_chol_max_memory_bytes certificate=$compute_truncation_certificate${scheme_log} solve=$compute_solution unpreconditioned_baseline=$compute_unpreconditioned_solution L2=$compute_l2_error condition_svd=$compute_condition_number condition_eps=$compute_spectral_condition_number outer_rtol=$outer_rtol outer_atol=$outer_atol outer_dtol=$outer_dtol outer_max_it=$outer_max_it svd_tol=$svd_tol svd_max_it=$svd_max_it svd_ncv=$svd_ncv eps_tol=$eps_tol eps_max_it=$eps_max_it eps_ncv=$eps_ncv"
 "$mpi_launcher" -n "$mpi_ranks" "$driver" "${common_options[@]}"

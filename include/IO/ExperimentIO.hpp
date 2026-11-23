@@ -18,6 +18,18 @@ enum class PreconditionerMatrixSource
     truncated_cholesky_tensor
 };
 
+enum class SpectralConditionTarget
+{
+    stiffness,
+    preconditioner,
+    preconditioned
+};
+
+SpectralConditionTarget parse_spectral_condition_target(
+    const std::string &name);
+const char *spectral_condition_target_name(
+    SpectralConditionTarget target) noexcept;
+
 PreconditionerMatrixSource parse_preconditioner_matrix_source(
     const std::string &name);
 const char *preconditioner_matrix_source_name(
@@ -63,6 +75,10 @@ struct ExperimentOptions
     bool compute_l2_error = true;
     bool compute_condition_number = false;
     bool compute_spectral_condition_number = false;
+    // k and p are standard symmetric EPS problems. pinv_k is the
+    // generalized problem Kx=lambda Px and never forms P^{-1}K explicitly.
+    SpectralConditionTarget spectral_condition_target =
+        SpectralConditionTarget::preconditioned;
 
     // KSP stopping controls and independent SLEPc singular-value controls.
     // Inner tolerances apply only to *_cg, and fixed_jacobi applies only to
@@ -97,6 +113,8 @@ struct ExperimentResults
     bool computed_l2_error = false;
     bool computed_condition_number = false;
     bool computed_spectral_condition_number = false;
+    SpectralConditionTarget spectral_condition_target =
+        SpectralConditionTarget::preconditioned;
 
     // Preconditioner application and side used consistently by the solve and
     // labels. inner_pc is emitted as metadata only for a *_cg configuration.
@@ -153,6 +171,7 @@ struct ExperimentResults
 
     // Global PETSc storage diagnostics for the assembled high-order and
     // optional LOR stiffness matrices. K-only reference modes skip K_LOR.
+    bool assembled_high_matrix = false;
     bool assembled_lor_matrix = false;
     PetscInt predicted_nonzeros_K = 0;
     PetscLogDouble allocated_nonzeros_K = 0.0;

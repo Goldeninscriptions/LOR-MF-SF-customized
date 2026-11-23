@@ -220,27 +220,42 @@ PetscErrorCode run_assembled_laplace_experiment(
         partition->lor_assembly_cell_end()));
     PetscCall(PetscSynchronizedFlush(comm, PETSC_STDOUT));
 
-    // Always assemble the high-order stiffness. Fuse load into the traversal
-    // only when the user requested the two linear solves.
+    // A pure Q1-LOR P spectrum does not consume K. Skipping K in that narrow
+    // mode prevents the dense high-order matrix from competing with EPS
+    // storage. Truncated-tensor P still requires K during its construction.
+    const bool pure_lor_p_spectrum =
+        options.compute_spectral_condition_number &&
+        options.spectral_condition_target ==
+            SpectralConditionTarget::preconditioner &&
+        !options.compute_solution && !options.compute_condition_number &&
+        options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::lor_q1;
+    const bool assemble_high_matrix = !pure_lor_p_spectrum;
+
+    // Assemble the high-order stiffness whenever a requested feature consumes
+    // it. Fuse load into the traversal only for the two linear solves.
     GlobalMatrixAssemblyResult high_stiffness;
     GlobalVectorAssemblyResult high_load;
-    PetscCallMPI(MPI_Barrier(comm));
     PetscLogDouble original_assembly_start = 0.0;
     PetscLogDouble original_assembly_end = 0.0;
-    PetscCall(PetscTime(&original_assembly_start));
-    if (options.compute_solution)
-        PetscCall(assemble_global_stiffness_load_with_dirichlet<Dim>(patch,
-            high_IEN, ID_map, assembly_quad, assembly_basis, source,
-            dirichlet_coefficients, &high_stiffness, &high_load));
-    else
-        PetscCall(assemble_global_stiffness<Dim>(patch, high_IEN,
-            ID_map, assembly_quad, assembly_basis, &high_stiffness));
-    PetscCall(PetscTime(&original_assembly_end));
-    const PetscLogDouble local_original_assembly_time =
-        original_assembly_end - original_assembly_start;
     PetscLogDouble original_assembly_time = 0.0;
-    PetscCallMPI(MPI_Allreduce(&local_original_assembly_time,
-        &original_assembly_time, 1, MPI_DOUBLE, MPI_MAX, comm));
+    if (assemble_high_matrix)
+    {
+        PetscCallMPI(MPI_Barrier(comm));
+        PetscCall(PetscTime(&original_assembly_start));
+        if (options.compute_solution)
+            PetscCall(assemble_global_stiffness_load_with_dirichlet<Dim>(patch,
+                high_IEN, ID_map, assembly_quad, assembly_basis, source,
+                dirichlet_coefficients, &high_stiffness, &high_load));
+        else
+            PetscCall(assemble_global_stiffness<Dim>(patch, high_IEN,
+                ID_map, assembly_quad, assembly_basis, &high_stiffness));
+        PetscCall(PetscTime(&original_assembly_end));
+        const PetscLogDouble local_original_assembly_time =
+            original_assembly_end - original_assembly_start;
+        PetscCallMPI(MPI_Allreduce(&local_original_assembly_time,
+            &original_assembly_time, 1, MPI_DOUBLE, MPI_MAX, comm));
+    }
 
     // Assemble K_LOR only for configurations whose preconditioner or spectral
     // diagnostic actually consumes it. Direct K reference modes avoid this
@@ -291,8 +306,9 @@ PetscErrorCode run_assembled_laplace_experiment(
     // Test/debug-only PETSc viewers.  They are inert unless their explicit
     // options are supplied and let the integration test form an independent
     // dense generalized eigensystem and dense SVD on a small matrix.
-    PetscCall(MatViewFromOptions(high_stiffness.matrix, nullptr,
-        "-dense_reference_K_view"));
+    if (high_stiffness.matrix != nullptr)
+        PetscCall(MatViewFromOptions(high_stiffness.matrix, nullptr,
+            "-dense_reference_K_view"));
     if (preconditioner_matrix != nullptr)
         PetscCall(MatViewFromOptions(preconditioner_matrix, nullptr,
             "-dense_reference_P_view"));
@@ -378,8 +394,25 @@ PetscErrorCode run_assembled_laplace_experiment(
     PetscLogDouble spectral_eps_time = 0.0;
     if (options.compute_spectral_condition_number)
     {
+        Mat spectral_A = nullptr;
+        Mat spectral_M = nullptr;
+        switch (options.spectral_condition_target)
+        {
+        case SpectralConditionTarget::stiffness:
+            spectral_A = high_stiffness.matrix;
+            break;
+        case SpectralConditionTarget::preconditioner:
+            spectral_A = preconditioner_matrix;
+            break;
+        case SpectralConditionTarget::preconditioned:
+            spectral_A = high_stiffness.matrix;
+            spectral_M = preconditioner_matrix;
+            break;
+        }
+        PetscCheck(spectral_A != nullptr, comm, PETSC_ERR_ARG_NULL,
+            "Selected EPS spectral target matrix was not assembled");
         PetscCall(compute_generalized_condition_number(
-            high_stiffness.matrix, preconditioner_matrix,
+            spectral_A, spectral_M,
             options.eps_tolerance, options.eps_max_iterations,
             options.eps_subspace_dimension, &spectral_condition));
         spectral_eps_time = spectral_condition.total_time;
@@ -401,6 +434,7 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.computed_condition_number = options.compute_condition_number;
     results.computed_spectral_condition_number =
         options.compute_spectral_condition_number;
+    results.spectral_condition_target = options.spectral_condition_target;
     results.lor_pc = options.lor_pc;
     results.lor_points = options.lor_points;
     results.preconditioner_matrix_source =
@@ -409,6 +443,7 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.inner_pc = options.inner_pc;
     results.tolerances = options.tolerances;
     results.fixed_jacobi = options.fixed_jacobi;
+    results.assembled_high_matrix = assemble_high_matrix;
     results.assembled_lor_matrix = uses_preconditioner_matrix;
     results.predicted_nonzeros_K = high_stiffness.predicted_nonzeros;
     results.allocated_nonzeros_K = high_stiffness.allocated_nonzeros;
@@ -683,14 +718,18 @@ PetscErrorCode run_assembled_laplace_experiment(
             options.compute_solution ? "true" : "false",
             options.compute_l2_error ? "true" : "false",
             options.compute_condition_number ? "true" : "false"));
-        PetscCall(PetscPrintf(comm,
-            "  K storage: predicted_nnz=%" PetscInt_FMT
-            ", used_nnz=%.0f, allocated_nnz=%.0f, mallocs=%.0f, "
-            "minimum=%.3f MiB, PETSc_reported=%.3f MiB\n",
-            results.predicted_nonzeros_K, results.used_nonzeros_K,
-            results.allocated_nonzeros_K, results.allocation_calls_K,
-            results.estimated_minimum_bytes_K / (1024.0 * 1024.0),
-            results.memory_bytes_K / (1024.0 * 1024.0)));
+        if (results.assembled_high_matrix)
+            PetscCall(PetscPrintf(comm,
+                "  K storage: predicted_nnz=%" PetscInt_FMT
+                ", used_nnz=%.0f, allocated_nnz=%.0f, mallocs=%.0f, "
+                "minimum=%.3f MiB, PETSc_reported=%.3f MiB\n",
+                results.predicted_nonzeros_K, results.used_nonzeros_K,
+                results.allocated_nonzeros_K, results.allocation_calls_K,
+                results.estimated_minimum_bytes_K / (1024.0 * 1024.0),
+                results.memory_bytes_K / (1024.0 * 1024.0)));
+        else
+            PetscCall(PetscPrintf(comm,
+                "  K storage: not assembled for P-only EPS mode\n"));
         if (uses_preconditioner_matrix)
             PetscCall(PetscPrintf(comm,
                 "  P storage: predicted_nnz=%" PetscInt_FMT
@@ -734,8 +773,15 @@ PetscErrorCode run_assembled_laplace_experiment(
         }
         if (options.compute_spectral_condition_number)
         {
+            const char *spectral_operator =
+                options.spectral_condition_target ==
+                    SpectralConditionTarget::stiffness ? "K" :
+                (options.spectral_condition_target ==
+                    SpectralConditionTarget::preconditioner ? "P" :
+                    "P^{-1}K");
             PetscCall(PetscPrintf(comm,
-                "  EPS Kx=lambda Px: status=%s, time=%.6e s\n",
+                "  EPS %s: status=%s, time=%.6e s\n",
+                spectral_operator,
                 results.spectral_condition_converged ?
                     "converged" : "not_converged",
                 static_cast<double>(results.time_spectral_eps_s)));
