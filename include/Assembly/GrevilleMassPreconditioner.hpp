@@ -25,13 +25,6 @@ struct GrevilleMassPreconditioner1D
     SparseMatrix1D greville_mass;
     SparseMatrix1D collocation;
     SparseMatrix1D transformed_mass;
-    // Homogeneous-Dirichlet stiffness counterparts.  The full builder leaves
-    // these empty because the unrestricted stiffness has a constant null
-    // space; restrict_greville_mass_preconditioner_endpoints fills them on
-    // the common interior coefficient/node space.
-    SparseMatrix1D spline_stiffness;
-    SparseMatrix1D greville_stiffness;
-    SparseMatrix1D transformed_stiffness;
 };
 
 // Construct an open uniform knot vector on [0,1] with maximum interior
@@ -42,10 +35,9 @@ std::vector<double> open_uniform_knots_1d(int degree, int elements);
 GrevilleMassPreconditioner1D build_greville_mass_preconditioner_1d(
     int degree, const std::vector<double> &knots);
 
-// Remove the two endpoint coefficient/node rows and columns.  For homogeneous
-// full-boundary Dirichlet problems the endpoint rows of the collocation
-// columns retained in the free space vanish, so the returned factors satisfy
-// P_II = T_II^T M_g,II T_II exactly.
+// Remove the two endpoint coefficient/node rows and columns for the existing
+// transformed-mass application.  This is not the derivative-space stiffness
+// construction; see DerivativeGrevilleStiffness.hpp for that separate API.
 GrevilleMassPreconditioner1D restrict_greville_mass_preconditioner_endpoints(
     const GrevilleMassPreconditioner1D &full);
 

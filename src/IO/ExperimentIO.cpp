@@ -43,9 +43,12 @@ PreconditionerMatrixSource parse_preconditioner_matrix_source(
         return PreconditionerMatrixSource::truncated_cholesky_tensor;
     if (name == "greville_mass_tensor")
         return PreconditionerMatrixSource::greville_mass_tensor;
+    if (name == "derivative_greville_mass")
+        return PreconditionerMatrixSource::derivative_greville_mass;
     throw std::invalid_argument(
         "-preconditioner_matrix_source must be lor_q1, "
-        "truncated_cholesky_tensor, or greville_mass_tensor");
+        "truncated_cholesky_tensor, greville_mass_tensor, or "
+        "derivative_greville_mass");
 }
 
 const char *preconditioner_matrix_source_name(
@@ -59,6 +62,8 @@ const char *preconditioner_matrix_source_name(
         return "truncated_cholesky_tensor";
     case PreconditionerMatrixSource::greville_mass_tensor:
         return "greville_mass_tensor";
+    case PreconditionerMatrixSource::derivative_greville_mass:
+        return "derivative_greville_mass";
     }
     return "unknown";
 }
@@ -268,10 +273,27 @@ ExperimentOptions read_experiment_options(const int dimension)
             "-preconditioner_matrix_source greville_mass_tensor conflicts "
             "with a direct K-Jacobi/K-GAMG lor_pc mode");
     if (options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::derivative_greville_mass &&
+        uses_direct_k)
+        throw std::invalid_argument(
+            "-preconditioner_matrix_source derivative_greville_mass "
+            "conflicts with a direct K-Jacobi/K-GAMG lor_pc mode");
+    if (options.preconditioner_matrix_source ==
             PreconditionerMatrixSource::greville_mass_tensor &&
         dimension != 2)
         throw std::invalid_argument(
             "greville_mass_tensor currently supports only 2D");
+    if (options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::derivative_greville_mass &&
+        dimension != 2)
+        throw std::invalid_argument(
+            "derivative_greville_mass currently supports only 2D in the "
+            "assembled benchmark; use the standalone 1D driver for 1D");
+    if (options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::derivative_greville_mass &&
+        options.degree < 2)
+        throw std::invalid_argument(
+            "derivative_greville_mass requires polynomial degree p>=2");
     if (options.preconditioner_matrix_source ==
             PreconditionerMatrixSource::greville_mass_tensor &&
         (options.compute_solution || options.compute_condition_number))
@@ -704,7 +726,10 @@ void write_experiment_results(const std::string &filename,
         (results.preconditioner_matrix_source ==
             PreconditionerMatrixSource::truncated_cholesky_tensor ?
             (left ? "P_k^{-1}K" : "KP_k^{-1}") :
-            (left ? "K_LOR^{-1}K" : "KK_LOR^{-1}"));
+        (results.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::derivative_greville_mass ?
+            (left ? "P_DMG^{-1}K" : "KP_DMG^{-1}") :
+            (left ? "K_LOR^{-1}K" : "KK_LOR^{-1}")));
     const char *solve_label = lor_pc_mode_name(results.lor_pc);
     const char *outer_ksp_type = results.lor_pc == LORPCMode::left_cg_lu ?
         "cg" :

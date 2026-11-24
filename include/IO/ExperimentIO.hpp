@@ -16,7 +16,8 @@ enum class PreconditionerMatrixSource
 {
     lor_q1,
     truncated_cholesky_tensor,
-    greville_mass_tensor
+    greville_mass_tensor,
+    derivative_greville_mass
 };
 
 enum class SpectralConditionTarget

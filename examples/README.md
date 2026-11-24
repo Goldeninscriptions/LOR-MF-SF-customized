@@ -5,8 +5,11 @@ sum-factorization 的数值参考。
 
 | 文件 | 当前职责 |
 |---|---|
-| `CMakeLists.txt` | 支持从项目根构建，也支持用户要求的 `cmake ../examples` 独立入口；生成 `assembled_driver` 并链接 `lor_solver` |
+| `CMakeLists.txt` | 支持从项目根构建，也支持用户要求的 `cmake ../examples` 独立入口；生成 drivers 和 validation tests |
 | `assembled_driver.cpp` | 初始化 SLEPc，调用 root-only 集体几何读取，解析 options，并把 2D/3D 分派给 `AssembledLaplaceExperiment`；不实现 refinement、组装或求解 |
+| `derivative_greville_stiffness_1d.cpp` | 一维显式 DMG 组装、GHEP、CG 真残差与 CSV 输出 |
+| `derivative_greville_stiffness_2d.cpp` | 二维混合次数显式 DMG 组装，支持非正方形网格和物理矩形 |
+| `derivative_greville_validation.cpp` | `p=2` 一维精确性、导数表达、二维 stride/能量/几何权重/SPD 校验 |
 
 ## Driver 对象关系
 
@@ -78,6 +81,7 @@ mpirun -n 4 ./build/assembled_driver \
 ### LOR options
 
 - `-lor_points greville|demko`；
+- `-preconditioner_matrix_source lor_q1|truncated_cholesky_tensor|greville_mass_tensor|derivative_greville_mass`；最后一项是本轮显式二维导数空间 Greville mass 刚度预条件器，仅接受同次数 `p>=2` 的坐标对齐仿射矩形；
 - `-lor_pc` 选择完整求解方案：`left_cg_lu|right_gmres_lu|left_gmres_cg|`
   `right_gmres_cg|right_fgmres_cg|left_gmres_k_jacobi|`
   `left_gmres_k_gamg|right_gmres_k_gamg|left_gmres_fixed_jacobi`；默认最后一项；

@@ -16,10 +16,13 @@
 | `run_batch_curved_quadrilateral_2d.sh` | 双三次曲边 Patch 批处理入口 | 与二维矩形采用相同 p/n sweep 和功能默认值；默认完成求解与 L2 |
 | `run_batch_common.sh` | 三个入口共享的执行器 | 统一参数验证、逐 case rank 规划、运行、日志和 TSV summary；不直接运行 |
 | `run_inner_tolerance_sweep_square_2d.sh` | 固定二维 case 的内层 CG 精度扫描 | 默认扫描 `inner_rtol={1e-10,1e-6,1e-4,1e-3,1e-2}`，汇总内外迭代、时间、真实残差和 L2 误差 |
-| `run_greville_tensor_condition_2d.sh` | 新质量/刚度张量谱实验的公共单案例入口 | `mass` 精确应用 `(T^T M_g T)^{-1}`；`stiffness` 以 `T^{-1}K_g^{-1}T^{-T}` 和内部 CG+GAMG 应用刚度预条件子；默认物理尺寸 `2x1` 与原二维输入一致 |
+| `run_greville_mass_condition_2d.sh` | 原 Greville 质量矩阵谱实验的单案例入口 | 仅保留质量矩阵 `T_p^T M_g T_p` 路线，不再包含旧刚度构造 |
 | `run_eps_greville_mass_on_mass_batch_2d.sh` | 变换低阶质量阵及其预条件高阶质量阵的顺序批次 | `p=3..7,n=4..1024`，每例依次计算 `cond(P_M)` 与 `cond(P_M^{-1}M_s)`；完整质量空间、断点续跑、共享互斥锁 |
-| `run_eps_greville_stiffness_on_stiffness_batch_2d.sh` | 变换低阶刚度阵及其预条件高阶刚度阵的顺序批次 | 每例依次计算 `cond(P_K)` 与 `cond(P_K^{-1}K_s)`；齐次 Dirichlet 空间、矩阵自由张量和、内部低阶 CG+GAMG |
-| `make_greville_condition_number_excel.py` | 合并新旧条件数结果 | 从旧 summary 只读取 `K`，从新 summary 读取 `P_G/P_G^{-1}K`，生成三列一组的 Excel |
+| `run_derivative_greville_1d.sh` | 新 derivative-space Greville mass 一维单例 | 显式组装 `D,T,M_g,B,P,K_s`，可选 GHEP 与 CG 真残差，输出 CSV |
+| `run_derivative_greville_2d.sh` | 新 derivative-space Greville mass 二维单例 | 支持非正方形 `Ex,Ey` 与物理矩形 `Lx,Ly`；两套混合次数导数空间显式组装 |
+| `run_derivative_greville_1d_sweep.sh` | 新预条件器一维顺序扫描 | 默认 `p={2,3,4,6,8}`、`E={8,16,32,64,128}`，逐例释放后再运行下一例 |
+| `run_derivative_greville_2d_sweep.sh` | 新预条件器二维顺序扫描 | 默认规范中的 p/网格扫描并追加 `(4,7),(7,4)` stride 回归；共享互斥锁避免内存竞争 |
+| `run_derivative_greville_benchmark_compare_2d.sh` | 原 assembled benchmark 的公平对比入口 | 在相同高阶问题、边界 lift、停止准则下顺序运行原 `lor_q1` 与新 `derivative_greville_mass`，每次同时记录无预条件解 |
 | `run_trunc_chol_gamg_tuning_2d.sh` | truncated-Cholesky + 左 GMRES + 内层 CG/GAMG 的四阶段调优 | 依次扫描内层 rtol、GAMG threshold、V-cycle level smoother 步数，再做 p/n 可迁移性扫描；默认只 dry-run |
 | `run_trunc_chol_gamg_rtol_p8_n1024_2d.sh` | `p=8,n=1024x1024` 的专用内层 rtol 扫描入口 | 复用四阶段调优器、使用独立 RUN_ID、默认只 dry-run，支持断点续跑 |
 | `run_trunc_chol_fgmres_gamg_diagnostic_p8_n1024_2d.sh` | `p=8,n=1024x1024` 的右 FGMRES + 内层 CG/GAMG 诊断扫描 | 固定 `k=4,bp=true`、更严格的内外层绝对容差，并扫描 `inner_rtol=1e-8..1e-3`；默认只 dry-run |

@@ -12,6 +12,7 @@
 #include "Solver/AssembledLaplaceExperiment.hpp"
 
 #include "Assembly/DirichletBC.hpp"
+#include "Assembly/DerivativeGrevilleStiffness.hpp"
 #include "Assembly/GlobalAssembly.hpp"
 #include "Assembly/LexicographicOrdering.hpp"
 #include "Assembly/TruncatedCholeskyTensor.hpp"
@@ -33,6 +34,7 @@
 
 #include <array>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -64,6 +66,57 @@ void broadcast_root_error(std::string &message, const int root,
         message.resize(static_cast<std::size_t>(length));
     if (MPI_Bcast(message.data(), length, MPI_CHAR, root, comm) != MPI_SUCCESS)
         throw std::runtime_error("Cannot broadcast refinement error");
+}
+
+// The first explicit DMG implementation is intentionally restricted to an
+// axis-aligned affine rectangle.  Validate the complete control net against
+// the affine B-spline representation and return its two physical lengths.
+std::array<double, 2> axis_aligned_rectangle_lengths(
+    const BSplinePatch<2> &patch)
+{
+    if (patch.degree(0) != patch.degree(1) || patch.degree(0) < 2)
+        throw std::invalid_argument(
+            "derivative_greville_mass requires equal 2D degrees p>=2");
+    const auto shape = patch.basis_shape();
+    const LexicographicOrdering<2> ordering(shape);
+    const auto gx = strict_greville_points(
+        patch.degree(0), patch.knots(0));
+    const auto gy = strict_greville_points(
+        patch.degree(1), patch.knots(1));
+    const auto &origin = patch.control_point(ordering.global_index({0, 0}));
+    const auto &right = patch.control_point(
+        ordering.global_index({shape[0] - 1, 0}));
+    const auto &top = patch.control_point(
+        ordering.global_index({0, shape[1] - 1}));
+    const double length_x = right[0] - origin[0];
+    const double length_y = top[1] - origin[1];
+    if (!(length_x > 0.0) || !(length_y > 0.0))
+        throw std::invalid_argument(
+            "derivative_greville_mass requires positively oriented rectangle");
+    const double parameter_x0 = patch.knots(0)[patch.degree(0)];
+    const double parameter_x1 =
+        patch.knots(0)[patch.num_basis(0)];
+    const double parameter_y0 = patch.knots(1)[patch.degree(1)];
+    const double parameter_y1 =
+        patch.knots(1)[patch.num_basis(1)];
+    const double tolerance = 2.0e-11 *
+        std::max({1.0, std::abs(length_x), std::abs(length_y)});
+    for (int j = 0; j < shape[1]; ++j)
+        for (int i = 0; i < shape[0]; ++i)
+        {
+            const double sx = (gx[i] - parameter_x0) /
+                (parameter_x1 - parameter_x0);
+            const double sy = (gy[j] - parameter_y0) /
+                (parameter_y1 - parameter_y0);
+            const auto &point = patch.control_point(
+                ordering.global_index({i, j}));
+            if (std::abs(point[0] - (origin[0] + length_x * sx)) > tolerance ||
+                std::abs(point[1] - (origin[1] + length_y * sy)) > tolerance)
+                throw std::invalid_argument(
+                    "derivative_greville_mass supports only an axis-aligned "
+                    "affine rectangle in the assembled benchmark");
+        }
+    return {length_x, length_y};
 }
 
 // Create the minimal geometry and execute p/h/k refinement on root only, then
@@ -318,6 +371,35 @@ PetscErrorCode run_assembled_laplace_experiment(
         greville_configuration.mode =
             DistributedGrevillePCMode::tensor_transpose;
     }
+    DerivativeGreville2DResult derivative_greville;
+    if (uses_preconditioner_matrix &&
+        options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::derivative_greville_mass)
+    {
+        if constexpr (Dim == 2)
+        {
+            std::array<double, 2> lengths{};
+            try
+            {
+                lengths = axis_aligned_rectangle_lengths(patch);
+            }
+            catch (const std::exception &error)
+            {
+                SETERRQ(comm, PETSC_ERR_ARG_WRONG, "%s", error.what());
+            }
+            DerivativeGrevilleAssemblyOptions derivative_options;
+            derivative_options.assemble_reference_stiffness = false;
+            derivative_options.assemble_exact_derivative_masses = false;
+            derivative_options.retain_intermediates = false;
+            PetscCall(assemble_derivative_greville_stiffness_2d(
+                comm, patch.degree(0), patch.knots(0), patch.knots(1),
+                lengths[0], lengths[1], derivative_options,
+                &derivative_greville));
+        }
+        else
+            SETERRQ(comm, PETSC_ERR_SUP,
+                "derivative_greville_mass assembled integration is 2D only");
+    }
     PetscLogDouble preconditioner_construction_time = 0.0;
     if (uses_preconditioner_matrix)
     {
@@ -339,6 +421,9 @@ PetscErrorCode run_assembled_laplace_experiment(
     else if (options.preconditioner_matrix_source ==
         PreconditionerMatrixSource::greville_mass_tensor)
         preconditioner_matrix = greville_preconditioner;
+    else if (options.preconditioner_matrix_source ==
+        PreconditionerMatrixSource::derivative_greville_mass)
+        preconditioner_matrix = derivative_greville.preconditioner;
 
     // Test/debug-only PETSc viewers.  They are inert unless their explicit
     // options are supplied and let the integration test form an independent
@@ -504,6 +589,22 @@ PetscErrorCode run_assembled_laplace_experiment(
     results.estimated_minimum_bytes_K =
         high_stiffness.estimated_minimum_bytes;
     if (uses_preconditioner_matrix &&
+        options.preconditioner_matrix_source ==
+            PreconditionerMatrixSource::derivative_greville_mass)
+    {
+        MatInfo info{};
+        PetscCall(MatGetInfo(derivative_greville.preconditioner,
+            MAT_GLOBAL_SUM, &info));
+        results.predicted_nonzeros_lor =
+            derivative_greville.nnz_preconditioner;
+        results.allocated_nonzeros_lor = info.nz_allocated;
+        results.used_nonzeros_lor = info.nz_used;
+        results.allocation_calls_lor = info.mallocs;
+        results.memory_bytes_lor = info.memory;
+        results.estimated_minimum_bytes_lor =
+            info.nz_used * (sizeof(PetscScalar) + sizeof(PetscInt));
+    }
+    else if (uses_preconditioner_matrix &&
         options.preconditioner_matrix_source !=
             PreconditionerMatrixSource::greville_mass_tensor)
     {
@@ -809,8 +910,12 @@ PetscErrorCode run_assembled_laplace_experiment(
                 PreconditionerMatrixSource::truncated_cholesky_tensor ?
                 (options.preconditioner_side == PreconditionerSide::left ?
                     "P_k^{-1}K" : "KP_k^{-1}") :
+            (options.preconditioner_matrix_source ==
+                PreconditionerMatrixSource::derivative_greville_mass ?
                 (options.preconditioner_side == PreconditionerSide::left ?
-                    "K_LOR^{-1}K" : "KK_LOR^{-1}"));
+                    "P_DMG^{-1}K" : "KP_DMG^{-1}") :
+                (options.preconditioner_side == PreconditionerSide::left ?
+                    "K_LOR^{-1}K" : "KK_LOR^{-1}")));
         const char *solve_label = lor_pc_mode_name(options.lor_pc);
         if (options.compute_condition_number)
         {
@@ -972,6 +1077,7 @@ PetscErrorCode run_assembled_laplace_experiment(
     // Release all PETSc-owned result objects after output and post-processing.
     PetscCall(destroy_linear_solve_result(&preconditioned_solve));
     PetscCall(destroy_linear_solve_result(&original_solve));
+    PetscCall(destroy_derivative_greville_result(&derivative_greville));
     PetscCall(MatDestroy(&greville_preconditioner));
     PetscCall(destroy_global_matrix(&truncated_tensor.preconditioner));
     PetscCall(destroy_global_matrix(&lor_stiffness));

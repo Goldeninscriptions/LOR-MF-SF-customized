@@ -23,6 +23,17 @@ public:
         std::vector<double> N;
     };
 
+    // Values and first parameter derivatives of the same active basis
+    // functions.  This is the arbitrary-point counterpart of N_Gauss() and
+    // N_der1_Gauss(), used by derivative-space assembly and verification.
+    struct PointDerivativeEvaluation
+    {
+        int span = -1;
+        int first_basis = -1;
+        std::vector<double> N;
+        std::vector<double> dN;
+    };
+
     // Construct a mathematical one-dimensional B-spline basis without a
     // Gauss table. Use this lightweight form when only evaluate_N(xi) is
     // needed.
@@ -40,6 +51,8 @@ public:
     // performs the recurrence immediately and intentionally does not compute
     // unused derivatives. Repeated element quadrature should use N_Gauss().
     PointEvaluation evaluate_N(double xi) const;
+
+    PointDerivativeEvaluation evaluate_N_der1(double xi) const;
 
     // Return the precomputed univariate B-spline values at Gauss points
     // without copying:
@@ -115,4 +128,3 @@ private:
 } // namespace lor
 
 #endif
-

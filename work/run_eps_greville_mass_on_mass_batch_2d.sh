@@ -5,7 +5,7 @@ set -euo pipefail
 # cond((T^T M_g T)^{-1} M_s). Full tensor-product mass spaces are retained,
 # matching the reproduced GPT-conversation experiment.
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-single_case="$script_dir/run_greville_tensor_condition_2d.sh"
+single_case="$script_dir/run_greville_mass_condition_2d.sh"
 result_root=${RESULT_DIR:-$script_dir/results/eps_greville_mass_on_mass_batch_2d}
 console_root=${CONSOLE_DIR:-$script_dir/logs/eps_greville_mass_on_mass_batch_2d}
 summary_file=${SUMMARY_FILE:-$result_root/summary.tsv}
@@ -29,7 +29,7 @@ for size in "${sizes[@]}"; do
   [[ "$size" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid size: $size" >&2; exit 2; }
 done
 command -v flock >/dev/null || { echo "flock is required" >&2; exit 3; }
-lock_file=${BATCH_LOCK_FILE:-$script_dir/.greville_tensor_condition_batch.lock}
+lock_file=${BATCH_LOCK_FILE:-$script_dir/.greville_mass_condition_batch.lock}
 exec 9>"$lock_file"
 flock -n 9 || {
   echo "Another Greville tensor batch is already running: $lock_file" >&2
@@ -69,7 +69,7 @@ for degree in "${degrees[@]}"; do
       fi
       echo "[batch $((completed+failed+1))/$total] mass target=$target p=$degree n=${elements}x${elements}"
       set +e
-      "$single_case" mass "$target" "$degree" "$elements" "$result_file" 2>&1 | tee "$console_file"
+      "$single_case" "$target" "$degree" "$elements" "$result_file" 2>&1 | tee "$console_file"
       status=${PIPESTATUS[0]}; set -e
       if (( status == 0 )) && is_complete "$result_file" "$target"; then
         append_summary "$result_file"; completed=$((completed+1))

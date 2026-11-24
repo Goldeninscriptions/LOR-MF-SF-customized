@@ -67,8 +67,6 @@ struct DistributedGrevillePCConfiguration2D
     DistributedGrevillePCMode mode =
         DistributedGrevillePCMode::tensor_transpose;
     DistributedGrevillePCStatistics *statistics = nullptr;
-    double stiffness_x_weight = 1.0;
-    double stiffness_y_weight = 1.0;
 };
 
 // Create M_y (x) M_x as a distributed MatShell. Rows use contiguous y slabs
@@ -83,33 +81,10 @@ PetscErrorCode create_distributed_tensor_greville_preconditioner_2d(
     MPI_Comm comm, const GrevilleMassPreconditioner1D &x_direction,
     const GrevilleMassPreconditioner1D &y_direction, Mat *matrix);
 
-// Create the homogeneous-Dirichlet tensor-sum stiffness operators
-//
-//   K_s,y (x) M_s,x + M_s,y (x) K_s,x,
-//   P_K,y (x) P_M,x + P_M,y (x) P_K,x,
-//
-// as distributed MatShell objects without assembling either 2D matrix.
-PetscErrorCode create_distributed_tensor_spline_stiffness_2d(
-    MPI_Comm comm, const GrevilleMassPreconditioner1D &x_direction,
-    const GrevilleMassPreconditioner1D &y_direction, Mat *matrix,
-    double x_derivative_weight = 1.0,
-    double y_derivative_weight = 1.0);
-PetscErrorCode create_distributed_tensor_greville_stiffness_2d(
-    MPI_Comm comm, const GrevilleMassPreconditioner1D &x_direction,
-    const GrevilleMassPreconditioner1D &y_direction, Mat *matrix,
-    double x_derivative_weight = 1.0,
-    double y_derivative_weight = 1.0);
-
 // Configure an existing KSP with the exact tensor inverse.  This callback has
 // the signature accepted by compute_generalized_condition_number and is used
 // by EPS/ST for the generalized problem Kx=lambda Px.
 PetscErrorCode configure_distributed_greville_pc_2d(
-    KSP ksp, void *raw_configuration);
-
-// Configure P_K^{-1}=T^{-1} K_g^{-1} T^{-T}. K_g is assembled as a sparse
-// Q1 tensor-sum and solved by a nested, options-configurable CG+GAMG KSP.
-// Nested options use the prefix -greville_stiffness_inner_.
-PetscErrorCode configure_distributed_greville_stiffness_pc_2d(
     KSP ksp, void *raw_configuration);
 
 // Exploit eig(P_y x P_x)=eig(P_y)eig(P_x), while still obtaining each

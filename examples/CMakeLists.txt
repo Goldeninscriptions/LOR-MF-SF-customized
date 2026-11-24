@@ -25,10 +25,6 @@ add_executable(greville_mass_preconditioner_test
   greville_mass_preconditioner_test.cpp)
 target_link_libraries(greville_mass_preconditioner_test PRIVATE lor_petsc)
 
-add_executable(greville_stiffness_preconditioner_test
-  greville_stiffness_preconditioner_test.cpp)
-target_link_libraries(greville_stiffness_preconditioner_test PRIVATE lor_petsc)
-
 add_executable(greville_mass_pc_application_test
   greville_mass_pc_application_test.cpp)
 target_link_libraries(greville_mass_pc_application_test PRIVATE lor_petsc)
@@ -37,16 +33,26 @@ add_executable(distributed_greville_mass_benchmark
   distributed_greville_mass_benchmark.cpp)
 target_link_libraries(distributed_greville_mass_benchmark PRIVATE lor_petsc)
 
-add_executable(greville_tensor_condition_driver
-  greville_tensor_condition_driver.cpp)
-target_link_libraries(greville_tensor_condition_driver PRIVATE lor_petsc)
+add_executable(greville_mass_condition_driver
+  greville_mass_condition_driver.cpp)
+target_link_libraries(greville_mass_condition_driver PRIVATE lor_petsc)
+
+add_executable(derivative_greville_stiffness_1d
+  derivative_greville_stiffness_1d.cpp)
+target_link_libraries(derivative_greville_stiffness_1d PRIVATE lor_petsc)
+
+add_executable(derivative_greville_stiffness_2d
+  derivative_greville_stiffness_2d.cpp)
+target_link_libraries(derivative_greville_stiffness_2d PRIVATE lor_petsc)
+
+add_executable(derivative_greville_validation
+  derivative_greville_validation.cpp)
+target_link_libraries(derivative_greville_validation PRIVATE lor_petsc)
 
 enable_testing()
 add_test(NAME truncated_cholesky_1d COMMAND truncated_cholesky_1d_test)
 add_test(NAME greville_mass_preconditioner
   COMMAND greville_mass_preconditioner_test)
-add_test(NAME greville_stiffness_preconditioner
-  COMMAND greville_stiffness_preconditioner_test)
 add_test(NAME greville_mass_pc_application
   COMMAND greville_mass_pc_application_test)
 find_program(LOR_MPIEXEC_EXECUTABLE NAMES mpirun mpiexec REQUIRED)
@@ -63,35 +69,19 @@ set_tests_properties(
   PROPERTIES TIMEOUT 60)
 add_test(NAME greville_tensor_mass_condition
   COMMAND ${LOR_MPIEXEC_EXECUTABLE} -n 2
-          $<TARGET_FILE:greville_tensor_condition_driver>
-          -operator_type mass -spectral_target preconditioned
+          $<TARGET_FILE:greville_mass_condition_driver>
+          -spectral_target preconditioned
           -p 3 -n 4 -eps_tol 1e-10
           -eps_max_it 1000 -eps_ncv 20 -eigmin_eps_stability_stop false
           -output ${CMAKE_CURRENT_BINARY_DIR}/greville_mass_condition.log)
-add_test(NAME greville_tensor_stiffness_condition
-  COMMAND ${LOR_MPIEXEC_EXECUTABLE} -n 2
-          $<TARGET_FILE:greville_tensor_condition_driver>
-          -operator_type stiffness -spectral_target preconditioned
-          -p 3 -n 4 -eps_tol 1e-10
-          -eps_max_it 1000 -eps_ncv 20 -eigmin_eps_stability_stop false
-          -output ${CMAKE_CURRENT_BINARY_DIR}/greville_stiffness_condition.log)
 add_test(NAME greville_tensor_mass_preconditioner_condition
-  COMMAND $<TARGET_FILE:greville_tensor_condition_driver>
-          -operator_type mass -spectral_target preconditioner
+  COMMAND $<TARGET_FILE:greville_mass_condition_driver>
+          -spectral_target preconditioner
           -p 3 -n 4 -eps_tol 1e-10 -eps_max_it 1000 -eps_ncv 20
           -output ${CMAKE_CURRENT_BINARY_DIR}/greville_mass_P_condition.log)
-add_test(NAME greville_tensor_stiffness_preconditioner_condition
-  COMMAND ${LOR_MPIEXEC_EXECUTABLE} -n 2
-          $<TARGET_FILE:greville_tensor_condition_driver>
-          -operator_type stiffness -spectral_target preconditioner
-          -p 3 -n 4 -eps_tol 1e-10 -eps_max_it 1000 -eps_ncv 20
-          -eigmin_st_type sinvert -eigmin_eps_target 0
-          -eigmin_eps_target_magnitude -eigmin_eps_stability_stop false
-          -output ${CMAKE_CURRENT_BINARY_DIR}/greville_stiffness_P_condition.log)
 set_tests_properties(
-  greville_tensor_mass_condition greville_tensor_stiffness_condition
+  greville_tensor_mass_condition
   greville_tensor_mass_preconditioner_condition
-  greville_tensor_stiffness_preconditioner_condition
   PROPERTIES TIMEOUT 60)
 add_test(NAME greville_tensor_eps_integration
   COMMAND ${LOR_MPIEXEC_EXECUTABLE} -n 2 $<TARGET_FILE:assembled_driver>
@@ -111,3 +101,13 @@ add_test(NAME truncated_tensor_integration
           $<TARGET_FILE:assembled_driver> ${LOR_MPIEXEC_EXECUTABLE}
           ${CMAKE_CURRENT_LIST_DIR}/..)
 set_tests_properties(truncated_tensor_integration PROPERTIES TIMEOUT 120)
+
+add_test(NAME derivative_greville_1d_p2
+  COMMAND $<TARGET_FILE:derivative_greville_validation>
+          -validation_case 1d_p2 -eigmin_eps_stability_stop false)
+add_test(NAME derivative_greville_2d_rectangular
+  COMMAND $<TARGET_FILE:derivative_greville_validation>
+          -validation_case 2d_rectangular)
+set_tests_properties(
+  derivative_greville_1d_p2 derivative_greville_2d_rectangular
+  PROPERTIES TIMEOUT 120)

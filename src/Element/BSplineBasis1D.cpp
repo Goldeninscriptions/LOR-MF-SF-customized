@@ -46,6 +46,19 @@ BSplineBasis1D::PointEvaluation BSplineBasis1D::evaluate_N(
     return result;
 }
 
+BSplineBasis1D::PointDerivativeEvaluation
+BSplineBasis1D::evaluate_N_der1(const double xi) const
+{
+    PointDerivativeEvaluation result;
+    result.span = find_span(degree_, knots_, xi);
+    result.first_basis = result.span - degree_;
+    DerivativeValues values = evaluate_derivatives(
+        degree_, knots_, xi, result.span, 1);
+    result.N = std::move(values[0]);
+    result.dN = std::move(values[1]);
+    return result;
+}
+
 // Validate the invariant spline definition once before constructing tables.
 void BSplineBasis1D::validate_definition(const int degree,
     const std::vector<double> &knots)
@@ -288,4 +301,3 @@ std::size_t BSplineBasis1D::table_offset(
 }
 
 } // namespace lor
-

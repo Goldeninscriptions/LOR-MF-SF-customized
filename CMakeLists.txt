@@ -60,6 +60,7 @@ endif()
 
 add_library(lor_petsc
   src/Assembly/GlobalAssembly.cpp
+  src/Assembly/DerivativeGrevilleStiffness.cpp
   src/Assembly/TruncatedCholeskyTensor.cpp
   src/Solver/GeneralizedConditionNumber.cpp
   src/Solver/GrevilleMassPC.cpp
